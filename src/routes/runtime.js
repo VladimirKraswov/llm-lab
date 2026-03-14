@@ -108,6 +108,7 @@ router.post('/chat', async (req, res) => {
     const settings = await getSettings();
     const model = req.body?.model || settings.inference.model;
     const messages = req.body?.messages;
+    const stream = !!req.body?.stream;
 
     if (!Array.isArray(messages) || !messages.length) {
       return res.status(400).json({ error: 'messages are required' });
@@ -121,19 +122,36 @@ router.post('/chat', async (req, res) => {
         messages,
         temperature: req.body?.temperature ?? 0.7,
         max_tokens: req.body?.max_tokens ?? 512,
+        stream,
       }),
     });
 
-    const text = await response.text();
-
     if (!response.ok) {
+      const text = await response.text();
       return res.status(500).json({ error: text || 'inference failed' });
     }
 
-    try {
-      return res.json(JSON.parse(text));
-    } catch {
-      return res.status(500).json({ error: 'invalid inference response', raw: text });
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      res.end();
+    } else {
+      const text = await response.text();
+      try {
+        return res.json(JSON.parse(text));
+      } catch {
+        return res.status(500).json({ error: 'invalid inference response', raw: text });
+      }
     }
   } catch (err) {
     return res.status(500).json({ error: String(err.message || err) });

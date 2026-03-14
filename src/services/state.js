@@ -1,6 +1,20 @@
 const { CONFIG } = require('../config');
 const { ensureDir, exists, readJson, writeJson } = require('../utils/fs');
 
+const locks = new Map();
+
+async function withLock(key, fn) {
+  while (locks.get(key)) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  locks.set(key, true);
+  try {
+    return await fn();
+  } finally {
+    locks.set(key, false);
+  }
+}
+
 const DEFAULT_SETTINGS = {
   baseModel: CONFIG.defaultBaseModel,
   qlora: {
@@ -70,15 +84,17 @@ async function getSettings() {
 }
 
 async function setSettings(next) {
-  const current = await getSettings();
-  const merged = {
-    ...current,
-    ...next,
-    qlora: { ...current.qlora, ...(next.qlora || {}) },
-    inference: { ...current.inference, ...(next.inference || {}) },
-  };
-  await writeJson(CONFIG.settingsFile, merged);
-  return merged;
+  return await withLock('settings', async () => {
+    const current = await getSettings();
+    const merged = {
+      ...current,
+      ...next,
+      qlora: { ...current.qlora, ...(next.qlora || {}) },
+      inference: { ...current.inference, ...(next.inference || {}) },
+    };
+    await writeJson(CONFIG.settingsFile, merged);
+    return merged;
+  });
 }
 
 async function getJobs() {
@@ -90,12 +106,20 @@ async function saveJobs(jobs) {
 }
 
 async function upsertJob(jobPatch) {
-  const jobs = await getJobs();
-  const idx = jobs.findIndex((j) => j.id === jobPatch.id);
-  if (idx === -1) jobs.push(jobPatch);
-  else jobs[idx] = { ...jobs[idx], ...jobPatch };
-  await saveJobs(jobs);
-  return idx === -1 ? jobPatch : jobs[idx];
+  return await withLock('jobs', async () => {
+    const jobs = await getJobs();
+    const idx = jobs.findIndex((j) => j.id === jobPatch.id);
+    let result;
+    if (idx === -1) {
+      jobs.push(jobPatch);
+      result = jobPatch;
+    } else {
+      jobs[idx] = { ...jobs[idx], ...jobPatch };
+      result = jobs[idx];
+    }
+    await saveJobs(jobs);
+    return result;
+  });
 }
 
 async function getDatasets() {
@@ -107,17 +131,21 @@ async function saveDatasets(items) {
 }
 
 async function addDataset(meta) {
-  const list = await getDatasets();
-  list.push(meta);
-  await saveDatasets(list);
-  return meta;
+  return await withLock('datasets', async () => {
+    const list = await getDatasets();
+    list.push(meta);
+    await saveDatasets(list);
+    return meta;
+  });
 }
 
 async function removeDataset(id) {
-  const list = await getDatasets();
-  const next = list.filter((x) => x.id !== id);
-  await saveDatasets(next);
-  return next;
+  return await withLock('datasets', async () => {
+    const list = await getDatasets();
+    const next = list.filter((x) => x.id !== id);
+    await saveDatasets(next);
+    return next;
+  });
 }
 
 async function getModels() {
@@ -129,19 +157,29 @@ async function saveModels(items) {
 }
 
 async function addModel(meta) {
-  const list = await getModels();
-  list.push(meta);
-  await saveModels(list);
-  return meta;
+  return await withLock('models', async () => {
+    const list = await getModels();
+    list.push(meta);
+    await saveModels(list);
+    return meta;
+  });
 }
 
 async function upsertModel(modelPatch) {
-  const list = await getModels();
-  const idx = list.findIndex((x) => x.id === modelPatch.id);
-  if (idx === -1) list.push(modelPatch);
-  else list[idx] = { ...list[idx], ...modelPatch };
-  await saveModels(list);
-  return idx === -1 ? modelPatch : list[idx];
+  return await withLock('models', async () => {
+    const list = await getModels();
+    const idx = list.findIndex((x) => x.id === modelPatch.id);
+    let result;
+    if (idx === -1) {
+      list.push(modelPatch);
+      result = modelPatch;
+    } else {
+      list[idx] = { ...list[idx], ...modelPatch };
+      result = list[idx];
+    }
+    await saveModels(list);
+    return result;
+  });
 }
 
 async function getModelById(id) {
@@ -150,10 +188,12 @@ async function getModelById(id) {
 }
 
 async function removeModel(id) {
-  const list = await getModels();
-  const next = list.filter((x) => x.id !== id);
-  await saveModels(next);
-  return next;
+  return await withLock('models', async () => {
+    const list = await getModels();
+    const next = list.filter((x) => x.id !== id);
+    await saveModels(next);
+    return next;
+  });
 }
 
 async function getLoras() {
@@ -165,19 +205,29 @@ async function saveLoras(items) {
 }
 
 async function addLora(meta) {
-  const list = await getLoras();
-  list.push(meta);
-  await saveLoras(list);
-  return meta;
+  return await withLock('loras', async () => {
+    const list = await getLoras();
+    list.push(meta);
+    await saveLoras(list);
+    return meta;
+  });
 }
 
 async function upsertLora(loraPatch) {
-  const list = await getLoras();
-  const idx = list.findIndex((x) => x.id === loraPatch.id);
-  if (idx === -1) list.push(loraPatch);
-  else list[idx] = { ...list[idx], ...loraPatch };
-  await saveLoras(list);
-  return idx === -1 ? loraPatch : list[idx];
+  return await withLock('loras', async () => {
+    const list = await getLoras();
+    const idx = list.findIndex((x) => x.id === loraPatch.id);
+    let result;
+    if (idx === -1) {
+      list.push(loraPatch);
+      result = loraPatch;
+    } else {
+      list[idx] = { ...list[idx], ...loraPatch };
+      result = list[idx];
+    }
+    await saveLoras(list);
+    return result;
+  });
 }
 
 async function getLoraById(id) {
@@ -191,19 +241,23 @@ async function getLoraByJobId(jobId) {
 }
 
 async function renameLora(id, name) {
-  const list = await getLoras();
-  const idx = list.findIndex((x) => x.id === id);
-  if (idx === -1) throw new Error('lora not found');
-  list[idx] = { ...list[idx], name };
-  await saveLoras(list);
-  return list[idx];
+  return await withLock('loras', async () => {
+    const list = await getLoras();
+    const idx = list.findIndex((x) => x.id === id);
+    if (idx === -1) throw new Error('lora not found');
+    list[idx] = { ...list[idx], name };
+    await saveLoras(list);
+    return list[idx];
+  });
 }
 
 async function removeLora(id) {
-  const list = await getLoras();
-  const next = list.filter((x) => x.id !== id);
-  await saveLoras(next);
-  return next;
+  return await withLock('loras', async () => {
+    const list = await getLoras();
+    const next = list.filter((x) => x.id !== id);
+    await saveLoras(next);
+    return next;
+  });
 }
 
 async function getRuntime() {
@@ -219,16 +273,18 @@ async function getRuntime() {
 }
 
 async function saveRuntime(next) {
-  const merged = {
-    ...DEFAULT_RUNTIME,
-    ...next,
-    vllm: {
-      ...DEFAULT_RUNTIME.vllm,
-      ...((next && next.vllm) || {}),
-    },
-  };
-  await writeJson(CONFIG.runtimeFile, merged);
-  return merged;
+  return await withLock('runtime', async () => {
+    const merged = {
+      ...DEFAULT_RUNTIME,
+      ...next,
+      vllm: {
+        ...DEFAULT_RUNTIME.vllm,
+        ...((next && next.vllm) || {}),
+      },
+    };
+    await writeJson(CONFIG.runtimeFile, merged);
+    return merged;
+  });
 }
 
 module.exports = {

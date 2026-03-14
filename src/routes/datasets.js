@@ -17,11 +17,11 @@ router.get('/', async (_req, res) => {
   res.json(await getDatasets());
 });
 
-router.post('/validate-jsonl', (req, res) => {
+router.post('/validate-jsonl', async (req, res) => {
   try {
     const { jsonl } = req.body || {};
     if (!jsonl) return res.status(400).json({ error: 'jsonl is required' });
-    res.json(validateJsonl(jsonl));
+    res.json(await validateJsonl(jsonl));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }

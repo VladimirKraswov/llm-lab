@@ -3,7 +3,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso, uid } = require('../utils/ids');
-const { isPidRunning } = require('../utils/proc');
+const { isPidRunning, killProcessGroup } = require('../utils/proc');
 const { getSettings, getDatasets, getJobs, upsertJob, getModelById } = require('./state');
 const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
@@ -233,7 +233,7 @@ async function stopJob(jobId) {
   if (!job) throw new Error('job not found');
   if (!job.pid || !isPidRunning(job.pid)) throw new Error('job is not running');
 
-  require('child_process').spawnSync('bash', ['-lc', `kill ${job.pid}`]);
+  killProcessGroup(job.pid);
 
   const next = await upsertJob({
     ...job,

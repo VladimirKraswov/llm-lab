@@ -1,7 +1,9 @@
 // src/services/datasets.js
 
+const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
+const readline = require('readline');
 const { CONFIG } = require('../config');
 const { uid, nowIso } = require('../utils/ids');
 const { addDataset, getDatasets, saveDatasets } = require('./state');
@@ -54,17 +56,21 @@ function detectFormat(item) {
   return 'unknown';
 }
 
-function parseJsonl(jsonl) {
-  const lines = String(jsonl || '')
-    .split('\n')
-    .map((x) => x.trim())
-    .filter(Boolean);
+async function parseJsonlStream(inputStream, onValid) {
+  const rl = readline.createInterface({
+    input: inputStream,
+    terminal: false,
+  });
 
-  const valid = [];
-  const invalid = [];
   let detectedFormat = null;
+  let totalLines = 0;
+  let validCount = 0;
+  let invalidCount = 0;
+  const invalid = [];
 
-  lines.forEach((line, index) => {
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    totalLines++;
     try {
       const parsed = JSON.parse(line);
       const fmt = detectFormat(parsed);
@@ -73,26 +79,25 @@ function parseJsonl(jsonl) {
       const normalized = normalizeConversationRecord(parsed);
       validateMessages(normalized.messages);
 
-      valid.push({
-        line: index + 1,
-        original: parsed,
-        normalized,
-      });
+      validCount++;
+      if (onValid) await onValid(normalized);
     } catch (err) {
-      invalid.push({
-        line: index + 1,
-        error: String(err.message || err),
-        raw: line,
-      });
+      invalidCount++;
+      if (invalid.length < 100) {
+        invalid.push({
+          line: totalLines,
+          error: String(err.message || err),
+          raw: line.slice(0, 1000),
+        });
+      }
     }
-  });
+  }
 
   return {
     detectedFormat: detectedFormat || 'unknown',
-    totalLines: lines.length,
-    validCount: valid.length,
-    invalidCount: invalid.length,
-    valid,
+    totalLines,
+    validCount,
+    invalidCount,
     invalid,
   };
 }
@@ -136,30 +141,42 @@ function parseItems(items) {
 }
 
 async function createDatasetFromJsonl(name, jsonl) {
-  const parsed = parseJsonl(jsonl);
-  if (!parsed.validCount) {
-    throw new Error('No valid rows found in jsonl');
-  }
-
   const datasetId = uid('ds');
   const rawPath = path.join(CONFIG.rawDatasetsDir, `${datasetId}.jsonl`);
   const processedPath = path.join(CONFIG.datasetsDir, `${datasetId}.jsonl`);
 
   await fsp.writeFile(rawPath, jsonl, 'utf8');
 
-  const normalizedLines = parsed.valid.map((x) => JSON.stringify(x.normalized));
-  await fsp.writeFile(processedPath, normalizedLines.join('\n') + '\n', 'utf8');
+  const writeStream = fs.createWriteStream(processedPath);
+  const stream = fs.createReadStream(rawPath);
+
+  const result = await parseJsonlStream(stream, async (normalized) => {
+    const ok = writeStream.write(JSON.stringify(normalized) + '\n');
+    if (!ok) {
+      await new Promise((resolve) => writeStream.once('drain', resolve));
+    }
+  });
+
+  await new Promise((resolve) => {
+    writeStream.end(resolve);
+  });
+
+  if (result.validCount === 0) {
+    await fsp.rm(rawPath).catch(() => {});
+    await fsp.rm(processedPath).catch(() => {});
+    throw new Error('No valid rows found in jsonl');
+  }
 
   const meta = {
     id: datasetId,
     name,
     createdAt: nowIso(),
     format: 'chat-jsonl',
-    sourceFormat: parsed.detectedFormat,
+    sourceFormat: result.detectedFormat,
     rawPath,
     processedPath,
-    rows: normalizedLines.length,
-    invalidRows: parsed.invalidCount,
+    rows: result.validCount,
+    invalidRows: result.invalidCount,
   };
 
   return addDataset(meta);
@@ -196,14 +213,29 @@ async function previewDataset(datasetId, limit = 20) {
   const ds = datasets.find((x) => x.id === datasetId);
   if (!ds) throw new Error('dataset not found');
 
-  const raw = await fsp.readFile(ds.processedPath, 'utf8');
-  const lines = raw.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, limit);
+  const stream = fs.createReadStream(ds.processedPath);
+  const rl = readline.createInterface({
+    input: stream,
+    terminal: false,
+  });
+
+  const preview = [];
+  let count = 0;
+  for await (const line of rl) {
+    if (count >= limit) break;
+    if (line.trim()) {
+      preview.push(JSON.parse(line));
+      count++;
+    }
+  }
+  rl.close();
+  stream.destroy();
 
   return {
     id: ds.id,
     name: ds.name,
     totalRows: ds.rows,
-    preview: lines.map((line) => JSON.parse(line)),
+    preview,
   };
 }
 
@@ -225,17 +257,23 @@ async function deleteDataset(datasetId) {
   return { ok: true };
 }
 
-function validateJsonl(jsonl) {
-  const parsed = parseJsonl(jsonl);
+async function validateJsonl(jsonl) {
+  const { Readable } = require('stream');
+  const stream = Readable.from([jsonl]);
+
+  const preview = [];
+  const result = await parseJsonlStream(stream, async (normalized) => {
+    if (preview.length < 5) preview.push(normalized);
+  });
 
   return {
-    ok: parsed.validCount > 0,
-    detectedFormat: parsed.detectedFormat,
-    totalLines: parsed.totalLines,
-    validCount: parsed.validCount,
-    invalidCount: parsed.invalidCount,
-    preview: parsed.valid.slice(0, 5).map((x) => x.normalized),
-    errors: parsed.invalid.slice(0, 10),
+    ok: result.validCount > 0,
+    detectedFormat: result.detectedFormat,
+    totalLines: result.totalLines,
+    validCount: result.validCount,
+    invalidCount: result.invalidCount,
+    preview,
+    errors: result.invalid.slice(0, 10),
   };
 }
 

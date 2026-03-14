@@ -51,20 +51,7 @@ async function registerLoraFromJob(jobId, customName = null) {
   return item;
 }
 
-function runPy(script) {
-  const r = spawnSync(CONFIG.pythonBin, ['-u', '-c', script], {
-    cwd: CONFIG.workspace,
-    encoding: 'utf8',
-    stdio: 'pipe',
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
-  });
-
-  if (r.status !== 0) {
-    throw new Error((r.stderr || r.stdout || 'python failed').trim());
-  }
-
-  return (r.stdout || '').trim();
-}
+const { spawn } = require('child_process');
 
 async function buildMergedLora(loraId) {
   const item = await getLoraById(loraId);
@@ -106,26 +93,50 @@ tokenizer.save_pretrained(output_dir)
 print(output_dir)
 `.trim();
 
-  try {
-    runPy(py);
+  return new Promise((resolve, reject) => {
+    const child = spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+      cwd: CONFIG.workspace,
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    });
 
-    const next = await upsertLora({
-      ...next0,
-      mergeStatus: 'ready',
-      mergedPath,
-      error: null,
+    let stderr = '';
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
     });
-    emitEvent('lora_updated', next);
-    return next;
-  } catch (err) {
-    const failed = await upsertLora({
-      ...next0,
-      mergeStatus: 'failed',
-      error: String(err.message || err),
+
+    child.on('exit', async (code) => {
+      if (code === 0) {
+        const next = await upsertLora({
+          ...next0,
+          mergeStatus: 'ready',
+          mergedPath,
+          error: null,
+        });
+        emitEvent('lora_updated', next);
+        resolve(next);
+      } else {
+        const errorMsg = stderr.trim() || `python exited with code ${code}`;
+        const failed = await upsertLora({
+          ...next0,
+          mergeStatus: 'failed',
+          error: errorMsg,
+        });
+        emitEvent('lora_updated', failed);
+        reject(new Error(errorMsg));
+      }
     });
-    emitEvent('lora_updated', failed);
-    throw err;
-  }
+
+    child.on('error', async (err) => {
+      const errorMsg = String(err.message || err);
+      const failed = await upsertLora({
+        ...next0,
+        mergeStatus: 'failed',
+        error: errorMsg,
+      });
+      emitEvent('lora_updated', failed);
+      reject(err);
+    });
+  });
 }
 
 async function ensureMergedLora(loraId) {
