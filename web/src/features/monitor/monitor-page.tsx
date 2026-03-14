@@ -35,16 +35,17 @@ function fmtBytes(bytes: number) {
 }
 
 function UsageBar({ value, label, color = 'bg-blue-600' }: { value: number, label: string, color?: string }) {
+  const safeValue = typeof value === 'number' && Number.isFinite(value) ? value : 0;
   return (
     <div className="space-y-1">
       <div className="flex justify-between text-xs font-medium">
         <span className="text-slate-400">{label}</span>
-        <span className="text-white">{value.toFixed(1)}%</span>
+        <span className="text-white">{safeValue.toFixed(1)}%</span>
       </div>
       <div className="h-2 w-full rounded-full bg-slate-800">
         <div
           className={`h-full rounded-full transition-all duration-500 ${color}`}
-          style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
+          style={{ width: `${Math.min(100, Math.max(0, safeValue))}%` }}
         />
       </div>
     </div>
@@ -65,9 +66,9 @@ export default function MonitorPage() {
       setHistory(prev => {
         const next = [...prev, {
           time: new Date().toLocaleTimeString(),
-          cpu: data.cpu.load,
-          mem: (data.memory.used / data.memory.total) * 100,
-          gpu: data.gpus[0]?.utilizationGpu || 0,
+          cpu: data.cpu?.load || 0,
+          mem: data.memory?.total ? (data.memory.used / data.memory.total) * 100 : 0,
+          gpu: data.gpus?.[0]?.utilizationGpu || 0,
         }];
         return next.slice(-30); // Keep last 60 seconds
       });
@@ -98,7 +99,7 @@ export default function MonitorPage() {
               </div>
               <div>
                 <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">CPU Load</div>
-                <div className="text-2xl font-bold text-white">{data.cpu.load.toFixed(1)}%</div>
+                <div className="text-2xl font-bold text-white">{(data.cpu.load || 0).toFixed(1)}%</div>
               </div>
             </div>
           </CardContent>
@@ -112,7 +113,9 @@ export default function MonitorPage() {
               </div>
               <div>
                 <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">RAM Used</div>
-                <div className="text-2xl font-bold text-white">{((data.memory.used / data.memory.total) * 100).toFixed(1)}%</div>
+                <div className="text-2xl font-bold text-white">
+                  {(data.memory.total ? (data.memory.used / data.memory.total) * 100 : 0).toFixed(1)}%
+                </div>
               </div>
             </div>
           </CardContent>
