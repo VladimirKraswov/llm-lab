@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
+import { ResponseRenderer } from '../../components/response-renderer';
 
 type Msg = {
   role: 'user' | 'assistant';
@@ -42,9 +43,11 @@ export default function PlaygroundPage() {
     refetchInterval: 3000,
   });
 
-  const [input, setInput] = useState('Скажи привет');
+  const [input, setInput] = useState(
+    'Напиши короткий пример на Python с функцией fibonacci и объясни код.'
+  );
   const [temperature, setTemperature] = useState('0.2');
-  const [maxTokens, setMaxTokens] = useState('128');
+  const [maxTokens, setMaxTokens] = useState('512');
   const [messages, setMessages] = useState<Msg[]>([]);
 
   const [isStreaming, setIsStreaming] = useState(false);
@@ -62,7 +65,6 @@ export default function PlaygroundPage() {
 
     try {
       const stream = await api.chatStream({
-        // vLLM identifies the model by its serving path or alias
         model: runtimeQuery.data?.vllm?.model || undefined,
         messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
         temperature: Number(temperature),
@@ -70,6 +72,7 @@ export default function PlaygroundPage() {
       });
 
       if (!stream) throw new Error('No response body');
+
       const reader = stream.getReader();
       const decoder = new TextDecoder();
       let assistantText = '';
@@ -86,13 +89,16 @@ export default function PlaygroundPage() {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed || trimmed.includes(': ping')) continue;
+
           if (trimmed.startsWith('data: ')) {
             const data = trimmed.slice(6);
             if (data === '[DONE]') break;
+
             try {
               const parsed = JSON.parse(data);
               const content = parsed.choices?.[0]?.delta?.content || '';
               assistantText += content;
+
               setMessages((prev) => {
                 const next = [...prev];
                 const last = next[next.length - 1];
@@ -110,7 +116,7 @@ export default function PlaygroundPage() {
     } catch (err) {
       const errMsg = String((err as Error)?.message || err);
       setError(errMsg);
-      setMessages((prev) => prev.slice(0, -1)); // Remove the empty assistant message if error occurred
+      setMessages((prev) => prev.slice(0, -1));
     } finally {
       setIsStreaming(false);
     }
@@ -173,9 +179,10 @@ export default function PlaygroundPage() {
           </div>
 
           <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-xs text-slate-400">
-            Для smoke test попробуй:
-            <div className="mt-2 text-slate-300">Скажи привет</div>
-            <div className="text-slate-300">2+2?</div>
+            Для красивой проверки попробуй:
+            <div className="mt-2 text-slate-300">Напиши SQL запрос с пояснением</div>
+            <div className="text-slate-300">Покажи React компонент карточки профиля</div>
+            <div className="text-slate-300">Сделай Python пример и объясни шаги</div>
           </div>
         </div>
 
@@ -185,22 +192,22 @@ export default function PlaygroundPage() {
             {error && <div className="text-xs text-red-500 font-medium">Error: {error}</div>}
           </div>
 
-          <div className="mb-4 h-[460px] overflow-auto rounded-2xl bg-slate-950 p-4">
+          <div className="mb-4 h-[560px] overflow-auto rounded-2xl bg-slate-950 p-4">
             {!messages.length ? (
               <div className="text-sm text-slate-500">No messages yet.</div>
             ) : (
               <div className="space-y-4">
                 {messages.map((m, idx) => (
                   <div key={idx} className={m.role === 'user' ? 'text-right' : 'text-left'}>
-                    <div
-                      className={`inline-block max-w-[85%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap ${
-                        m.role === 'user'
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-slate-800 text-slate-100'
-                      }`}
-                    >
-                      {m.content}
-                    </div>
+                    {m.role === 'user' ? (
+                      <div className="inline-block max-w-[85%] rounded-2xl bg-blue-600 px-4 py-3 text-sm whitespace-pre-wrap text-white">
+                        {m.content}
+                      </div>
+                    ) : (
+                      <div className="inline-block max-w-[92%] rounded-2xl border border-slate-800 bg-slate-900 px-4 py-4 text-left align-top text-slate-100 shadow-lg shadow-black/20">
+                        <ResponseRenderer content={m.content} />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -216,7 +223,7 @@ export default function PlaygroundPage() {
             />
             <div className="flex gap-3">
               <Button onClick={sendMessage} disabled={!runtimeQuery.data?.vllm?.model || isStreaming}>
-                Send
+                {isStreaming ? 'Generating…' : 'Send'}
               </Button>
               <Button className="bg-slate-800 hover:bg-slate-700" onClick={() => setMessages([])}>
                 Clear
