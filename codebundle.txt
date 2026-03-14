@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
-root: /storage/data/llm
+root: /Volumes/Extend/work/llm-lab
 ignore: .codebundleignore
-generated: 2026-03-14T11:07:41.656Z
+generated: 2026-03-14T17:39:48.736Z
 
 
 
@@ -16,6 +16,129 @@ VLLM_PORT=8000
 DEFAULT_BASE_MODEL=Qwen/Qwen2.5-7B-Instruct
 MAX_JSON_MB=25
 WEB_UI_ORIGIN=http://127.0.0.1:5173
+
+
+path: /.gitignore
+----------------------------------------
+/node
+/node_modules
+/build
+/dist
+/web/build
+/web/dist
+/web/node_modules
+
+
+path: /.llm-lab/datasets.json
+----------------------------------------
+[]
+
+
+path: /.llm-lab/jobs.json
+----------------------------------------
+[]
+
+
+path: /.llm-lab/loras.json
+----------------------------------------
+[]
+
+
+path: /.llm-lab/models.json
+----------------------------------------
+[]
+
+
+path: /.llm-lab/runtime.json
+----------------------------------------
+{
+  "vllm": {
+    "pid": null,
+    "model": null,
+    "startedAt": null,
+    "port": 8000,
+    "logFile": "logs/vllm.log",
+    "baseModel": "Qwen/Qwen2.5-7B-Instruct",
+    "activeModelId": null,
+    "activeModelName": null,
+    "activeLoraId": null,
+    "activeLoraName": null
+  }
+}
+
+
+path: /.llm-lab/settings.json
+----------------------------------------
+{
+  "baseModel": "Qwen/Qwen2.5-7B-Instruct",
+  "qlora": {
+    "loadIn4bit": true,
+    "maxSeqLength": 4096,
+    "perDeviceTrainBatchSize": 1,
+    "gradientAccumulationSteps": 8,
+    "learningRate": 0.0002,
+    "numTrainEpochs": 3,
+    "warmupRatio": 0.03,
+    "loraR": 16,
+    "loraAlpha": 16,
+    "loraDropout": 0,
+    "targetModules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "inference": {
+    "backend": "vllm",
+    "model": "Qwen/Qwen2.5-7B-Instruct",
+    "host": "0.0.0.0",
+    "port": 8000,
+    "gpuMemoryUtilization": 0.9,
+    "tensorParallelSize": 1,
+    "maxModelLen": 8192
+  }
+}
+
+
+path: /.vscode/c_cpp_properties.json
+----------------------------------------
+{
+  "configurations": [
+    {
+      "name": "STM32",
+      "includePath": [
+        "${workspaceFolder}/Core/Inc",
+        "${workspaceFolder}/Drivers/STM32F4xx_HAL_Driver/Inc",
+        "${workspaceFolder}/Drivers/CMSIS/Include",
+        "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
+        "${workspaceFolder}/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy"
+      ],
+      "defines": [
+        "USE_HAL_DRIVER",
+        "STM32F407xx"
+      ],
+      "compilerPath": "/Applications/STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.macos64_1.0.100.202509120712/tools/bin/arm-none-eabi-gcc",
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "gcc-arm",
+      "browse": {
+        "path": [
+          "${workspaceFolder}/Core/Inc",
+          "${workspaceFolder}/Drivers/STM32F4xx_HAL_Driver/Inc",
+          "${workspaceFolder}/Drivers/CMSIS/Include",
+          "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
+          "${workspaceFolder}/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    }
+  ],
+  "version": 4
+}
 
 
 path: /bundle-code.js
@@ -278,6 +401,37 @@ bundle().catch(err => {
 });
 
 
+path: /ISSUES_REPORT.md
+----------------------------------------
+# ISSUES REPORT
+
+## Architectural Problems & Bugs
+
+### 1. Dataset Preview Memory Exhaustion (High Priority)
+**Problem:** `previewDataset` in `src/services/datasets.js` uses `fsp.readFile` to load the entire processed dataset into memory before slicing it.
+**Consequence:** For large datasets (e.g., several GBs), the backend will crash with an Out-Of-Memory (OOM) error when a user attempts to preview the dataset.
+
+### 2. Race Conditions in State Recovery (Medium Priority)
+**Problem:** `recoverState` in `src/services/state.js` updates multiple state files (jobs, runtime, LoRAs) without using the `withLock` mechanism.
+**Consequence:** If the server restarts and multiple recovery operations or new requests happen simultaneously, the state files could become corrupted or lose data due to concurrent read-modify-write cycles.
+
+### 3. CPU-Forced LoRA Merging (Medium Priority)
+**Problem:** `buildMergedLora` in `src/services/loras.js` hardcodes `device_map="cpu"` in the Python merging script.
+**Consequence:** LoRA merging is extremely slow as it doesn't utilize available GPU acceleration, even if CUDA is present.
+
+### 4. Lack of Streaming Support in Chat API (Medium Priority)
+**Problem:** The `/chat` endpoint in `src/routes/runtime.js` and the frontend Playground only support blocking requests.
+**Consequence:** Poor UX in the Playground; users must wait for the entire response to be generated before seeing any text, which can take a long time for LLMs.
+
+### 5. Inconsistent Process Management (Low Priority)
+**Problem:** While `killProcessGroup` is defined, its usage across `runtime.js` and `jobs.js` could be more robust, and some state updates during failure are not atomic.
+**Consequence:** Potential for orphaned processes if the application crashes or fails to stop a process correctly.
+
+## UX Improvements
+- **Playground Streaming:** Implementing real-time text generation in the UI.
+- **Error Visibility:** Better display of backend errors in the UI instead of silent failures or generic messages.
+
+
 path: /package.json
 ----------------------------------------
 {
@@ -297,7 +451,8 @@ path: /package.json
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "systeminformation": "^5.31.4"
   },
   "devDependencies": {
     "concurrently": "^9.0.1"
@@ -365,15 +520,22 @@ const CONFIG = {
 };
 
 CONFIG.stateDir = path.join(CONFIG.workspace, '.llm-lab');
+CONFIG.modelsDir = path.join(CONFIG.workspace, 'models', 'base');
 CONFIG.datasetsDir = path.join(CONFIG.workspace, 'data', 'processed');
 CONFIG.rawDatasetsDir = path.join(CONFIG.workspace, 'data', 'raw');
 CONFIG.trainingConfigsDir = path.join(CONFIG.workspace, 'training', 'configs');
 CONFIG.trainingOutputsDir = path.join(CONFIG.workspace, 'training', 'outputs');
+CONFIG.mergedModelsDir = path.join(CONFIG.workspace, 'exports', 'merged');
+CONFIG.packagesDir = path.join(CONFIG.workspace, 'exports', 'packages');
 CONFIG.logsDir = path.join(CONFIG.workspace, 'logs');
+
 CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json');
 CONFIG.settingsFile = path.join(CONFIG.stateDir, 'settings.json');
 CONFIG.datasetsFile = path.join(CONFIG.stateDir, 'datasets.json');
 CONFIG.runtimeFile = path.join(CONFIG.stateDir, 'runtime.json');
+CONFIG.modelsFile = path.join(CONFIG.stateDir, 'models.json');
+CONFIG.lorasFile = path.join(CONFIG.stateDir, 'loras.json');
+
 CONFIG.vllmPidFile = path.join(CONFIG.logsDir, 'vllm.pid');
 CONFIG.vllmLogFile = path.join(CONFIG.logsDir, 'vllm.log');
 CONFIG.pythonBin = path.join(CONFIG.mlEnv, 'bin', 'python');
@@ -524,8 +686,13 @@ router.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders?.();
+
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+
   res.write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`);
+
   addClient(res);
 });
 
@@ -603,12 +770,391 @@ router.post('/:id/stop', async (req, res) => {
 module.exports = router;
 
 
+path: /src/routes/logs.js
+----------------------------------------
+const express = require('express');
+const fs = require('fs');
+const readline = require('readline');
+const { LOG_FILE } = require('../utils/logger');
+
+const router = express.Router();
+
+router.get('/', async (req, res) => {
+  const { level, q, limit = 500 } = req.query;
+
+  if (!fs.existsSync(LOG_FILE)) {
+    return res.json([]);
+  }
+
+  const fileStream = fs.createReadStream(LOG_FILE);
+  const rl = readline.createInterface({
+    input: fileStream,
+    crlfDelay: Infinity,
+  });
+
+  const results = [];
+
+  // We read the whole file to filter, but in a production app we'd use a better storage
+  // For now, streaming it line by line to keep memory low
+  for await (const line of rl) {
+    try {
+      const entry = JSON.parse(line);
+
+      if (level && entry.level !== level) continue;
+      if (q && !JSON.stringify(entry).toLowerCase().includes(q.toLowerCase())) continue;
+
+      results.push(entry);
+    } catch (e) {
+      // skip invalid lines
+    }
+  }
+
+  // Return last N logs
+  res.json(results.reverse().slice(0, Number(limit)));
+});
+
+module.exports = router;
+
+
+path: /src/routes/loras.js
+----------------------------------------
+const express = require('express');
+const fs = require('fs');
+const { getSettings, getLoras, getLoraById, renameLora, removeLora, getModelById } = require('../services/state');
+const { registerLoraFromJob, ensureMergedLora, packageMergedLora } = require('../services/loras');
+const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
+const { emitEvent } = require('../services/events');
+const { CONFIG } = require('../config');
+
+const router = express.Router();
+
+router.get('/', async (_req, res) => {
+  res.json(await getLoras());
+});
+
+router.get('/:id', async (req, res) => {
+  const item = await getLoraById(req.params.id);
+  if (!item) return res.status(404).json({ error: 'lora not found' });
+  res.json(item);
+});
+
+router.post('/from-job', async (req, res) => {
+  try {
+    const { jobId, name } = req.body || {};
+    res.json(await registerLoraFromJob(jobId, name));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.put('/:id', async (req, res) => {
+  try {
+    const { name } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    const item = await renameLora(req.params.id, String(name).trim());
+    emitEvent('lora_updated', item);
+    res.json(item);
+  } catch (err) {
+    const message = String(err.message || err);
+    res.status(message.includes('not found') ? 404 : 500).json({ error: message });
+  }
+});
+
+router.post('/:id/build-merged', async (req, res) => {
+  try {
+    res.json(await ensureMergedLora(req.params.id));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/package', async (req, res) => {
+  try {
+    const item = await packageMergedLora(req.params.id);
+    res.json({
+      ok: true,
+      lora: item,
+      downloadPath: `/loras/${item.id}/package/download`,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/package/download', async (req, res) => {
+  const item = await getLoraById(req.params.id);
+  if (!item || !item.packagePath || !fs.existsSync(item.packagePath)) {
+    return res.status(404).json({ error: 'package not found' });
+  }
+  res.download(item.packagePath);
+});
+
+router.post('/:id/activate', async (req, res) => {
+  try {
+    const item = await ensureMergedLora(req.params.id);
+    const settings = await getSettings();
+    const inf = { ...settings.inference, ...(req.body || {}) };
+
+    await stopVllmRuntime();
+
+    let baseModelName = item.baseModelName;
+    if (item.baseModelId) {
+      const model = await getModelById(item.baseModelId);
+      if (model) baseModelName = model.name;
+    }
+
+    const runtime = await startVllmRuntime({
+      model: item.mergedPath,
+      port: Number(inf.port || CONFIG.vllmPort),
+      maxModelLen: Number(inf.maxModelLen || 2048),
+      gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
+      tensorParallelSize: Number(inf.tensorParallelSize || 1),
+      baseModel: baseModelName,
+      activeModelId: item.baseModelId || null,
+      activeModelName: baseModelName || null,
+      activeLoraId: item.id,
+      activeLoraName: item.name,
+    });
+
+    emitEvent('lora_activated', {
+      loraId: item.id,
+      loraName: item.name,
+      runtime,
+    });
+
+    res.json({
+      ok: true,
+      lora: item,
+      runtime,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/deactivate', async (_req, res) => {
+  try {
+    const settings = await getSettings();
+    const inf = settings.inference || {};
+
+    await stopVllmRuntime();
+    const runtime = await startVllmRuntime({
+      model: inf.model || settings.baseModel,
+      port: Number(inf.port || CONFIG.vllmPort),
+      maxModelLen: Number(inf.maxModelLen || 2048),
+      gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
+      tensorParallelSize: Number(inf.tensorParallelSize || 1),
+      baseModel: settings.baseModel,
+      activeModelId: null,
+      activeModelName: null,
+      activeLoraId: null,
+      activeLoraName: null,
+    });
+
+    emitEvent('lora_deactivated', runtime);
+    res.json({ ok: true, runtime });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  try {
+    await removeLora(req.params.id);
+    emitEvent('lora_deleted', { id: req.params.id });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
+
+
+path: /src/routes/models.js
+----------------------------------------
+const express = require('express');
+const { getModels, getModelById, getSettings } = require('../services/state');
+const { downloadModel, deleteModel, getModelLogs } = require('../services/models');
+const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
+const { CONFIG } = require('../config');
+
+const router = express.Router();
+
+router.get('/', async (_req, res) => {
+  res.json(await getModels());
+});
+
+router.get('/:id', async (req, res) => {
+  const item = await getModelById(req.params.id);
+  if (!item) return res.status(404).json({ error: 'model not found' });
+  res.json(item);
+});
+
+router.get('/:id/logs', async (req, res) => {
+  try {
+    const tail = Math.max(20, Math.min(2000, Number(req.query.tail || 200)));
+    res.json(await getModelLogs(req.params.id, tail));
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/download', async (req, res) => {
+  try {
+    const { repoId, name } = req.body || {};
+    res.json(await downloadModel({ repoId, name }));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/activate', async (req, res) => {
+  try {
+    const item = await getModelById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'model not found' });
+    if (item.status !== 'ready') return res.status(400).json({ error: 'model is not ready' });
+
+    const settings = await getSettings();
+    const inf = { ...settings.inference, ...(req.body || {}) };
+
+    await stopVllmRuntime();
+
+    const runtime = await startVllmRuntime({
+      model: item.path,
+      port: Number(inf.port || CONFIG.vllmPort),
+      maxModelLen: Number(inf.maxModelLen || 2048),
+      gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
+      tensorParallelSize: Number(inf.tensorParallelSize || 1),
+      baseModel: item.name,
+      activeModelId: item.id,
+      activeModelName: item.name,
+      activeLoraId: null,
+      activeLoraName: null,
+    });
+
+    res.json({ ok: true, model: item, runtime });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  try {
+    res.json(await deleteModel(req.params.id));
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
+
+
+path: /src/routes/monitor.js
+----------------------------------------
+const express = require('express');
+const si = require('systeminformation');
+const { clearGpuMemory } = require('../utils/gpu');
+
+const router = express.Router();
+
+router.get('/stats', async (req, res) => {
+  try {
+    const [cpu, mem, gpus, disks, fsSize, network, processes] = await Promise.all([
+      si.currentLoad(),
+      si.mem(),
+      si.graphics(),
+      si.diskLayout(),
+      si.fsSize(),
+      si.networkStats(),
+      si.processes(),
+    ]);
+
+    // Filter processes that might be using GPU (heuristic if nvidia-smi not available)
+    // In a real environment with NVIDIA GPUs, we'd use si.getDynamicData or parse nvidia-smi
+    const gpuProcesses = processes.list
+      .filter(p => p.name.toLowerCase().includes('python') || p.name.toLowerCase().includes('vllm') || p.name.toLowerCase().includes('torch'))
+      .map(p => ({
+        pid: p.pid,
+        name: p.name,
+        cpu: p.cpu,
+        mem: p.mem,
+        user: p.user,
+        command: p.command,
+      }));
+
+    res.json({
+      cpu: {
+        load: cpu.currentLoad,
+        cores: cpu.cpus.map(c => c.load),
+      },
+      memory: {
+        total: mem.total,
+        used: mem.used,
+        free: mem.free,
+        active: mem.active,
+        swaptotal: mem.swaptotal,
+        swapused: mem.swapused,
+      },
+      gpus: gpus.controllers.map(g => ({
+        model: g.model,
+        vendor: g.vendor,
+        vram: g.vram,
+        vramUsed: g.vramUsed,
+        utilizationGpu: g.utilizationGpu,
+        temperatureGpu: g.temperatureGpu,
+      })),
+      disks: fsSize.map(f => ({
+        fs: f.fs,
+        type: f.type,
+        size: f.size,
+        used: f.used,
+        available: f.available,
+        use: f.use,
+        mount: f.mount,
+      })),
+      network: network.map(n => ({
+        iface: n.iface,
+        operstate: n.operstate,
+        rx_sec: n.rx_sec,
+        tx_sec: n.tx_sec,
+      })),
+      gpuProcesses,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/kill', async (req, res) => {
+  try {
+    const { pid } = req.body;
+    if (!pid) return res.status(400).json({ error: 'PID is required' });
+    process.kill(pid, 'SIGKILL');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/clear-gpu', async (req, res) => {
+  try {
+    const killedCount = await clearGpuMemory();
+    res.json({ ok: true, killedCount });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
+
+
 path: /src/routes/runtime.js
 ----------------------------------------
-// src/routes/runtime.js
-
 const express = require('express');
-const { getSettings, getRuntime, getJobs } = require('../services/state');
+const { getSettings, getRuntime, getJobs, getModelById } = require('../services/state');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { CONFIG } = require('../config');
 
@@ -647,6 +1193,11 @@ router.post('/vllm/start', async (req, res) => {
       maxModelLen: inf.maxModelLen,
       gpuMemoryUtilization: inf.gpuMemoryUtilization,
       tensorParallelSize: inf.tensorParallelSize,
+      baseModel: inf.model,
+      activeModelId: null,
+      activeModelName: inf.model,
+      activeLoraId: null,
+      activeLoraName: null,
     });
 
     res.json({ ok: true, runtime });
@@ -678,12 +1229,23 @@ router.post('/use-job-output', async (req, res) => {
     const settings = await getSettings();
     const inf = settings.inference || {};
 
+    let modelName = job.baseModel;
+    if (job.modelId) {
+      const model = await getModelById(job.modelId);
+      if (model) modelName = model.name;
+    }
+
     const runtime = await startVllmRuntime({
       model: job.outputDir,
       port: Number(port || inf.port || CONFIG.vllmPort),
       maxModelLen: Number(maxModelLen || inf.maxModelLen || 2048),
       gpuMemoryUtilization: Number(gpuMemoryUtilization || inf.gpuMemoryUtilization || 0.85),
       tensorParallelSize: Number(tensorParallelSize || inf.tensorParallelSize || 1),
+      baseModel: modelName,
+      activeModelId: job.modelId || null,
+      activeModelName: modelName,
+      activeLoraId: null,
+      activeLoraName: null,
     });
 
     res.json({
@@ -692,15 +1254,21 @@ router.post('/use-job-output', async (req, res) => {
       job,
     });
   } catch (err) {
-    res.status(500).json({ error: String(err.message || err) });
+    const errorMsg = String(err.message || err);
+    const logger = require('../utils/logger');
+    logger.error(`Failed to use job output in runtime`, { error: errorMsg });
+    res.status(500).json({ error: errorMsg });
   }
 });
 
 router.post('/chat', async (req, res) => {
   try {
     const settings = await getSettings();
-    const model = req.body?.model || settings.inference.model;
+    const runtime = await getRuntime();
+    // Use model from request, or currently loaded model in runtime, or fallback to settings
+    const model = req.body?.model || runtime.vllm?.model || settings.inference.model;
     const messages = req.body?.messages;
+    const stream = !!req.body?.stream;
 
     if (!Array.isArray(messages) || !messages.length) {
       return res.status(400).json({ error: 'messages are required' });
@@ -714,19 +1282,34 @@ router.post('/chat', async (req, res) => {
         messages,
         temperature: req.body?.temperature ?? 0.7,
         max_tokens: req.body?.max_tokens ?? 512,
+        stream,
       }),
     });
 
-    const text = await response.text();
-
     if (!response.ok) {
+      const text = await response.text();
       return res.status(500).json({ error: text || 'inference failed' });
     }
 
-    try {
-      return res.json(JSON.parse(text));
-    } catch {
-      return res.status(500).json({ error: 'invalid inference response', raw: text });
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      return res.end();
+    } else {
+      const text = await response.text();
+      try {
+        return res.json(JSON.parse(text));
+      } catch {
+        return res.status(500).json({ error: 'invalid inference response', raw: text });
+      }
     }
   } catch (err) {
     return res.status(500).json({ error: String(err.message || err) });
@@ -768,7 +1351,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { CONFIG } = require('./config');
-const { ensureWorkspace } = require('./services/state');
+const { ensureWorkspace, recoverState } = require('./services/state');
 
 const healthRoute = require('./routes/health');
 const settingsRoute = require('./routes/settings');
@@ -777,15 +1360,28 @@ const jobsRoute = require('./routes/jobs');
 const runtimeRoute = require('./routes/runtime');
 const dashboardRoute = require('./routes/dashboard');
 const eventsRoute = require('./routes/events');
+const modelsRoute = require('./routes/models');
+const lorasRoute = require('./routes/loras');
+const logsRoute = require('./routes/logs');
+const monitorRoute = require('./routes/monitor');
 
 async function main() {
-  await ensureWorkspace();
+  try {
+    console.log('Initializing workspace...');
+    await ensureWorkspace();
+    console.log('Recovering state...');
+    await recoverState();
+    console.log('Starting Express app...');
+  } catch (err) {
+    console.error('Critical failure during initialization:');
+    console.error(err);
+    process.exit(1);
+  }
 
   const app = express();
-  app.use(cors());
+  app.use(cors({ origin: true, credentials: false }));
   app.use(express.json({ limit: `${CONFIG.maxJsonMb}mb` }));
 
-  // API
   app.use('/health', healthRoute);
   app.use('/settings', settingsRoute);
   app.use('/datasets', datasetsRoute);
@@ -793,28 +1389,35 @@ async function main() {
   app.use('/runtime', runtimeRoute);
   app.use('/dashboard', dashboardRoute);
   app.use('/events', eventsRoute);
+  app.use('/models', modelsRoute);
+  app.use('/loras', lorasRoute);
+  app.use('/logs', logsRoute);
+  app.use('/monitor', monitorRoute);
 
-  // Frontend static
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
   if (fs.existsSync(webDist)) {
-app.use(express.static(webDist));
+    app.use(express.static(webDist));
 
-app.get('*', (req, res, next) => {
-  if (
-    req.path.startsWith('/health') ||
-    req.path.startsWith('/settings') ||
-    req.path.startsWith('/datasets') ||
-    req.path.startsWith('/jobs') ||
-    req.path.startsWith('/runtime') ||
-    req.path.startsWith('/dashboard') ||
-    req.path.startsWith('/events')
-  ) {
-    return next();
-  }
+    app.get('*', (req, res, next) => {
+      if (
+        req.path.startsWith('/health') ||
+        req.path.startsWith('/settings') ||
+        req.path.startsWith('/datasets') ||
+        req.path.startsWith('/jobs') ||
+        req.path.startsWith('/runtime') ||
+        req.path.startsWith('/dashboard') ||
+        req.path.startsWith('/events') ||
+        req.path.startsWith('/models') ||
+        req.path.startsWith('/loras') ||
+        req.path.startsWith('/logs') ||
+        req.path.startsWith('/monitor')
+      ) {
+        return next();
+      }
 
-  res.sendFile(path.join(webDist, 'index.html'));
-});
+      res.sendFile(path.join(webDist, 'index.html'));
+    });
   } else {
     app.get('/', (_req, res) => {
       res.json({
@@ -824,10 +1427,19 @@ app.get('*', (req, res, next) => {
     });
   }
 
-  app.listen(CONFIG.port, CONFIG.host, () => {
+  const server = app.listen(CONFIG.port, CONFIG.host, () => {
     console.log(`LLM Lab Service listening on http://${CONFIG.host}:${CONFIG.port}`);
     console.log(`Workspace: ${CONFIG.workspace}`);
     console.log(`Python: ${CONFIG.pythonBin}`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${CONFIG.port} is already in use.`);
+    } else {
+      console.error('Server error:', err);
+    }
+    process.exit(1);
   });
 }
 
@@ -841,11 +1453,14 @@ path: /src/services/datasets.js
 ----------------------------------------
 // src/services/datasets.js
 
+const fs = require('fs');
 const fsp = require('fs/promises');
+const readline = require('readline');
 const path = require('path');
 const { CONFIG } = require('../config');
 const { uid, nowIso } = require('../utils/ids');
 const { addDataset, getDatasets, saveDatasets } = require('./state');
+const logger = require('../utils/logger');
 
 function normalizeConversationRecord(item) {
   if (Array.isArray(item.messages)) {
@@ -1003,6 +1618,7 @@ async function createDatasetFromJsonl(name, jsonl) {
     invalidRows: parsed.invalidCount,
   };
 
+  logger.info(`Dataset created from JSONL: ${name}`, { datasetId, rows: meta.rows });
   return addDataset(meta);
 }
 
@@ -1037,14 +1653,31 @@ async function previewDataset(datasetId, limit = 20) {
   const ds = datasets.find((x) => x.id === datasetId);
   if (!ds) throw new Error('dataset not found');
 
-  const raw = await fsp.readFile(ds.processedPath, 'utf8');
-  const lines = raw.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, limit);
+  const fileStream = fs.createReadStream(ds.processedPath);
+  const rl = readline.createInterface({
+    input: fileStream,
+    crlfDelay: Infinity,
+  });
+
+  const preview = [];
+  try {
+    for await (const line of rl) {
+      if (preview.length >= limit) break;
+      const trimmed = line.trim();
+      if (trimmed) {
+        preview.push(JSON.parse(trimmed));
+      }
+    }
+  } finally {
+    rl.close();
+    fileStream.destroy();
+  }
 
   return {
     id: ds.id,
     name: ds.name,
     totalRows: ds.rows,
-    preview: lines.map((line) => JSON.parse(line)),
+    preview,
   };
 }
 
@@ -1063,6 +1696,7 @@ async function deleteDataset(datasetId) {
   const next = datasets.filter((x) => x.id !== datasetId);
   await saveDatasets(next);
 
+  logger.info(`Dataset deleted: ${ds.name}`, { datasetId });
   return { ok: true };
 }
 
@@ -1108,15 +1742,40 @@ path: /src/services/events.js
 ----------------------------------------
 const clients = new Set();
 
+let heartbeatInterval = null;
+
+function startHeartbeat() {
+  if (heartbeatInterval) return;
+  heartbeatInterval = setInterval(() => {
+    if (clients.size === 0) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+      return;
+    }
+    emitEvent('heartbeat', { alive: true });
+  }, 30000);
+}
+
 function addClient(res) {
   clients.add(res);
+  startHeartbeat();
+
   res.on('close', () => {
+    clients.delete(res);
+  });
+
+  res.on('error', () => {
     clients.delete(res);
   });
 }
 
 function emitEvent(type, payload = {}) {
-  const chunk = `event: ${type}\ndata: ${JSON.stringify({ type, payload, time: new Date().toISOString() })}\n\n`;
+  const chunk = `event: ${type}\ndata: ${JSON.stringify({
+    type,
+    payload,
+    time: new Date().toISOString(),
+  })}\n\n`;
+
   for (const client of clients) {
     try {
       client.write(chunk);
@@ -1139,10 +1798,13 @@ const { spawn } = require('child_process');
 const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso, uid } = require('../utils/ids');
-const { isPidRunning } = require('../utils/proc');
-const { getSettings, getDatasets, getJobs, upsertJob } = require('./state');
+const { isPidRunning, killProcessGroup } = require('../utils/proc');
+const { getSettings, getDatasets, getJobs, upsertJob, getModelById } = require('./state');
 const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
+const { registerLoraFromJob } = require('./loras');
+const logger = require('../utils/logger');
+const { clearGpuMemory } = require('../utils/gpu');
 
 function buildTrainPython(job, settings) {
   const cfg = {
@@ -1171,7 +1833,11 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=cfg["baseModel"],
     max_seq_length=cfg["qlora"]["maxSeqLength"],
     load_in_4bit=cfg["qlora"]["loadIn4bit"],
+    trust_remote_code=True,
 )
+
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
 
 model = FastLanguageModel.get_peft_model(
     model,
@@ -1182,6 +1848,9 @@ model = FastLanguageModel.get_peft_model(
     bias="none",
     use_gradient_checkpointing="unsloth",
 )
+
+if torch.cuda.is_available():
+    model = model.to("cuda")
 
 dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
 
@@ -1214,9 +1883,13 @@ args = TrainingArguments(
     warmup_ratio=cfg["qlora"]["warmupRatio"],
     logging_steps=1,
     save_strategy="epoch",
+    save_safetensors=True,
     bf16=use_bf16,
     fp16=not use_bf16,
     report_to=[],
+    remove_unused_columns=False,
+    group_by_length=False,
+    optim="adamw_8bit",
 )
 
 trainer = SFTTrainer(
@@ -1225,6 +1898,8 @@ trainer = SFTTrainer(
     train_dataset=dataset,
     args=args,
     dataset_text_field="text",
+    packing=False,
+    dataset_num_proc=1,
 )
 
 trainer.train()
@@ -1240,11 +1915,44 @@ print(json.dumps({
 `.trim();
 }
 
-async function startFineTuneJob({ datasetId, name, baseModel, qlora }) {
+function validateQLoraParams(params) {
+  if (params.learningRate !== undefined && (typeof params.learningRate !== 'number' || params.learningRate <= 0)) {
+    throw new Error('learningRate must be a positive number');
+  }
+  if (params.numTrainEpochs !== undefined && (!Number.isInteger(params.numTrainEpochs) || params.numTrainEpochs < 1)) {
+    throw new Error('numTrainEpochs must be an integer >= 1');
+  }
+  if (params.perDeviceTrainBatchSize !== undefined && (!Number.isInteger(params.perDeviceTrainBatchSize) || params.perDeviceTrainBatchSize < 1)) {
+    throw new Error('perDeviceTrainBatchSize must be an integer >= 1');
+  }
+  if (params.gradientAccumulationSteps !== undefined && (!Number.isInteger(params.gradientAccumulationSteps) || params.gradientAccumulationSteps < 1)) {
+    throw new Error('gradientAccumulationSteps must be an integer >= 1');
+  }
+  if (params.maxSeqLength !== undefined && (!Number.isInteger(params.maxSeqLength) || params.maxSeqLength < 1)) {
+    throw new Error('maxSeqLength must be an integer >= 1');
+  }
+}
+
+async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
+  if (qlora) validateQLoraParams(qlora);
+
+  // Auto-cleanup GPU before starting new training
+  await clearGpuMemory();
+
   const settings = await getSettings();
   const datasets = await getDatasets();
   const ds = datasets.find((x) => x.id === datasetId);
   if (!ds) throw new Error('dataset not found');
+
+  let selectedBaseModel = baseModel || settings.baseModel;
+  let selectedModelId = modelId || null;
+
+  if (modelId) {
+    const model = await getModelById(modelId);
+    if (!model) throw new Error('model not found');
+    if (model.status !== 'ready') throw new Error('model is not ready');
+    selectedBaseModel = model.path;
+  }
 
   const jobId = uid('job');
   const outputDir = path.join(CONFIG.trainingOutputsDir, jobId);
@@ -1260,7 +1968,8 @@ async function startFineTuneJob({ datasetId, name, baseModel, qlora }) {
     finishedAt: null,
     datasetId,
     datasetPath: ds.processedPath,
-    baseModel: baseModel || settings.baseModel,
+    modelId: selectedModelId,
+    baseModel: selectedBaseModel,
     qlora: qlora || {},
     outputDir,
     logFile,
@@ -1270,6 +1979,7 @@ async function startFineTuneJob({ datasetId, name, baseModel, qlora }) {
 
   await upsertJob(job);
   emitEvent('job_updated', job);
+  logger.info(`Starting fine-tune job: ${job.name}`, { jobId, datasetId, baseModel });
 
   fs.mkdirSync(outputDir, { recursive: true });
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
@@ -1307,6 +2017,22 @@ async function startFineTuneJob({ datasetId, name, baseModel, qlora }) {
     });
 
     emitEvent('job_updated', next);
+    if (code === 0) {
+      logger.info(`Job completed: ${jobId}`);
+    } else {
+      logger.error(`Job failed: ${jobId}`, { code, error: next.error });
+    }
+
+    if (code === 0) {
+      try {
+        await registerLoraFromJob(jobId);
+      } catch (err) {
+        emitEvent('lora_register_failed', {
+          jobId,
+          error: String(err.message || err),
+        });
+      }
+    }
   });
 
   child.on('error', async (err) => {
@@ -1331,9 +2057,15 @@ async function stopJob(jobId) {
   const jobs = await getJobs();
   const job = jobs.find((j) => j.id === jobId);
   if (!job) throw new Error('job not found');
-  if (!job.pid || !isPidRunning(job.pid)) throw new Error('job is not running');
+  if (!job.pid || !isPidRunning(job.pid)) {
+    // If state says running but PID is not, update state
+    if (job.status === 'running') {
+      await upsertJob({ ...job, status: 'failed', finishedAt: nowIso(), error: 'Process not found' });
+    }
+    throw new Error('job is not running');
+  }
 
-  require('child_process').spawnSync('bash', ['-lc', `kill ${job.pid}`]);
+  await killProcessGroup(job.pid);
 
   const next = await upsertJob({
     ...job,
@@ -1372,6 +2104,396 @@ module.exports = {
 };
 
 
+path: /src/services/loras.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
+const { CONFIG } = require('../config');
+const { uid, nowIso } = require('../utils/ids');
+const {
+  getJobs,
+  getLoraByJobId,
+  addLora,
+  getLoraById,
+  getModelById,
+  upsertLora,
+} = require('./state');
+const { isPidRunning } = require('../utils/proc');
+const { emitEvent } = require('./events');
+const logger = require('../utils/logger');
+
+async function registerLoraFromJob(jobId, customName = null) {
+  const existing = await getLoraByJobId(jobId);
+  if (existing) return existing;
+
+  const jobs = await getJobs();
+  const job = jobs.find((x) => x.id === jobId);
+  if (!job) throw new Error('job not found');
+  if (job.status !== 'completed') throw new Error('job is not completed');
+
+  let baseModelName = job.baseModel;
+  let baseModelId = job.modelId || null;
+
+  if (baseModelId) {
+    const model = await getModelById(baseModelId);
+    if (model) baseModelName = model.name;
+  }
+
+  const item = await addLora({
+    id: uid('lora'),
+    name: (customName || job.name || job.id).trim(),
+    jobId: job.id,
+    baseModelId,
+    baseModelName,
+    baseModelRef: job.baseModel,
+    adapterPath: job.outputDir,
+    mergedPath: null,
+    packagePath: null,
+    createdAt: nowIso(),
+    status: 'ready',
+    mergeStatus: 'not_built',
+    packageStatus: 'not_built',
+    error: null,
+  });
+
+  emitEvent('lora_created', item);
+  logger.info(`LoRA registered from job: ${item.name}`, { loraId: item.id, jobId });
+  return item;
+}
+
+async function buildMergedLora(loraId) {
+  const item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+  if (item.mergeStatus === 'building' && item.mergePid && isPidRunning(item.mergePid)) {
+    return item;
+  }
+
+  const mergedPath = path.join(CONFIG.mergedModelsDir, `${item.id}-merged`);
+  fs.mkdirSync(CONFIG.mergedModelsDir, { recursive: true });
+
+  const next0 = await upsertLora({
+    ...item,
+    mergeStatus: 'building',
+    mergedPath,
+    mergePid: null,
+    error: null,
+  });
+  emitEvent('lora_updated', next0);
+
+  const py = `
+import os
+import sys
+from peft import AutoPeftModelForCausalLM
+from transformers import AutoTokenizer
+
+adapter_path = ${JSON.stringify(item.adapterPath)}
+output_dir = ${JSON.stringify(mergedPath)}
+
+try:
+    os.makedirs(output_dir, exist_ok=True)
+
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = AutoPeftModelForCausalLM.from_pretrained(
+        adapter_path,
+        torch_dtype="auto",
+        device_map=device,
+    )
+
+    merged = model.merge_and_unload()
+    merged.save_pretrained(output_dir, safe_serialization=True)
+
+    tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+    tokenizer.save_pretrained(output_dir)
+    print(output_dir)
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+`.trim();
+
+  const child = require('child_process').spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+    cwd: CONFIG.workspace,
+    detached: true,
+    stdio: 'pipe',
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+
+  const building = await upsertLora({
+    ...next0,
+    mergePid: child.pid,
+  });
+  emitEvent('lora_updated', building);
+
+  let stderr = '';
+  child.stderr.on('data', (data) => {
+    stderr += data.toString();
+  });
+
+  child.on('exit', async (code) => {
+    const current = await getLoraById(loraId);
+    const next = await upsertLora({
+      ...current,
+      mergeStatus: code === 0 ? 'ready' : 'failed',
+      mergePid: null,
+      mergedPath: code === 0 ? mergedPath : current.mergedPath,
+      error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
+    });
+    emitEvent('lora_updated', next);
+    if (code === 0) {
+      logger.info(`LoRA merge completed: ${loraId}`, { mergedPath });
+    } else {
+      logger.error(`LoRA merge failed: ${loraId}`, { error: next.error });
+    }
+  });
+
+  return building;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureMergedLora(loraId) {
+  let item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+
+  if (item.mergeStatus === 'ready' && item.mergedPath && fs.existsSync(item.mergedPath)) {
+    return item;
+  }
+
+  if (item.mergeStatus !== 'building' || !item.mergePid || !isPidRunning(item.mergePid)) {
+    await buildMergedLora(loraId);
+  }
+
+  // Wait for it to complete
+  while (true) {
+    await sleep(2000);
+    item = await getLoraById(loraId);
+    if (item.mergeStatus !== 'building') break;
+  }
+
+  if (item.mergeStatus === 'ready') return item;
+  throw new Error(item.error || 'LoRA merge failed');
+}
+
+async function packageMergedLora(loraId) {
+  let item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+
+  if (item.mergeStatus !== 'ready') {
+    item = await ensureMergedLora(loraId);
+  }
+
+  if (item.packageStatus === 'building' && item.packagePid && isPidRunning(item.packagePid)) {
+    return item;
+  }
+
+  const archivePath = path.join(CONFIG.packagesDir, `${item.id}.tar.gz`);
+  fs.mkdirSync(CONFIG.packagesDir, { recursive: true });
+
+  const next0 = await upsertLora({
+    ...item,
+    packageStatus: 'building',
+    packagePath: archivePath,
+    packagePid: null,
+    error: null,
+  });
+  emitEvent('lora_updated', next0);
+
+  const child = require('child_process').spawn(
+    'tar',
+    [
+      '-czf',
+      archivePath,
+      '-C',
+      path.dirname(item.mergedPath),
+      path.basename(item.mergedPath),
+    ],
+    {
+      cwd: CONFIG.workspace,
+      stdio: 'pipe',
+    },
+  );
+
+  const building = await upsertLora({
+    ...next0,
+    packagePid: child.pid,
+  });
+  emitEvent('lora_updated', building);
+
+  let stderr = '';
+  child.stderr.on('data', (data) => {
+    stderr += data.toString();
+  });
+
+  child.on('exit', async (code) => {
+    const current = await getLoraById(loraId);
+    const next = await upsertLora({
+      ...current,
+      packageStatus: code === 0 ? 'ready' : 'failed',
+      packagePid: null,
+      packagePath: code === 0 ? archivePath : current.packagePath,
+      error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
+    });
+    emitEvent('lora_updated', next);
+  });
+
+  return building;
+}
+
+module.exports = {
+  registerLoraFromJob,
+  buildMergedLora,
+  ensureMergedLora,
+  packageMergedLora,
+};
+
+
+path: /src/services/models.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+const { CONFIG } = require('../config');
+const { uid, nowIso } = require('../utils/ids');
+const { addModel, getModels, getModelById, removeModel, upsertModel } = require('./state');
+const { emitEvent } = require('./events');
+const { readText } = require('../utils/fs');
+const logger = require('../utils/logger');
+
+function safeSlug(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+async function downloadModel({ repoId, name }) {
+  if (!repoId) throw new Error('repoId is required');
+
+  const existing = (await getModels()).find((x) => x.repoId === repoId && x.status !== 'deleted');
+  if (existing) return existing;
+
+  const modelId = uid('model');
+  const slug = safeSlug(name || repoId.split('/').pop() || modelId);
+  const modelPath = path.join(CONFIG.modelsDir, `${slug}-${modelId}`);
+  const logFile = path.join(CONFIG.logsDir, `${modelId}.log`);
+
+  const item = await addModel({
+    id: modelId,
+    name: name || repoId.split('/').pop() || modelId,
+    repoId,
+    createdAt: nowIso(),
+    status: 'downloading',
+    path: modelPath,
+    logFile,
+    pid: null,
+    error: null,
+  });
+
+  emitEvent('model_updated', item);
+
+  fs.mkdirSync(CONFIG.modelsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+
+  const py = `
+import os
+from huggingface_hub import snapshot_download
+
+repo_id = ${JSON.stringify(repoId)}
+local_dir = ${JSON.stringify(modelPath)}
+os.makedirs(local_dir, exist_ok=True)
+
+snapshot_download(
+    repo_id=repo_id,
+    local_dir=local_dir,
+    local_dir_use_symlinks=False,
+    resume_download=True,
+)
+print(local_dir)
+`.trim();
+
+  const outFd = fs.openSync(logFile, 'a');
+  const child = spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+    cwd: CONFIG.workspace,
+    detached: true,
+    stdio: ['ignore', outFd, outFd],
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+
+  child.unref();
+
+  const running = await upsertModel({
+    ...item,
+    pid: child.pid,
+  });
+  emitEvent('model_updated', running);
+
+  child.on('exit', async (code) => {
+    const next = await upsertModel({
+      ...running,
+      status: code === 0 ? 'ready' : 'failed',
+      error: code === 0 ? null : `download exited with code ${code}`,
+      pid: null,
+    });
+    emitEvent('model_updated', next);
+    if (code === 0) {
+      logger.info(`Model downloaded successfully: ${next.name}`, { modelId: next.id });
+    } else {
+      logger.error(`Model download failed: ${next.name}`, { modelId: next.id, error: next.error });
+    }
+  });
+
+  child.on('error', async (err) => {
+    const next = await upsertModel({
+      ...running,
+      status: 'failed',
+      error: String(err.message || err),
+      pid: null,
+    });
+    emitEvent('model_updated', next);
+  });
+
+  return running;
+}
+
+async function deleteModel(modelId) {
+  const item = await getModelById(modelId);
+  if (!item) throw new Error('model not found');
+
+  if (item.path && fs.existsSync(item.path)) {
+    fs.rmSync(item.path, { recursive: true, force: true });
+  }
+
+  await removeModel(modelId);
+  emitEvent('model_deleted', { id: modelId });
+  logger.info(`Model deleted: ${item.name}`, { modelId });
+
+  return { ok: true };
+}
+
+async function getModelLogs(id, tail = 200) {
+  const item = await getModelById(id);
+  if (!item) throw new Error('model not found');
+
+  const text = await readText(item.logFile, '');
+  const lines = text.split('\n');
+  return {
+    id: item.id,
+    logFile: item.logFile,
+    content: lines.slice(-tail).join('\n'),
+  };
+}
+
+module.exports = {
+  downloadModel,
+  deleteModel,
+  getModelLogs,
+};
+
+
 path: /src/services/runtime.js
 ----------------------------------------
 const fs = require('fs');
@@ -1379,32 +2501,57 @@ const fsp = require('fs/promises');
 const { spawn } = require('child_process');
 const { CONFIG } = require('../config');
 const { nowIso } = require('../utils/ids');
-const { runText, isPidRunning } = require('../utils/proc');
-const { getRuntime, saveRuntime } = require('./state');
+const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
+const { getRuntime, saveRuntime, getSettings } = require('./state');
 const { emitEvent } = require('./events');
+const logger = require('../utils/logger');
+const { clearGpuMemory } = require('../utils/gpu');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function startVllmRuntime({ model, port, maxModelLen, gpuMemoryUtilization, tensorParallelSize }) {
+async function startVllmRuntime({
+  model,
+  port,
+  maxModelLen,
+  gpuMemoryUtilization,
+  tensorParallelSize,
+  baseModel = null,
+  activeModelId = null,
+  activeModelName = null,
+  activeLoraId = null,
+  activeLoraName = null,
+}) {
   if (!fs.existsSync(CONFIG.vllmBin)) {
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
   }
 
+  // Auto-cleanup GPU before starting new runtime
+  await clearGpuMemory();
+
   const runtime = await getRuntime();
+  // Double check if something is still running or state is stale
   if (runtime.vllm?.pid && isPidRunning(runtime.vllm.pid)) {
-    return runtime.vllm;
+    await stopVllmRuntime();
   }
 
   const args = [
-    'serve', model,
-    '--host', '0.0.0.0',
-    '--port', String(port),
-    '--gpu-memory-utilization', String(gpuMemoryUtilization),
-    '--tensor-parallel-size', String(tensorParallelSize),
-    '--max-model-len', String(maxModelLen),
+    'serve',
+    model,
+    '--host',
+    '0.0.0.0',
+    '--port',
+    String(port),
+    '--gpu-memory-utilization',
+    String(gpuMemoryUtilization),
+    '--tensor-parallel-size',
+    String(tensorParallelSize),
+    '--max-model-len',
+    String(maxModelLen),
   ];
+
+  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
 
   const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
   const child = spawn(CONFIG.vllmBin, args, {
@@ -1413,17 +2560,22 @@ async function startVllmRuntime({ model, port, maxModelLen, gpuMemoryUtilization
     stdio: ['ignore', outFd, outFd],
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
   });
+
   child.unref();
   await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
 
   for (let i = 0; i < 120; i += 1) {
     const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
     if (r.ok) break;
+
     if (!isPidRunning(child.pid)) {
       throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
     }
+
     await sleep(1000);
   }
+
+  const settings = await getSettings();
 
   const next = {
     vllm: {
@@ -1432,32 +2584,62 @@ async function startVllmRuntime({ model, port, maxModelLen, gpuMemoryUtilization
       startedAt: nowIso(),
       port,
       logFile: CONFIG.vllmLogFile,
+      baseModel: baseModel || settings.baseModel,
+      activeModelId,
+      activeModelName,
+      activeLoraId,
+      activeLoraName,
     },
   };
+
   await saveRuntime(next);
   emitEvent('runtime_started', next.vllm);
+  logger.info(`vLLM runtime started`, { pid: child.pid, model, port });
   return next.vllm;
 }
 
 async function stopVllmRuntime() {
   const runtime = await getRuntime();
   const pid = runtime.vllm?.pid;
+
   if (pid && isPidRunning(pid)) {
-    runText('bash', ['-lc', `kill ${pid}`]);
+    await killProcessGroup(pid);
     for (let i = 0; i < 20; i += 1) {
       if (!isPidRunning(pid)) break;
       await sleep(500);
     }
+    if (isPidRunning(pid)) {
+      await killProcessGroup(pid, 'SIGKILL');
+    }
   }
-  const next = { vllm: { pid: null, model: null, startedAt: null, port: CONFIG.vllmPort, logFile: CONFIG.vllmLogFile } };
+
+  const settings = await getSettings();
+
+  const next = {
+    vllm: {
+      pid: null,
+      model: null,
+      startedAt: null,
+      port: CONFIG.vllmPort,
+      logFile: CONFIG.vllmLogFile,
+      baseModel: settings.baseModel,
+      activeModelId: null,
+      activeModelName: null,
+      activeLoraId: null,
+      activeLoraName: null,
+    },
+  };
+
   await saveRuntime(next);
   emitEvent('runtime_stopped', next.vllm);
+  logger.info(`vLLM runtime stopped`);
   return next.vllm;
 }
 
 async function getRuntimeHealth(port) {
   const targetPort = port || CONFIG.vllmPort;
   const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${targetPort}/health`]);
+
   return {
     ok: r.ok,
     port: targetPort,
@@ -1476,6 +2658,31 @@ path: /src/services/state.js
 ----------------------------------------
 const { CONFIG } = require('../config');
 const { ensureDir, exists, readJson, writeJson } = require('../utils/fs');
+
+const locks = new Map();
+
+/**
+ * Ensures that the provided async function runs exclusively for the given key.
+ * This prevents race conditions during read-modify-write cycles.
+ */
+async function withLock(key, fn) {
+  const previous = locks.get(key) || Promise.resolve();
+  const next = (async () => {
+    try {
+      await previous;
+    } catch (err) {
+      // ignore errors from previous tasks in the queue
+    }
+    return await fn();
+  })();
+  locks.set(key, next);
+  next.finally(() => {
+    if (locks.get(key) === next) {
+      locks.delete(key);
+    }
+  });
+  return next;
+}
 
 const DEFAULT_SETTINGS = {
   baseModel: CONFIG.defaultBaseModel,
@@ -1503,13 +2710,31 @@ const DEFAULT_SETTINGS = {
   },
 };
 
+const DEFAULT_RUNTIME = {
+  vllm: {
+    pid: null,
+    model: null,
+    startedAt: null,
+    port: CONFIG.vllmPort,
+    logFile: CONFIG.vllmLogFile,
+    baseModel: CONFIG.defaultBaseModel,
+    activeModelId: null,
+    activeModelName: null,
+    activeLoraId: null,
+    activeLoraName: null,
+  },
+};
+
 async function ensureWorkspace() {
   for (const dir of [
     CONFIG.stateDir,
+    CONFIG.modelsDir,
     CONFIG.datasetsDir,
     CONFIG.rawDatasetsDir,
     CONFIG.trainingConfigsDir,
     CONFIG.trainingOutputsDir,
+    CONFIG.mergedModelsDir,
+    CONFIG.packagesDir,
     CONFIG.logsDir,
   ]) {
     await ensureDir(dir);
@@ -1518,11 +2743,9 @@ async function ensureWorkspace() {
   if (!exists(CONFIG.settingsFile)) await writeJson(CONFIG.settingsFile, DEFAULT_SETTINGS);
   if (!exists(CONFIG.jobsFile)) await writeJson(CONFIG.jobsFile, []);
   if (!exists(CONFIG.datasetsFile)) await writeJson(CONFIG.datasetsFile, []);
-  if (!exists(CONFIG.runtimeFile)) {
-    await writeJson(CONFIG.runtimeFile, {
-      vllm: { pid: null, model: null, startedAt: null, port: CONFIG.vllmPort },
-    });
-  }
+  if (!exists(CONFIG.modelsFile)) await writeJson(CONFIG.modelsFile, []);
+  if (!exists(CONFIG.lorasFile)) await writeJson(CONFIG.lorasFile, []);
+  if (!exists(CONFIG.runtimeFile)) await writeJson(CONFIG.runtimeFile, DEFAULT_RUNTIME);
 }
 
 async function getSettings() {
@@ -1530,15 +2753,17 @@ async function getSettings() {
 }
 
 async function setSettings(next) {
-  const current = await getSettings();
-  const merged = {
-    ...current,
-    ...next,
-    qlora: { ...current.qlora, ...(next.qlora || {}) },
-    inference: { ...current.inference, ...(next.inference || {}) },
-  };
-  await writeJson(CONFIG.settingsFile, merged);
-  return merged;
+  return withLock(CONFIG.settingsFile, async () => {
+    const current = await getSettings();
+    const merged = {
+      ...current,
+      ...next,
+      qlora: { ...current.qlora, ...(next.qlora || {}) },
+      inference: { ...current.inference, ...(next.inference || {}) },
+    };
+    await writeJson(CONFIG.settingsFile, merged);
+    return merged;
+  });
 }
 
 async function getJobs() {
@@ -1550,12 +2775,20 @@ async function saveJobs(jobs) {
 }
 
 async function upsertJob(jobPatch) {
-  const jobs = await getJobs();
-  const idx = jobs.findIndex((j) => j.id === jobPatch.id);
-  if (idx === -1) jobs.push(jobPatch);
-  else jobs[idx] = { ...jobs[idx], ...jobPatch };
-  await saveJobs(jobs);
-  return idx === -1 ? jobPatch : jobs[idx];
+  return withLock(CONFIG.jobsFile, async () => {
+    const jobs = await getJobs();
+    const idx = jobs.findIndex((j) => j.id === jobPatch.id);
+    let result;
+    if (idx === -1) {
+      jobs.push(jobPatch);
+      result = jobPatch;
+    } else {
+      jobs[idx] = { ...jobs[idx], ...jobPatch };
+      result = jobs[idx];
+    }
+    await saveJobs(jobs);
+    return result;
+  });
 }
 
 async function getDatasets() {
@@ -1567,29 +2800,225 @@ async function saveDatasets(items) {
 }
 
 async function addDataset(meta) {
-  const list = await getDatasets();
-  list.push(meta);
-  await saveDatasets(list);
-  return meta;
+  return withLock(CONFIG.datasetsFile, async () => {
+    const list = await getDatasets();
+    list.push(meta);
+    await saveDatasets(list);
+    return meta;
+  });
 }
 
 async function removeDataset(id) {
-  const list = await getDatasets();
-  const next = list.filter((x) => x.id !== id);
-  await saveDatasets(next);
-  return next;
+  return withLock(CONFIG.datasetsFile, async () => {
+    const list = await getDatasets();
+    const next = list.filter((x) => x.id !== id);
+    await saveDatasets(next);
+    return next;
+  });
+}
+
+async function getModels() {
+  return (await readJson(CONFIG.modelsFile, [])) || [];
+}
+
+async function saveModels(items) {
+  await writeJson(CONFIG.modelsFile, items);
+}
+
+async function addModel(meta) {
+  return withLock(CONFIG.modelsFile, async () => {
+    const list = await getModels();
+    list.push(meta);
+    await saveModels(list);
+    return meta;
+  });
+}
+
+async function upsertModel(modelPatch) {
+  return withLock(CONFIG.modelsFile, async () => {
+    const list = await getModels();
+    const idx = list.findIndex((x) => x.id === modelPatch.id);
+    let result;
+    if (idx === -1) {
+      list.push(modelPatch);
+      result = modelPatch;
+    } else {
+      list[idx] = { ...list[idx], ...modelPatch };
+      result = list[idx];
+    }
+    await saveModels(list);
+    return result;
+  });
+}
+
+async function getModelById(id) {
+  const list = await getModels();
+  return list.find((x) => x.id === id) || null;
+}
+
+async function removeModel(id) {
+  return withLock(CONFIG.modelsFile, async () => {
+    const list = await getModels();
+    const next = list.filter((x) => x.id !== id);
+    await saveModels(next);
+    return next;
+  });
+}
+
+async function getLoras() {
+  return (await readJson(CONFIG.lorasFile, [])) || [];
+}
+
+async function saveLoras(items) {
+  await writeJson(CONFIG.lorasFile, items);
+}
+
+async function addLora(meta) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    list.push(meta);
+    await saveLoras(list);
+    return meta;
+  });
+}
+
+async function upsertLora(loraPatch) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    const idx = list.findIndex((x) => x.id === loraPatch.id);
+    let result;
+    if (idx === -1) {
+      list.push(loraPatch);
+      result = loraPatch;
+    } else {
+      list[idx] = { ...list[idx], ...loraPatch };
+      result = list[idx];
+    }
+    await saveLoras(list);
+    return result;
+  });
+}
+
+async function getLoraById(id) {
+  const list = await getLoras();
+  return list.find((x) => x.id === id) || null;
+}
+
+async function getLoraByJobId(jobId) {
+  const list = await getLoras();
+  return list.find((x) => x.jobId === jobId) || null;
+}
+
+async function renameLora(id, name) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    const idx = list.findIndex((x) => x.id === id);
+    if (idx === -1) throw new Error('lora not found');
+    list[idx] = { ...list[idx], name };
+    await saveLoras(list);
+    return list[idx];
+  });
+}
+
+async function removeLora(id) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    const next = list.filter((x) => x.id !== id);
+    await saveLoras(next);
+    return next;
+  });
 }
 
 async function getRuntime() {
-  return (await readJson(CONFIG.runtimeFile, { vllm: {} })) || { vllm: {} };
+  const current = (await readJson(CONFIG.runtimeFile, DEFAULT_RUNTIME)) || DEFAULT_RUNTIME;
+  return {
+    ...DEFAULT_RUNTIME,
+    ...current,
+    vllm: {
+      ...DEFAULT_RUNTIME.vllm,
+      ...(current.vllm || {}),
+    },
+  };
 }
 
 async function saveRuntime(next) {
-  await writeJson(CONFIG.runtimeFile, next);
+  return withLock(CONFIG.runtimeFile, async () => {
+    const merged = {
+      ...DEFAULT_RUNTIME,
+      ...next,
+      vllm: {
+        ...DEFAULT_RUNTIME.vllm,
+        ...((next && next.vllm) || {}),
+      },
+    };
+    await writeJson(CONFIG.runtimeFile, merged);
+    return merged;
+  });
+}
+
+async function recoverState() {
+  const { isPidRunning } = require('../utils/proc');
+  const { nowIso } = require('../utils/ids');
+
+  // Recover jobs
+  await withLock(CONFIG.jobsFile, async () => {
+    const jobs = await getJobs();
+    let jobsChanged = false;
+    for (let i = 0; i < jobs.length; i++) {
+      if (jobs[i].status === 'running' || jobs[i].status === 'queued') {
+        if (!jobs[i].pid || !isPidRunning(jobs[i].pid)) {
+          jobs[i].status = 'failed';
+          jobs[i].finishedAt = nowIso();
+          jobs[i].error = 'Process lost after restart';
+          jobsChanged = true;
+        }
+      }
+    }
+    if (jobsChanged) await saveJobs(jobs);
+  });
+
+  // Recover runtime
+  await withLock(CONFIG.runtimeFile, async () => {
+    const runtime = await getRuntime();
+    if (runtime.vllm?.pid && !isPidRunning(runtime.vllm.pid)) {
+      await saveRuntime({
+        ...runtime,
+        vllm: {
+          ...runtime.vllm,
+          pid: null,
+          startedAt: null,
+        },
+      });
+    }
+  });
+
+  // Recover LoRAs
+  await withLock(CONFIG.lorasFile, async () => {
+    const loras = await getLoras();
+    let lorasChanged = false;
+    for (let i = 0; i < loras.length; i++) {
+      if (loras[i].mergeStatus === 'building') {
+        if (!loras[i].mergePid || !isPidRunning(loras[i].mergePid)) {
+          loras[i].mergeStatus = 'failed';
+          loras[i].error = 'Merge process lost after restart';
+          lorasChanged = true;
+        }
+      }
+      if (loras[i].packageStatus === 'building') {
+        if (!loras[i].packagePid || !isPidRunning(loras[i].packagePid)) {
+          loras[i].packageStatus = 'failed';
+          loras[i].error = 'Package process lost after restart';
+          lorasChanged = true;
+        }
+      }
+    }
+    if (lorasChanged) await saveLoras(loras);
+  });
 }
 
 module.exports = {
   DEFAULT_SETTINGS,
+  DEFAULT_RUNTIME,
   ensureWorkspace,
   getSettings,
   setSettings,
@@ -1600,8 +3029,23 @@ module.exports = {
   saveDatasets,
   addDataset,
   removeDataset,
+  getModels,
+  saveModels,
+  addModel,
+  upsertModel,
+  getModelById,
+  removeModel,
+  getLoras,
+  saveLoras,
+  addLora,
+  upsertLora,
+  getLoraById,
+  getLoraByJobId,
+  renameLora,
+  removeLora,
   getRuntime,
   saveRuntime,
+  recoverState,
 };
 
 
@@ -1661,6 +3105,65 @@ module.exports = {
 };
 
 
+path: /src/utils/gpu.js
+----------------------------------------
+const si = require('systeminformation');
+const logger = require('./logger');
+
+/**
+ * Forcefully kills all processes that are likely to be using GPU memory.
+ * This includes Python, vLLM, and Torch-related processes.
+ */
+async function clearGpuMemory() {
+  try {
+    logger.info('Performing automatic GPU memory cleanup...');
+    const processes = await si.processes();
+
+    // Identity processes to kill: Python, vLLM, and common ML-related names
+    const toKill = processes.list.filter(p => {
+      const name = p.name.toLowerCase();
+      const cmd = p.command.toLowerCase();
+      return (
+        name.includes('python') ||
+        name.includes('vllm') ||
+        name.includes('torch') ||
+        cmd.includes('unsloth') ||
+        cmd.includes('transformers')
+      );
+    });
+
+    let killedCount = 0;
+    for (const p of toKill) {
+      if (p.pid === process.pid) continue; // Don't kill ourselves
+
+      try {
+        process.kill(p.pid, 'SIGKILL');
+        killedCount++;
+      } catch (e) {
+        // Process might have already exited
+      }
+    }
+
+    if (killedCount > 0) {
+      logger.info(`GPU cleanup finished: killed ${killedCount} processes.`);
+      // Give the OS/Driver a moment to actually free up the VRAM
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    } else {
+      logger.info('GPU cleanup finished: no active ML processes found.');
+    }
+
+    return killedCount;
+  } catch (err) {
+    logger.error('Failed to clear GPU memory:', { error: String(err) });
+    return 0;
+  }
+}
+
+module.exports = {
+  clearGpuMemory
+};
+
+
 path: /src/utils/ids.js
 ----------------------------------------
 const crypto = require('crypto');
@@ -1676,6 +3179,50 @@ function nowIso() {
 module.exports = {
   uid,
   nowIso,
+};
+
+
+path: /src/utils/logger.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+const { CONFIG } = require('../config');
+
+const LOG_FILE = path.join(CONFIG.workspace, 'system.log');
+
+function log(level, message, meta = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    ...meta,
+  };
+
+  const line = JSON.stringify(entry) + '\n';
+
+  // Console output for dev
+  const color = {
+    info: '\x1b[32m',
+    warn: '\x1b[33m',
+    error: '\x1b[31m',
+    debug: '\x1b[34m',
+  }[level] || '';
+  const reset = '\x1b[0m';
+  console.log(`${new Date().toISOString()} ${color}${level.toUpperCase()}${reset}: ${message}`, Object.keys(meta).length ? meta : '');
+
+  try {
+    fs.appendFileSync(LOG_FILE, line, 'utf8');
+  } catch (err) {
+    console.error('Failed to write to log file:', err);
+  }
+}
+
+module.exports = {
+  info: (msg, meta) => log('info', msg, meta),
+  warn: (msg, meta) => log('warn', msg, meta),
+  error: (msg, meta) => log('error', msg, meta),
+  debug: (msg, meta) => log('debug', msg, meta),
+  LOG_FILE,
 };
 
 
@@ -1700,14 +3247,109 @@ function runText(cmd, args = [], options = {}) {
 
 function isPidRunning(pid) {
   if (!pid) return false;
-  const r = runText('bash', ['-lc', `ps -p ${pid} -o pid=`]);
-  return r.ok && !!r.stdout;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+async function killProcessGroup(pid, signal = 'SIGTERM') {
+  if (!pid) return;
+  try {
+    // Try to kill the process group (negative pid)
+    process.kill(-pid, signal);
+  } catch (e) {
+    // Fallback to killing just the process if group kill fails
+    try {
+      process.kill(pid, signal);
+    } catch (e2) {
+      // Ignore if process already dead
+    }
+  }
 }
 
 module.exports = {
   runText,
   isPidRunning,
+  killProcessGroup,
 };
+
+
+path: /test_workspace/.llm-lab/datasets.json
+----------------------------------------
+[]
+
+
+path: /test_workspace/.llm-lab/jobs.json
+----------------------------------------
+[]
+
+
+path: /test_workspace/.llm-lab/loras.json
+----------------------------------------
+[]
+
+
+path: /test_workspace/.llm-lab/models.json
+----------------------------------------
+[]
+
+
+path: /test_workspace/.llm-lab/runtime.json
+----------------------------------------
+{
+  "vllm": {
+    "pid": null,
+    "model": null,
+    "startedAt": null,
+    "port": 8000,
+    "logFile": "/app/test_workspace/logs/vllm.log",
+    "baseModel": "Qwen/Qwen2.5-7B-Instruct",
+    "activeModelId": null,
+    "activeModelName": null,
+    "activeLoraId": null,
+    "activeLoraName": null
+  }
+}
+
+
+path: /test_workspace/.llm-lab/settings.json
+----------------------------------------
+{
+  "baseModel": "Qwen/Qwen2.5-7B-Instruct",
+  "qlora": {
+    "loadIn4bit": true,
+    "maxSeqLength": 4096,
+    "perDeviceTrainBatchSize": 1,
+    "gradientAccumulationSteps": 8,
+    "learningRate": 0.0002,
+    "numTrainEpochs": 3,
+    "warmupRatio": 0.03,
+    "loraR": 16,
+    "loraAlpha": 16,
+    "loraDropout": 0,
+    "targetModules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "inference": {
+    "backend": "vllm",
+    "model": "Qwen/Qwen2.5-7B-Instruct",
+    "host": "0.0.0.0",
+    "port": 8000,
+    "gpuMemoryUtilization": 0.9,
+    "tensorParallelSize": 1,
+    "maxModelLen": 8192
+  }
+}
 
 
 path: /web/index.html
@@ -1801,7 +3443,6 @@ path: /web/package-lock.json
       "integrity": "sha512-CGOfOJqWjg2qW/Mb6zNsDm+u5vFQ8DxXfbM09z69p5Z6+mE1ikP2jUXw+j42Pf1XTYED2Rni5f95npYeuwMDQA==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "@babel/code-frame": "^7.29.0",
         "@babel/generator": "^7.29.0",
@@ -3103,7 +4744,6 @@ path: /web/package-lock.json
       "integrity": "sha512-z9VXpC7MWrhfWipitjNdgCauoMLRdIILQsAEV+ZesIzBq/oUlxk0m3ApZuMFCXdnS4U7KrI+l3WRUEGQ8K1QKw==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "@types/prop-types": "*",
         "csstype": "^3.2.2"
@@ -3264,7 +4904,6 @@ path: /web/package-lock.json
         }
       ],
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "baseline-browser-mapping": "^2.9.0",
         "caniuse-lite": "^1.0.30001759",
@@ -3854,7 +5493,6 @@ path: /web/package-lock.json
       "integrity": "sha512-/imKNG4EbWNrVjoNC/1H5/9GFy+tqjGBHCaSsN+P2RnPqjsLmv6UD3Ej+Kj8nBWaRAwyk7kK5ZUc+OEatnTR3A==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "bin": {
         "jiti": "bin/jiti.js"
       }
@@ -4113,7 +5751,6 @@ path: /web/package-lock.json
         }
       ],
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "nanoid": "^3.3.11",
         "picocolors": "^1.1.1",
@@ -4300,7 +5937,6 @@ path: /web/package-lock.json
       "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
       "integrity": "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==",
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "loose-envify": "^1.1.0"
       },
@@ -4313,7 +5949,6 @@ path: /web/package-lock.json
       "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-18.3.1.tgz",
       "integrity": "sha512-5m4nQKp+rZRb09LNH59GM4BxTh9251/ylbKIbpe7TpGxfJ+9kv6BLkLBXIjjspbgbnIBNqlI23tRnTWT0snUIw==",
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "loose-envify": "^1.1.0",
         "scheduler": "^0.23.2"
@@ -4742,7 +6377,6 @@ path: /web/package-lock.json
       "integrity": "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "engines": {
         "node": ">=12"
       },
@@ -4850,7 +6484,6 @@ path: /web/package-lock.json
       "integrity": "sha512-+Oxm7q9hDoLMyJOYfUYBuHQo+dkAloi33apOPP56pzj+vsdJDzr+j1NISE5pyaAuKL4A3UD34qd0lx5+kfKp2g==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "esbuild": "^0.25.0",
         "fdir": "^6.4.4",
@@ -4944,7 +6577,6 @@ path: /web/package-lock.json
       "integrity": "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "engines": {
         "node": ">=12"
       },
@@ -5018,6 +6650,10 @@ import JobsPage from './features/jobs/page';
 import RuntimePage from './features/runtime/page';
 import PlaygroundPage from './features/playground/page';
 import SettingsPage from './features/settings/page';
+import ModelsPage from './features/models/page';
+import LorasPage from './features/loras/page';
+import LogsPage from './features/logs/logs-page';
+import MonitorPage from './features/monitor/monitor-page';
 import { useEvents } from './hooks/use-events';
 
 export default function App() {
@@ -5027,11 +6663,15 @@ export default function App() {
     <Routes>
       <Route path="/app" element={<AppShell />}>
         <Route index element={<DashboardPage />} />
+        <Route path="models" element={<ModelsPage />} />
+        <Route path="loras" element={<LorasPage />} />
         <Route path="datasets" element={<DatasetsPage />} />
         <Route path="training" element={<TrainingPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="runtime" element={<RuntimePage />} />
         <Route path="playground" element={<PlaygroundPage />} />
+        <Route path="logs" element={<LogsPage />} />
+        <Route path="monitor" element={<MonitorPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
 
@@ -5045,28 +6685,36 @@ export default function App() {
 path: /web/src/components/app-shell.tsx
 ----------------------------------------
 import { NavLink, Outlet } from 'react-router-dom';
-import { Bot, Database, Gauge, PlayCircle, Settings, TerminalSquare, Workflow } from 'lucide-react';
+import { Bot, Database, Gauge, PlayCircle, Settings, TerminalSquare, Workflow, Boxes, Layers3, ScrollText, Activity } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const items = [
-  { to: '/', label: 'Dashboard', icon: Gauge, end: true },
-  { to: '/datasets', label: 'Datasets', icon: Database },
-  { to: '/training', label: 'Training', icon: Workflow },
-  { to: '/jobs', label: 'Jobs', icon: TerminalSquare },
-  { to: '/runtime', label: 'Runtime', icon: PlayCircle },
-  { to: '/playground', label: 'Playground', icon: Bot },
-  { to: '/settings', label: 'Settings', icon: Settings },
+  { to: '/app', label: 'Dashboard', icon: Gauge, end: true },
+  { to: '/app/models', label: 'Models', icon: Boxes },
+  { to: '/app/loras', label: 'LoRAs', icon: Layers3 },
+  { to: '/app/datasets', label: 'Datasets', icon: Database },
+  { to: '/app/training', label: 'Training', icon: Workflow },
+  { to: '/app/jobs', label: 'Jobs', icon: TerminalSquare },
+  { to: '/app/runtime', label: 'Runtime', icon: PlayCircle },
+  { to: '/app/playground', label: 'Playground', icon: Bot },
+  { to: '/app/logs', label: 'Logs', icon: ScrollText },
+  { to: '/app/monitor', label: 'Monitoring', icon: Activity },
+  { to: '/app/settings', label: 'Settings', icon: Settings },
 ];
 
 export function AppShell() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50">
-      <div className="mx-auto grid min-h-screen max-w-[1600px] grid-cols-1 md:grid-cols-[260px_1fr]">
+      <div className="mx-auto grid min-h-screen max-w-[1600px] grid-cols-1 md:grid-cols-[280px_1fr]">
         <aside className="border-r border-slate-800 bg-slate-950/90 p-5">
           <div className="mb-8">
             <div className="text-xs uppercase tracking-[0.2em] text-slate-500">LLM Lab</div>
             <div className="mt-2 text-xl font-semibold text-white">Training Console</div>
+            <div className="mt-2 text-sm text-slate-400">
+              База моделей, LoRA, обучение, инференс и упаковка.
+            </div>
           </div>
+
           <nav className="space-y-1">
             {items.map((item) => {
               const Icon = item.icon;
@@ -5089,6 +6737,7 @@ export function AppShell() {
             })}
           </nav>
         </aside>
+
         <main className="p-6 md:p-8">
           <Outlet />
         </main>
@@ -5262,7 +6911,7 @@ export default function DashboardPage() {
       <PageHeader
         title="Dashboard"
         description="Сводка по окружению, датасетам, обучению и runtime."
-        actions={<Link to="/training"><Button>Start training</Button></Link>}
+        actions={<Link to="/app/training"><Button>Start training</Button></Link>}
       />
 
       {isLoading ? <p className="text-slate-400">Loading…</p> : null}
@@ -5391,6 +7040,18 @@ type ManualItem = {
   assistant: string;
 };
 
+const CHAT_TEMPLATE = `{"messages":[{"role":"user","content":"Привет"},{"role":"assistant","content":"Привет! Чем помочь?"}]}
+{"messages":[{"role":"user","content":"2+2?"},{"role":"assistant","content":"2+2 = 4."}]}
+`;
+
+const INSTRUCTION_TEMPLATE = `{"instruction":"Скажи привет","input":"","output":"Привет!"}
+{"instruction":"Ответь сколько будет 2+2","input":"","output":"2+2 = 4."}
+`;
+
+const PROMPT_TEMPLATE = `{"prompt":"Переведи на английский: Привет","completion":"Hello"}
+{"prompt":"Сделай краткое резюме: LLM are useful","completion":"LLMs are useful."}
+`;
+
 export default function DatasetsPage() {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -5406,25 +7067,25 @@ export default function DatasetsPage() {
   ]);
 
   function handleSelectedFile(file?: File | null) {
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    const text = String(reader.result || '');
-    setJsonl(text);
-    if (!name.trim()) {
-      setName(file.name.replace(/\.jsonl$/i, ''));
-    }
-    setTab('jsonl');
-  };
-  reader.readAsText(file, 'utf-8');
-}
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || '');
+      setJsonl(text);
+      if (!name.trim()) {
+        setName(file.name.replace(/\.jsonl$/i, ''));
+      }
+      setTab('jsonl');
+    };
+    reader.readAsText(file, 'utf-8');
+  }
 
-function onDropFile(e: React.DragEvent<HTMLDivElement>) {
-  e.preventDefault();
-  e.stopPropagation();
-  const file = e.dataTransfer.files?.[0];
-  handleSelectedFile(file);
-}
+  function onDropFile(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    const file = e.dataTransfer.files?.[0];
+    handleSelectedFile(file);
+  }
 
   const datasetsQuery = useQuery({
     queryKey: ['datasets'],
@@ -5476,19 +7137,6 @@ function onDropFile(e: React.DragEvent<HTMLDivElement>) {
     [datasetsQuery.data],
   );
 
-  function onUploadFile(file: File) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || '');
-      setJsonl(text);
-      if (!name.trim()) {
-        setName(file.name.replace(/\.jsonl$/i, ''));
-      }
-      setTab('jsonl');
-    };
-    reader.readAsText(file, 'utf-8');
-  }
-
   function createFromManual() {
     const items = manualItems
       .filter((x) => x.user.trim() && x.assistant.trim())
@@ -5505,14 +7153,53 @@ function onDropFile(e: React.DragEvent<HTMLDivElement>) {
     });
   }
 
+  function applyTemplate(kind: 'chat' | 'instruction' | 'prompt') {
+    setTab('jsonl');
+    setValidation(null);
+    if (kind === 'chat') setJsonl(CHAT_TEMPLATE);
+    if (kind === 'instruction') setJsonl(INSTRUCTION_TEMPLATE);
+    if (kind === 'prompt') setJsonl(PROMPT_TEMPLATE);
+  }
+
+  const rowsCount = jsonl.split('\n').map((x) => x.trim()).filter(Boolean).length;
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold text-white">Datasets</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Загружай JSONL, вставляй текст или собирай датасет вручную прямо из UI.
+          Создавай датасеты из файла, из JSONL текста или вручную. Сначала проверь формат через Validate, потом сохраняй в базу.
         </p>
       </div>
+
+      <Card title="Templates and tips">
+        <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+          <div className="space-y-3">
+            <div className="text-sm text-slate-300">Быстрые шаблоны</div>
+            <div className="flex flex-wrap gap-2">
+              <Button className="bg-slate-800 hover:bg-slate-700" onClick={() => applyTemplate('chat')}>
+                Chat messages
+              </Button>
+              <Button className="bg-slate-800 hover:bg-slate-700" onClick={() => applyTemplate('instruction')}>
+                Instruction / output
+              </Button>
+              <Button className="bg-slate-800 hover:bg-slate-700" onClick={() => applyTemplate('prompt')}>
+                Prompt / completion
+              </Button>
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-slate-950/50 p-4 text-sm text-slate-400">
+            <div className="font-medium text-white">Подсказки</div>
+            <ul className="mt-2 space-y-1">
+              <li>• Для small smoke test хватит 2–20 строк.</li>
+              <li>• Лучше использовать диалоговый формат messages.</li>
+              <li>• У каждой строки должен быть осмысленный assistant output.</li>
+              <li>• После создания dataset можно сразу перейти в Training.</li>
+            </ul>
+          </div>
+        </div>
+      </Card>
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
         <Card title="Create dataset">
@@ -5535,49 +7222,48 @@ function onDropFile(e: React.DragEvent<HTMLDivElement>) {
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-dataset" />
           </div>
 
-{tab === 'upload' && (
-  <div className="space-y-4">
-    <input
-      ref={fileInputRef}
-      type="file"
-      accept=".jsonl,.txt,application/json"
-      className="hidden"
-      onChange={(e) => handleSelectedFile(e.target.files?.[0] || null)}
-    />
+          {tab === 'upload' && (
+            <div className="space-y-4">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".jsonl,.txt,application/json"
+                className="hidden"
+                onChange={(e) => handleSelectedFile(e.target.files?.[0] || null)}
+              />
 
-    <div
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-      onDrop={onDropFile}
-      className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-950/50 p-6 text-center text-slate-400"
-    >
-      <div>
-        <div className="text-sm text-white">Перетащи JSONL файл сюда</div>
-        <div className="mt-2 text-xs text-slate-500">
-          Или выбери файл вручную кнопкой ниже
-        </div>
-        <div className="mt-4">
-          <Button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="bg-slate-800 hover:bg-slate-700"
-          >
-            Choose file
-          </Button>
-        </div>
-      </div>
-    </div>
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onDrop={onDropFile}
+                className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-950/50 p-6 text-center text-slate-400"
+              >
+                <div>
+                  <div className="text-sm text-white">Перетащи JSONL файл сюда</div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    Поддерживаются chat-jsonl, instruction/output и prompt/completion
+                  </div>
+                  <div className="mt-4">
+                    <Button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="bg-slate-800 hover:bg-slate-700"
+                    >
+                      Choose file
+                    </Button>
+                  </div>
+                </div>
+              </div>
 
-    {!!jsonl.trim() && (
-      <div className="rounded-xl bg-slate-950/50 p-3 text-xs text-slate-300">
-        Файл загружен. Переключено в <span className="text-white">Paste JSONL</span>.
-        Строк: {jsonl.split('\n').filter(Boolean).length}
-      </div>
-    )}
-  </div>
-)}
+              {!!jsonl.trim() && (
+                <div className="rounded-xl bg-slate-950/50 p-3 text-xs text-slate-300">
+                  Файл прочитан. Переключено в <span className="text-white">Paste JSONL</span>. Строк: {rowsCount}
+                </div>
+              )}
+            </div>
+          )}
 
           {tab === 'jsonl' && (
             <div className="space-y-4">
@@ -5586,6 +7272,11 @@ function onDropFile(e: React.DragEvent<HTMLDivElement>) {
                 onChange={(e) => setJsonl(e.target.value)}
                 placeholder='{"messages":[{"role":"user","content":"Привет"},{"role":"assistant","content":"Привет!"}]}'
               />
+
+              <div className="rounded-xl bg-slate-950/50 p-3 text-sm text-slate-400">
+                Текущий объём: <span className="text-white">{rowsCount}</span> строк. Сначала нажми <span className="text-white">Validate</span>, чтобы увидеть распознанный формат и ошибки.
+              </div>
+
               <div className="flex flex-wrap gap-3">
                 <Button
                   onClick={() => validateJsonlMutation.mutate({ jsonl })}
@@ -5610,6 +7301,10 @@ function onDropFile(e: React.DragEvent<HTMLDivElement>) {
 
           {tab === 'manual' && (
             <div className="space-y-4">
+              <div className="rounded-xl bg-slate-950/50 p-3 text-sm text-slate-400">
+                Ручной редактор подходит для быстрых тестовых датасетов и smoke test обучения.
+              </div>
+
               {manualItems.map((item, idx) => (
                 <div key={idx} className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
                   <div className="mb-3 text-xs uppercase tracking-wide text-slate-500">Example #{idx + 1}</div>
@@ -5681,8 +7376,16 @@ function onDropFile(e: React.DragEvent<HTMLDivElement>) {
 
         <Card title="Validation / preview">
           {!validation ? (
-            <div className="text-sm text-slate-500">
-              Для JSONL нажми <span className="text-white">Validate</span>, чтобы увидеть формат, ошибки и примеры.
+            <div className="space-y-3 text-sm text-slate-500">
+              <div>
+                Для JSONL нажми <span className="text-white">Validate</span>, чтобы увидеть распознанный формат, ошибки и примеры.
+              </div>
+              <div className="rounded-xl bg-slate-950/50 p-3">
+                <div className="font-medium text-white">Поддерживаемые форматы</div>
+                <div className="mt-2">1. messages[]</div>
+                <div>2. instruction / input / output</div>
+                <div>3. prompt / completion</div>
+              </div>
             </div>
           ) : (
             <div className="space-y-4">
@@ -5703,6 +7406,12 @@ function onDropFile(e: React.DragEvent<HTMLDivElement>) {
                   <div className="text-slate-500">Lines</div>
                   <div className="mt-1 text-white">{validation.totalLines ?? '—'}</div>
                 </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-sm text-slate-400">
+                {validation.ok
+                  ? 'Формат распознан, есть валидные строки. Можно сохранять dataset.'
+                  : 'Валидных строк нет. Исправь ошибки и попробуй ещё раз.'}
               </div>
 
               <div>
@@ -5818,7 +7527,7 @@ path: /web/src/features/jobs/page.tsx
 ----------------------------------------
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../../lib/api';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
@@ -5870,6 +7579,12 @@ export default function JobsPage() {
     refetchInterval: 3000,
   });
 
+  const lorasQuery = useQuery({
+    queryKey: ['loras'],
+    queryFn: api.getLoras,
+    refetchInterval: 3000,
+  });
+
   useEffect(() => {
     if (!selectedId && jobsQuery.data?.[0]?.id) {
       setSelectedId(jobsQuery.data[0].id);
@@ -5900,11 +7615,19 @@ export default function JobsPage() {
   });
 
   const useOutputMutation = useMutation({
-    mutationFn: api.useJobOutput,
+    mutationFn: ({ jobId }: { jobId: string }) => api.useJobOutput(jobId),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['runtime'] });
       await qc.invalidateQueries({ queryKey: ['runtime-health'] });
-      navigate('/app/playground');
+      await qc.invalidateQueries({ queryKey: ['loras'] });
+      navigate('/app/runtime');
+    },
+  });
+
+  const registerLoraMutation = useMutation({
+    mutationFn: ({ jobId, name }: { jobId: string; name?: string }) => api.registerLoraFromJob({ jobId, name }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['loras'] });
     },
   });
 
@@ -5913,12 +7636,17 @@ export default function JobsPage() {
     [jobsQuery.data],
   );
 
+  const selectedLora = useMemo(() => {
+    if (!jobQuery.data) return null;
+    return (lorasQuery.data || []).find((x) => x.jobId === jobQuery.data?.id) || null;
+  }, [lorasQuery.data, jobQuery.data]);
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold text-white">Jobs</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Следи за обучением, смотри логи и запускай дообученную модель в runtime.
+          Следи за обучением, смотри логи, регистрируй LoRA и запускай готовый результат на инференс.
         </p>
       </div>
 
@@ -5949,7 +7677,7 @@ export default function JobsPage() {
                     </div>
                     <StatusBadge value={job.status} />
                   </div>
-                  <div className="mt-3 text-xs text-slate-500">{fmtDate(job.createdAt)}</div>
+                  <div className="mt-2 text-xs text-slate-500">{fmtDate(job.createdAt)}</div>
                 </button>
               ))
             )}
@@ -5972,25 +7700,78 @@ export default function JobsPage() {
 
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="rounded-xl bg-slate-950/40 p-3">
-                    <div className="text-xs text-slate-500">Base model</div>
-                    <div className="mt-1 text-sm text-white">{jobQuery.data.baseModel}</div>
+                    <div className="text-xs text-slate-500">Base model path / ref</div>
+                    <div className="mt-1 break-all text-sm text-white">{jobQuery.data.baseModel}</div>
                   </div>
+
+                  <div className="rounded-xl bg-slate-950/40 p-3">
+                    <div className="text-xs text-slate-500">Model id</div>
+                    <div className="mt-1 text-sm text-white">{jobQuery.data.modelId || 'manual / external model'}</div>
+                  </div>
+
                   <div className="rounded-xl bg-slate-950/40 p-3">
                     <div className="text-xs text-slate-500">Dataset</div>
                     <div className="mt-1 text-sm text-white">{jobQuery.data.datasetId}</div>
                   </div>
+
                   <div className="rounded-xl bg-slate-950/40 p-3">
                     <div className="text-xs text-slate-500">Created</div>
                     <div className="mt-1 text-sm text-white">{fmtDate(jobQuery.data.createdAt)}</div>
                   </div>
+
                   <div className="rounded-xl bg-slate-950/40 p-3">
                     <div className="text-xs text-slate-500">Started</div>
                     <div className="mt-1 text-sm text-white">{fmtDate(jobQuery.data.startedAt)}</div>
                   </div>
+
+                  <div className="rounded-xl bg-slate-950/40 p-3">
+                    <div className="text-xs text-slate-500">Finished</div>
+                    <div className="mt-1 text-sm text-white">{fmtDate(jobQuery.data.finishedAt)}</div>
+                  </div>
+
                   <div className="rounded-xl bg-slate-950/40 p-3 md:col-span-2">
                     <div className="text-xs text-slate-500">Output dir</div>
                     <div className="mt-1 break-all text-sm text-white">{jobQuery.data.outputDir}</div>
                   </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
+                  <div className="text-sm font-medium text-white">LoRA status</div>
+
+                  {selectedLora ? (
+                    <div className="mt-3 space-y-2">
+                      <div className="text-sm text-slate-300">
+                        Registered as LoRA: <span className="text-white">{selectedLora.name}</span>
+                      </div>
+                      <div className="text-xs text-slate-500">Base model: {selectedLora.baseModelName}</div>
+                      <div className="text-xs text-slate-500">
+                        Runtime from this job will use merged LoRA automatically.
+                      </div>
+                      <div className="flex flex-wrap gap-2 pt-2">
+                        <Link
+                          to="/app/loras"
+                          className="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+                        >
+                          Open LoRAs
+                        </Link>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      <div className="text-sm text-slate-400">
+                        Для completed job LoRA обычно регистрируется автоматически. Если нет — можно зарегистрировать вручную.
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          onClick={() => registerLoraMutation.mutate({ jobId: jobQuery.data!.id, name: jobQuery.data!.name })}
+                          disabled={jobQuery.data.status !== 'completed' || registerLoraMutation.isPending}
+                          className="bg-slate-800 hover:bg-slate-700"
+                        >
+                          Register LoRA
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {jobQuery.data.error && (
@@ -5998,6 +7779,12 @@ export default function JobsPage() {
                     {jobQuery.data.error}
                   </div>
                 )}
+
+                {useOutputMutation.error ? (
+                  <div className="mt-4 rounded-xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">
+                    {(useOutputMutation.error as Error).message}
+                  </div>
+                ) : null}
 
                 <div className="mt-5 flex flex-wrap gap-3">
                   <Button
@@ -6013,7 +7800,7 @@ export default function JobsPage() {
                     disabled={jobQuery.data.status !== 'completed' || useOutputMutation.isPending}
                     className="bg-emerald-600 hover:bg-emerald-500"
                   >
-                    Use in runtime
+                    {useOutputMutation.isPending ? 'Preparing runtime…' : 'Use in runtime'}
                   </Button>
                 </div>
               </>
@@ -6033,9 +7820,931 @@ export default function JobsPage() {
 }
 
 
+path: /web/src/features/logs/logs-page.tsx
+----------------------------------------
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { api, LogEntry } from '../../lib/api';
+import { ChevronDown, ChevronRight, Search, RefreshCcw } from 'lucide-react';
+
+function LogRow({ entry }: { entry: LogEntry }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const colors = {
+    info: 'text-green-400',
+    warn: 'text-yellow-400',
+    error: 'text-red-400',
+    debug: 'text-blue-400',
+  };
+
+  const { timestamp, level, message, ...meta } = entry;
+
+  return (
+    <div className="border-b border-slate-800/50 last:border-0">
+      <div
+        className="flex items-start gap-3 py-2 px-3 hover:bg-slate-800/30 cursor-pointer transition"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="mt-1 text-slate-600">
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </div>
+        <div className="min-w-[160px] text-xs font-mono text-slate-500">
+          {new Date(timestamp).toLocaleString()}
+        </div>
+        <div className={`min-w-[60px] text-xs font-bold uppercase ${colors[level] || 'text-slate-400'}`}>
+          {level}
+        </div>
+        <div className="text-sm text-slate-200 break-all">{message}</div>
+      </div>
+
+      {expanded && Object.keys(meta).length > 0 && (
+        <div className="bg-slate-950/50 p-4 mx-3 mb-2 rounded-xl border border-slate-800/50">
+          <pre className="text-xs text-slate-400 overflow-auto max-h-[300px]">
+            {JSON.stringify(meta, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function LogsPage() {
+  const [level, setLevel] = useState<string>('');
+  const [q, setQ] = useState('');
+
+  const { data, isLoading, refetch, isFetching } = useQuery({
+    queryKey: ['logs', level, q],
+    queryFn: () => api.getLogs({ level, q }),
+    refetchInterval: 5000,
+  });
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">System Logs</h1>
+          <p className="mt-1 text-sm text-slate-400">
+            Просмотр событий системы в реальном времени.
+          </p>
+        </div>
+        <button
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="flex items-center gap-2 rounded-xl bg-slate-800 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:opacity-50"
+        >
+          <RefreshCcw size={16} className={isFetching ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-4 rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
+          <input
+            type="text"
+            placeholder="Search logs..."
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className="w-full rounded-xl border border-slate-700 bg-slate-950 py-2 pl-10 pr-4 text-sm text-white outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+
+        <select
+          value={level}
+          onChange={(e) => setLevel(e.target.value)}
+          className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-white outline-none"
+        >
+          <option value="">All Levels</option>
+          <option value="info">Info</option>
+          <option value="warn">Warning</option>
+          <option value="error">Error</option>
+          <option value="debug">Debug</option>
+        </select>
+      </div>
+
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/70 overflow-hidden">
+        {isLoading ? (
+          <div className="p-10 text-center text-slate-500">Loading logs...</div>
+        ) : !data?.length ? (
+          <div className="p-10 text-center text-slate-500">No logs found matching your criteria.</div>
+        ) : (
+          <div className="divide-y divide-slate-800/50">
+            {data.map((entry, idx) => (
+              <LogRow key={idx} entry={entry} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+path: /web/src/features/loras/page.tsx
+----------------------------------------
+import { useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { PageHeader } from '../../components/page-header';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { api, apiBase } from '../../lib/api';
+import { fmtDate } from '../../lib/utils';
+
+export default function LorasPage() {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
+
+  const lorasQuery = useQuery({
+    queryKey: ['loras'],
+    queryFn: api.getLoras,
+    refetchInterval: 5000,
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => api.renameLora(id, { name }),
+    onSuccess: async () => {
+      setEditingId(null);
+      setEditingName('');
+      await qc.invalidateQueries({ queryKey: ['loras'] });
+    },
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: (id: string) => api.activateLora(id),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['runtime'] });
+      await qc.invalidateQueries({ queryKey: ['runtime-health'] });
+      navigate('/app/runtime');
+    },
+  });
+
+  const buildMutation = useMutation({
+    mutationFn: api.buildMergedLora,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['loras'] });
+    },
+  });
+
+  const packageMutation = useMutation({
+    mutationFn: api.packageLora,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['loras'] });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: api.deleteLora,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['loras'] });
+    },
+  });
+
+  const items = useMemo(() => lorasQuery.data || [], [lorasQuery.data]);
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="LoRAs"
+        description="Список адаптеров, построение merged-модели, активация на инференс и упаковка для передачи."
+      />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Stored LoRAs</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!items.length ? (
+            <div className="text-sm text-slate-500">No LoRAs yet. После completed training они создаются автоматически.</div>
+          ) : (
+            <div className="space-y-4">
+              {items.map((item) => (
+                <div key={item.id} className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      {editingId === item.id ? (
+                        <div className="flex max-w-xl gap-2">
+                          <Input value={editingName} onChange={(e) => setEditingName(e.target.value)} />
+                          <Button onClick={() => renameMutation.mutate({ id: item.id, name: editingName })}>
+                            Save
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="text-base font-semibold text-white">{item.name}</div>
+                      )}
+
+                      <div className="mt-1 text-sm text-slate-400">Base model: {item.baseModelName}</div>
+                      <div className="mt-1 text-sm text-slate-400">Job: {item.jobId}</div>
+                      <div className="mt-1 text-xs text-slate-500">Adapter: {item.adapterPath}</div>
+                      <div className="mt-1 text-xs text-slate-500">Merged: {item.mergedPath || 'not built'}</div>
+                      <div className="mt-1 text-xs text-slate-500">Package: {item.packagePath || 'not built'}</div>
+                      <div className="mt-1 text-xs text-slate-500">Created: {fmtDate(item.createdAt)}</div>
+                      {item.error ? <div className="mt-2 text-sm text-rose-300">{item.error}</div> : null}
+                    </div>
+
+                    <div className="text-right text-sm">
+                      <div className="text-slate-400">Merge: <span className="text-white">{item.mergeStatus}</span></div>
+                      <div className="text-slate-400">Package: <span className="text-white">{item.packageStatus}</span></div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button
+                      className="bg-slate-800 hover:bg-slate-700"
+                      onClick={() => {
+                        setEditingId(item.id);
+                        setEditingName(item.name);
+                      }}
+                    >
+                      Rename
+                    </Button>
+
+                    <Button
+                      className="bg-slate-800 hover:bg-slate-700"
+                      onClick={() => buildMutation.mutate(item.id)}
+                      disabled={buildMutation.isPending}
+                    >
+                      Build merged
+                    </Button>
+
+                    <Button
+                      onClick={() => activateMutation.mutate(item.id)}
+                      disabled={activateMutation.isPending}
+                    >
+                      Use in runtime
+                    </Button>
+
+                    <Button
+                      className="bg-emerald-700 text-white hover:bg-emerald-600"
+                      onClick={() => packageMutation.mutate(item.id)}
+                      disabled={packageMutation.isPending}
+                    >
+                      Package
+                    </Button>
+
+                    {item.packagePath ? (
+                      <a
+                        href={`${apiBase}/loras/${item.id}/package/download`}
+                        className="inline-flex items-center justify-center rounded-xl bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600"
+                      >
+                        Download package
+                      </a>
+                    ) : null}
+
+                    <Button
+                      className="bg-rose-700 text-white hover:bg-rose-600"
+                      onClick={() => deleteMutation.mutate(item.id)}
+                      disabled={deleteMutation.isPending}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+
+path: /web/src/features/models/page.tsx
+----------------------------------------
+import { useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { PageHeader } from '../../components/page-header';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { api } from '../../lib/api';
+import { fmtDate } from '../../lib/utils';
+import { StatusBadge } from '../../components/status-badge';
+
+export default function ModelsPage() {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const [repoId, setRepoId] = useState('Qwen/Qwen2.5-7B-Instruct');
+  const [name, setName] = useState('Qwen 2.5 7B Instruct');
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: api.getModels,
+    refetchInterval: 5000,
+  });
+
+  const lorasQuery = useQuery({
+    queryKey: ['loras'],
+    queryFn: api.getLoras,
+    refetchInterval: 5000,
+  });
+
+  const downloadMutation = useMutation({
+    mutationFn: api.downloadModel,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['models'] });
+    },
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) => api.activateModel(id),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['runtime'] });
+      await qc.invalidateQueries({ queryKey: ['runtime-health'] });
+      navigate('/app/runtime');
+    },
+  });
+
+  const activateLoraMutation = useMutation({
+    mutationFn: (id: string) => api.activateLora(id),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['runtime'] });
+      await qc.invalidateQueries({ queryKey: ['runtime-health'] });
+      navigate('/app/runtime');
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: api.deleteModel,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['models'] });
+    },
+  });
+
+  const filteredLoras = useMemo(() => {
+    if (!selectedModelId) return [];
+    const model = modelsQuery.data?.find(m => m.id === selectedModelId);
+    if (!model) return [];
+    return (lorasQuery.data || []).filter(l => l.baseModelId === model.id || l.baseModelRef === model.repoId);
+  }, [selectedModelId, modelsQuery.data, lorasQuery.data]);
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Models Library"
+        description="Библиотека моделей и их LoRA адаптеров. Выбирай модель и используй её с нужной LoRA."
+      />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Add new base model</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Hugging Face repo id</label>
+              <Input value={repoId} onChange={(e) => setRepoId(e.target.value)} placeholder="Qwen/Qwen2.5-7B-Instruct" />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Display name</label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Qwen 2.5 7B Instruct" />
+            </div>
+          </div>
+          <Button
+            onClick={() => downloadMutation.mutate({ repoId, name })}
+            disabled={!repoId.trim() || downloadMutation.isPending}
+          >
+            {downloadMutation.isPending ? 'Starting download…' : 'Download base model'}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle>Base Models</CardTitle>
+          </CardHeader>
+          <CardContent className="flex-1 space-y-3">
+            {modelsQuery.isLoading ? (
+              <div className="text-sm text-slate-500">Loading models…</div>
+            ) : !modelsQuery.data?.length ? (
+              <div className="text-sm text-slate-500">No models yet.</div>
+            ) : (
+              modelsQuery.data.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => setSelectedModelId(item.id)}
+                  className={`cursor-pointer rounded-2xl border p-4 transition ${
+                    selectedModelId === item.id
+                      ? 'border-blue-500 bg-blue-500/10'
+                      : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3 text-sm">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-white truncate">{item.name}</div>
+                      <div className="mt-1 text-xs text-slate-400 truncate">{item.repoId}</div>
+                    </div>
+                    <StatusBadge value={item.status === 'ready' ? 'ready' : item.status} />
+                  </div>
+
+                  {selectedModelId === item.id && (
+                    <div className="mt-4 flex gap-2">
+                      <Button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          activateMutation.mutate({ id: item.id });
+                        }}
+                        disabled={item.status !== 'ready' || activateMutation.isPending}
+                        className="h-8 px-3 text-xs bg-blue-600 hover:bg-blue-500"
+                      >
+                        Use in runtime
+                      </Button>
+                      <Button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteMutation.mutate(item.id);
+                        }}
+                        disabled={deleteMutation.isPending}
+                        className="h-8 px-3 text-xs bg-rose-700 hover:bg-rose-600"
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle>LoRA Adapters</CardTitle>
+          </CardHeader>
+          <CardContent className="flex-1 space-y-3">
+            {!selectedModelId ? (
+              <div className="text-sm text-slate-500">Select a base model to see its LoRAs.</div>
+            ) : !filteredLoras.length ? (
+              <div className="text-sm text-slate-500">No LoRAs found for this model.</div>
+            ) : (
+              filteredLoras.map((lora) => (
+                <div
+                  key={lora.id}
+                  className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4"
+                >
+                  <div className="flex items-start justify-between gap-3 text-sm">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-white truncate">{lora.name}</div>
+                      <div className="mt-1 text-xs text-slate-500">Created {fmtDate(lora.createdAt)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] uppercase tracking-wider text-slate-500">Merge status</div>
+                      <div className="text-xs font-medium text-white">{lora.mergeStatus}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <Button
+                      onClick={() => activateLoraMutation.mutate(lora.id)}
+                      disabled={activateLoraMutation.isPending}
+                      className="h-8 w-full px-3 text-xs bg-emerald-600 hover:bg-emerald-500"
+                    >
+                      {activateLoraMutation.isPending ? 'Activating…' : 'Use with this LoRA'}
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+
+path: /web/src/features/monitor/monitor-page.tsx
+----------------------------------------
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { api } from '../../lib/api';
+import { PageHeader } from '../../components/page-header';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import {
+  Cpu,
+  MemoryStick,
+  HardDrive,
+  Network,
+  Thermometer,
+  Activity,
+  ArrowUp,
+  ArrowDown,
+  Trash2,
+  Eraser,
+  Layers
+} from 'lucide-react';
+import { Button } from '../../components/ui/button';
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell
+} from 'recharts';
+import { useState, useEffect } from 'react';
+
+function fmtBytes(bytes: number) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function UsageBar({ value, label, color = 'bg-blue-600' }: { value: number, label: string, color?: string }) {
+  const safeValue = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs font-medium">
+        <span className="text-slate-400">{label}</span>
+        <span className="text-white">{safeValue.toFixed(1)}%</span>
+      </div>
+      <div className="h-2 w-full rounded-full bg-slate-800">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${color}`}
+          style={{ width: `${Math.min(100, Math.max(0, safeValue))}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+export default function MonitorPage() {
+  const queryClient = useQueryClient();
+  const [history, setHistory] = useState<any[]>([]);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['monitor-stats'],
+    queryFn: api.getMonitorStats,
+    refetchInterval: 2000,
+  });
+
+  const killMutation = useMutation({
+    mutationFn: api.killProcess,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor-stats'] }),
+  });
+
+  const clearGpuMutation = useMutation({
+    mutationFn: api.clearGpu,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor-stats'] }),
+  });
+
+  useEffect(() => {
+    if (data) {
+      setHistory(prev => {
+        const next = [...prev, {
+          time: new Date().toLocaleTimeString(),
+          cpu: data.cpu?.load || 0,
+          mem: data.memory?.total ? (data.memory.used / data.memory.total) * 100 : 0,
+          vram: data.gpus?.[0]?.vram ? (data.gpus[0].vramUsed / data.gpus[0].vram) * 100 : 0,
+          gpu: data.gpus?.[0]?.utilizationGpu || 0,
+        }];
+        return next.slice(-30); // Keep last 60 seconds
+      });
+    }
+  }, [data]);
+
+  if (isLoading || !data) {
+    return (
+      <div className="flex h-[400px] items-center justify-center">
+        <div className="text-slate-500">Gathering system data...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="System Monitoring"
+        description="Ресурсы сервера: CPU, GPU, RAM, диски и сетевая активность."
+      />
+
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
+        <Card className="border-blue-500/20 bg-blue-500/5">
+          <CardContent className="pt-6 px-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-blue-500/20 p-2 text-blue-400">
+                <Cpu size={20} />
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">CPU</div>
+                <div className="text-xl font-bold text-white">{(data.cpu?.load || 0).toFixed(1)}%</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-purple-500/20 bg-purple-500/5">
+          <CardContent className="pt-6 px-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-purple-500/20 p-2 text-purple-400">
+                <MemoryStick size={20} />
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">RAM</div>
+                <div className="text-xl font-bold text-white">
+                  {(data.memory?.total ? (data.memory.used / data.memory.total) * 100 : 0).toFixed(1)}%
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-cyan-500/20 bg-cyan-500/5">
+          <CardContent className="pt-6 px-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-cyan-500/20 p-2 text-cyan-400">
+                <Layers size={20} />
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">VRAM</div>
+                <div className="text-xl font-bold text-white">
+                  {(data.gpus?.[0]?.vram ? (data.gpus[0].vramUsed / data.gpus[0].vram) * 100 : 0).toFixed(1)}%
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-emerald-500/20 bg-emerald-500/5">
+          <CardContent className="pt-6 px-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-emerald-500/20 p-2 text-emerald-400">
+                <Activity size={20} />
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">GPU Load</div>
+                <div className="text-xl font-bold text-white">{data.gpus?.[0]?.utilizationGpu || 0}%</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-orange-500/20 bg-orange-500/5">
+          <CardContent className="pt-6 px-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-orange-500/20 p-2 text-orange-400">
+                <Thermometer size={20} />
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">GPU Temp</div>
+                <div className="text-xl font-bold text-white">{data.gpus?.[0]?.temperatureGpu || 0}°C</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-[1fr_350px]">
+        <Card>
+          <CardHeader>
+            <CardTitle>Resource Utilization (Real-time)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="h-[300px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={history}>
+                  <defs>
+                    <linearGradient id="colorCpu" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="colorMem" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#a855f7" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                  <XAxis dataKey="time" hide />
+                  <YAxis stroke="#64748b" fontSize={12} tickFormatter={(v) => `${v}%`} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
+                    itemStyle={{ fontSize: '12px' }}
+                  />
+                  <Area type="monotone" dataKey="cpu" stroke="#3b82f6" fillOpacity={1} fill="url(#colorCpu)" name="CPU %" />
+                  <Area type="monotone" dataKey="mem" stroke="#a855f7" fillOpacity={1} fill="url(#colorMem)" name="RAM %" />
+                  <Area type="monotone" dataKey="vram" stroke="#06b6d4" fillOpacity={0} name="VRAM %" />
+                  <Area type="monotone" dataKey="gpu" stroke="#10b981" fillOpacity={0} name="GPU %" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Memory Details</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+             <div className="flex h-[150px] justify-center">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={[
+                        { name: 'Used', value: data.memory.used },
+                        { name: 'Free', value: data.memory.free },
+                      ]}
+                      innerRadius={40}
+                      outerRadius={60}
+                      paddingAngle={5}
+                      dataKey="value"
+                    >
+                      <Cell fill="#a855f7" />
+                      <Cell fill="#1e293b" />
+                    </Pie>
+                    <Tooltip formatter={(v: number) => fmtBytes(v)} />
+                  </PieChart>
+                </ResponsiveContainer>
+             </div>
+             <div className="space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Total RAM</span>
+                  <span className="text-white">{fmtBytes(data.memory.total)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Active RAM</span>
+                  <span className="text-white">{fmtBytes(data.memory.active)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Swap Total</span>
+                  <span className="text-white">{fmtBytes(data.memory.swaptotal)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Swap Used</span>
+                  <span className="text-white">{fmtBytes(data.memory.swapused)}</span>
+                </div>
+             </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-base">Storage Devices</CardTitle>
+            <HardDrive className="text-slate-500" size={18} />
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {data.disks.map((disk, idx) => (
+              <div key={idx} className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="font-medium text-white">{disk.mount} ({disk.type})</span>
+                  <span className="text-slate-500">{fmtBytes(disk.used)} / {fmtBytes(disk.size)}</span>
+                </div>
+                <UsageBar value={disk.use} label={disk.fs} color={disk.use > 80 ? 'bg-rose-500' : 'bg-blue-600'} />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-base">Network Interfaces</CardTitle>
+            <Network className="text-slate-500" size={18} />
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {data.network.filter(n => n.operstate === 'up').map((net, idx) => (
+              <div key={idx} className="rounded-xl bg-slate-950/40 p-4 border border-slate-800">
+                <div className="flex justify-between mb-3">
+                  <span className="text-sm font-semibold text-white uppercase">{net.iface}</span>
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full uppercase">Online</span>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400"><ArrowDown size={14} /></div>
+                    <div>
+                      <div className="text-[10px] text-slate-500 uppercase tracking-tighter">Down</div>
+                      <div className="text-xs font-mono text-white">{fmtBytes(net.rx_sec)}/s</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 rounded-lg bg-purple-500/10 text-purple-400"><ArrowUp size={14} /></div>
+                    <div>
+                      <div className="text-[10px] text-slate-500 uppercase tracking-tighter">Up</div>
+                      <div className="text-xs font-mono text-white">{fmtBytes(net.tx_sec)}/s</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>GPU Processes & Control</CardTitle>
+          <Button
+            className="gap-2 h-9 px-3 text-xs bg-rose-700 hover:bg-rose-600"
+            onClick={() => {
+              if (confirm('Are you sure? This will kill all Python/vLLM processes on the system.')) {
+                clearGpuMutation.mutate();
+              }
+            }}
+            disabled={clearGpuMutation.isPending}
+          >
+            <Eraser size={16} />
+            Clear GPU Memory
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-500">
+                  <th className="pb-3 font-medium">PID</th>
+                  <th className="pb-3 font-medium">Process</th>
+                  <th className="pb-3 font-medium">CPU %</th>
+                  <th className="pb-3 font-medium">RAM %</th>
+                  <th className="pb-3 font-medium">User</th>
+                  <th className="pb-3 text-right font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/50">
+                {data.gpuProcesses.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-slate-500">
+                      No active GPU processes detected.
+                    </td>
+                  </tr>
+                ) : (
+                  data.gpuProcesses.map((proc) => (
+                    <tr key={proc.pid} className="group hover:bg-slate-800/30">
+                      <td className="py-3 font-mono text-slate-400">{proc.pid}</td>
+                      <td className="py-3">
+                        <div className="font-medium text-white">{proc.name}</div>
+                        <div className="text-[10px] text-slate-500 truncate max-w-md">{proc.command}</div>
+                      </td>
+                      <td className="py-3 text-slate-300">{proc.cpu.toFixed(1)}%</td>
+                      <td className="py-3 text-slate-300">{proc.mem.toFixed(1)}%</td>
+                      <td className="py-3 text-slate-400">{proc.user}</td>
+                      <td className="py-3 text-right">
+                        <Button
+                          className="h-8 w-8 p-0 text-slate-500 hover:text-rose-500 bg-transparent border-none shadow-none"
+                          onClick={() => {
+                            if (confirm(`Kill process ${proc.pid} (${proc.name})?`)) {
+                              killMutation.mutate(proc.pid);
+                            }
+                          }}
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {data.gpus.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>GPU Accelerators</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {data.gpus.map((gpu, idx) => (
+              <div key={idx} className="grid gap-6 md:grid-cols-[1fr_2fr_1fr] items-center rounded-2xl border border-slate-800 bg-slate-950/40 p-5">
+                <div>
+                  <div className="text-xs text-slate-500 uppercase tracking-wider mb-1">{gpu.vendor}</div>
+                  <div className="text-lg font-bold text-white leading-tight">{gpu.model}</div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <UsageBar value={gpu.utilizationGpu} label="GPU Utilization" color="bg-emerald-500" />
+                  <UsageBar value={(gpu.vramUsed / gpu.vram) * 100} label="VRAM Usage" color="bg-cyan-500" />
+                </div>
+                <div className="flex flex-col items-end gap-1">
+                  <div className="text-xs text-slate-500 uppercase tracking-tighter">VRAM</div>
+                  <div className="text-sm font-mono text-white">
+                    {gpu.vramUsed} / {gpu.vram} MB
+                  </div>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+
 path: /web/src/features/playground/page.tsx
 ----------------------------------------
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 
@@ -6084,40 +8793,73 @@ export default function PlaygroundPage() {
   const [maxTokens, setMaxTokens] = useState('128');
   const [messages, setMessages] = useState<Msg[]>([]);
 
-  const chatMutation = useMutation({
-    mutationFn: api.chat,
-    onSuccess: (data) => {
-      const assistant = data?.choices?.[0]?.message?.content || JSON.stringify(data, null, 2);
-      setMessages((prev) => [...prev, { role: 'assistant', content: assistant }]);
-    },
-    onError: (err) => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `Error: ${String((err as Error)?.message || err)}`,
-        },
-      ]);
-    },
-  });
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!runtimeQuery.data?.vllm?.model) return;
-  }, [runtimeQuery.data]);
-
-  function sendMessage() {
+  async function sendMessage() {
     const text = input.trim();
-    if (!text || chatMutation.isPending) return;
+    if (!text || isStreaming) return;
 
     const nextMessages = [...messages, { role: 'user' as const, content: text }];
-    setMessages(nextMessages);
+    setMessages([...nextMessages, { role: 'assistant', content: '' }]);
     setInput('');
+    setIsStreaming(true);
+    setError(null);
 
-    chatMutation.mutate({
-      messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
-      temperature: Number(temperature),
-      max_tokens: Number(maxTokens),
-    });
+    try {
+      const stream = await api.chatStream({
+        // vLLM identifies the model by its serving path or alias
+        model: runtimeQuery.data?.vllm?.model || undefined,
+        messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
+        temperature: Number(temperature),
+        max_tokens: Number(maxTokens),
+      });
+
+      if (!stream) throw new Error('No response body');
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let assistantText = '';
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.includes(': ping')) continue;
+          if (trimmed.startsWith('data: ')) {
+            const data = trimmed.slice(6);
+            if (data === '[DONE]') break;
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content || '';
+              assistantText += content;
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last && last.role === 'assistant') {
+                  last.content = assistantText;
+                }
+                return next;
+              });
+            } catch (e) {
+              console.error('Error parsing SSE:', e, data);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      const errMsg = String((err as Error)?.message || err);
+      setError(errMsg);
+      setMessages((prev) => prev.slice(0, -1)); // Remove the empty assistant message if error occurred
+    } finally {
+      setIsStreaming(false);
+    }
   }
 
   return (
@@ -6125,11 +8867,11 @@ export default function PlaygroundPage() {
       <div>
         <h1 className="text-2xl font-semibold text-white">Playground</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Проверяй дообученную модель прямо в UI после запуска через Jobs → Use in runtime.
+          Проверяй base model или model + LoRA прямо в UI.
         </p>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[320px_1fr]">
+      <div className="grid gap-6 xl:grid-cols-[340px_1fr]">
         <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="text-sm font-semibold text-white">Runtime</div>
 
@@ -6139,15 +8881,23 @@ export default function PlaygroundPage() {
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-500">Model</div>
-            <div className="mt-1 break-all text-sm text-white">
-              {runtimeQuery.data?.vllm?.model || 'No runtime model'}
-            </div>
+            <div className="text-xs text-slate-500">Base model</div>
+            <div className="mt-1 text-sm text-white">{runtimeQuery.data?.vllm.baseModel || '—'}</div>
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-500">Port</div>
-            <div className="mt-1 text-sm text-white">{runtimeQuery.data?.vllm?.port || '—'}</div>
+            <div className="text-xs text-slate-500">Active model</div>
+            <div className="mt-1 text-sm text-white">{runtimeQuery.data?.vllm.activeModelName || '—'}</div>
+          </div>
+
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Active LoRA</div>
+            <div className="mt-1 text-sm text-white">{runtimeQuery.data?.vllm.activeLoraName || 'None'}</div>
+          </div>
+
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Serving path</div>
+            <div className="mt-1 break-all text-sm text-white">{runtimeQuery.data?.vllm.model || 'No runtime model'}</div>
           </div>
 
           <div>
@@ -6176,7 +8926,10 @@ export default function PlaygroundPage() {
         </div>
 
         <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-          <div className="mb-4 text-sm font-semibold text-white">Chat</div>
+          <div className="mb-4 flex items-center justify-between">
+            <div className="text-sm font-semibold text-white">Chat</div>
+            {error && <div className="text-xs text-red-500 font-medium">Error: {error}</div>}
+          </div>
 
           <div className="mb-4 h-[460px] overflow-auto rounded-2xl bg-slate-950 p-4">
             {!messages.length ? (
@@ -6208,13 +8961,10 @@ export default function PlaygroundPage() {
               placeholder="Напиши сообщение модели..."
             />
             <div className="flex gap-3">
-              <Button onClick={sendMessage} disabled={!runtimeQuery.data?.vllm?.model || chatMutation.isPending}>
+              <Button onClick={sendMessage} disabled={!runtimeQuery.data?.vllm?.model || isStreaming}>
                 Send
               </Button>
-              <Button
-                className="bg-slate-800 hover:bg-slate-700"
-                onClick={() => setMessages([])}
-              >
+              <Button className="bg-slate-800 hover:bg-slate-700" onClick={() => setMessages([])}>
                 Clear
               </Button>
             </div>
@@ -6230,6 +8980,7 @@ path: /web/src/features/runtime/page.tsx
 ----------------------------------------
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../../lib/api';
 import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
@@ -6240,6 +8991,7 @@ import { fmtDate } from '../../lib/utils';
 
 export default function RuntimePage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const runtimeQuery = useQuery({ queryKey: ['runtime'], queryFn: api.getRuntime, refetchInterval: 5000 });
   const healthQuery = useQuery({ queryKey: ['runtime-health'], queryFn: api.getRuntimeHealth, refetchInterval: 5000 });
@@ -6276,19 +9028,28 @@ export default function RuntimePage() {
     },
   });
 
+  const deactivateLoraMutation = useMutation({
+    mutationFn: api.deactivateLora,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['runtime'] });
+      await queryClient.invalidateQueries({ queryKey: ['runtime-health'] });
+    },
+  });
+
   return (
     <div>
-      <PageHeader title="Runtime" description="Управление vLLM и параметрами inference." />
-      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+      <PageHeader title="Runtime" description="Запуск vLLM и текущая активная модель / LoRA." />
+      <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
         <Card>
           <CardHeader>
-            <CardTitle>vLLM configuration</CardTitle>
+            <CardTitle>Manual vLLM configuration</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
-              <label className="mb-2 block text-sm text-slate-400">Model</label>
+              <label className="mb-2 block text-sm text-slate-400">Model path or repo</label>
               <Input value={model} onChange={(e) => setModel(e.target.value)} />
             </div>
+
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-2 block text-sm text-slate-400">Port</label>
@@ -6307,10 +9068,40 @@ export default function RuntimePage() {
                 <Input value={gpuMemoryUtilization} onChange={(e) => setGpuMemoryUtilization(e.target.value)} />
               </div>
             </div>
-            <div className="flex gap-3">
-              <Button onClick={() => startMutation.mutate({ model, port: Number(port), maxModelLen: Number(maxModelLen), gpuMemoryUtilization: Number(gpuMemoryUtilization), tensorParallelSize: Number(tensorParallelSize) })} disabled={startMutation.isPending}>Start</Button>
-              <Button onClick={() => stopMutation.mutate()} disabled={stopMutation.isPending} className="bg-rose-500 text-white hover:bg-rose-400">Stop</Button>
+
+            <div className="flex flex-wrap gap-3">
+              <Button
+                onClick={() =>
+                  startMutation.mutate({
+                    model,
+                    port: Number(port),
+                    maxModelLen: Number(maxModelLen),
+                    gpuMemoryUtilization: Number(gpuMemoryUtilization),
+                    tensorParallelSize: Number(tensorParallelSize),
+                  })
+                }
+                disabled={startMutation.isPending}
+              >
+                Start
+              </Button>
+
+              <Button
+                onClick={() => stopMutation.mutate()}
+                disabled={stopMutation.isPending}
+                className="bg-rose-500 text-white hover:bg-rose-400"
+              >
+                Stop
+              </Button>
+
+              <Button
+                onClick={() => deactivateLoraMutation.mutate()}
+                disabled={deactivateLoraMutation.isPending}
+                className="bg-slate-800 text-white hover:bg-slate-700"
+              >
+                Switch to base model
+              </Button>
             </div>
+
             {startMutation.error ? <p className="text-sm text-rose-300">{(startMutation.error as Error).message}</p> : null}
           </CardContent>
         </Card>
@@ -6320,12 +9111,56 @@ export default function RuntimePage() {
             <CardTitle>Runtime status</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 text-sm">
-            <div className="flex items-center justify-between"><span className="text-slate-400">Health</span><StatusBadge value={healthQuery.data?.ok ? 'healthy' : 'failed'} /></div>
-            <div className="flex items-center justify-between"><span className="text-slate-400">PID</span><span className="text-white">{runtimeQuery.data?.vllm.pid || '—'}</span></div>
-            <div className="flex items-center justify-between gap-3"><span className="text-slate-400">Model</span><span className="text-right text-white">{runtimeQuery.data?.vllm.model || 'Not running'}</span></div>
-            <div className="flex items-center justify-between"><span className="text-slate-400">Port</span><span className="text-white">{runtimeQuery.data?.vllm.port || '—'}</span></div>
-            <div className="flex items-center justify-between"><span className="text-slate-400">Started</span><span className="text-white">{fmtDate(runtimeQuery.data?.vllm.startedAt)}</span></div>
-            <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 text-xs text-slate-300">{healthQuery.data?.raw || 'No health output'}</pre>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">Health</span>
+              <StatusBadge
+                value={
+                  healthQuery.data?.ok
+                    ? 'healthy'
+                    : (runtimeQuery.data?.vllm.pid ? 'starting' : 'failed')
+                }
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">PID</span>
+              <span className="text-white">{runtimeQuery.data?.vllm.pid || '—'}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-slate-400">Serving path</span>
+              <span className="text-right text-white">{runtimeQuery.data?.vllm.model || 'Not running'}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-slate-400">Base model</span>
+              <span className="text-right text-white">{runtimeQuery.data?.vllm.baseModel || '—'}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-slate-400">Active model</span>
+              <span className="text-right text-white">{runtimeQuery.data?.vllm.activeModelName || '—'}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-slate-400">Active LoRA</span>
+              <span className="text-right text-white">{runtimeQuery.data?.vllm.activeLoraName || 'None'}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">Port</span>
+              <span className="text-white">{runtimeQuery.data?.vllm.port || '—'}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">Started</span>
+              <span className="text-white">{fmtDate(runtimeQuery.data?.vllm.startedAt)}</span>
+            </div>
+            <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 text-xs text-slate-300">
+              {healthQuery.data?.raw || 'No health output'}
+            </pre>
+
+            {healthQuery.data?.ok && (
+              <Button
+                onClick={() => navigate('/app/playground')}
+                className="w-full bg-blue-600 hover:bg-blue-500 mt-2"
+              >
+                Go to Playground
+              </Button>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -6402,7 +9237,7 @@ export default function SettingsPage() {
 
 path: /web/src/features/training/page.tsx
 ----------------------------------------
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../lib/api';
@@ -6414,32 +9249,53 @@ import { Select } from '../../components/ui/select';
 
 export default function TrainingPage() {
   const navigate = useNavigate();
+
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const datasetsQuery = useQuery({ queryKey: ['datasets'], queryFn: api.getDatasets });
+  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: api.getModels });
+  const lorasQuery = useQuery({ queryKey: ['loras'], queryFn: api.getLoras });
 
   const [datasetId, setDatasetId] = useState('');
   const [name, setName] = useState('');
-  const [baseModel, setBaseModel] = useState('');
+  const [modelId, setModelId] = useState('');
   const [epochs, setEpochs] = useState('3');
   const [lr, setLr] = useState('0.0002');
   const [batchSize, setBatchSize] = useState('1');
   const [gradAcc, setGradAcc] = useState('8');
+  const [maxSeqLength, setMaxSeqLength] = useState('4096');
+  const [loraR, setLoraR] = useState('16');
+  const [loraAlpha, setLoraAlpha] = useState('16');
+  const [loraDropout, setLoraDropout] = useState('0');
 
   useEffect(() => {
     if (settingsQuery.data) {
-      setBaseModel(settingsQuery.data.baseModel);
       setEpochs(String(settingsQuery.data.qlora.numTrainEpochs));
       setLr(String(settingsQuery.data.qlora.learningRate));
       setBatchSize(String(settingsQuery.data.qlora.perDeviceTrainBatchSize));
       setGradAcc(String(settingsQuery.data.qlora.gradientAccumulationSteps));
+      setMaxSeqLength(String(settingsQuery.data.qlora.maxSeqLength));
+      setLoraR(String(settingsQuery.data.qlora.loraR));
+      setLoraAlpha(String(settingsQuery.data.qlora.loraAlpha));
+      setLoraDropout(String(settingsQuery.data.qlora.loraDropout));
     }
   }, [settingsQuery.data]);
 
   useEffect(() => {
-    if (!datasetId && datasetsQuery.data?.[0]?.id) {
-      setDatasetId(datasetsQuery.data[0].id);
-    }
+    if (!datasetId && datasetsQuery.data?.[0]?.id) setDatasetId(datasetsQuery.data[0].id);
   }, [datasetsQuery.data, datasetId]);
+
+  useEffect(() => {
+    const firstReadyModel = modelsQuery.data?.find((m) => m.status === 'ready');
+    if (!modelId && firstReadyModel?.id) setModelId(firstReadyModel.id);
+  }, [modelsQuery.data, modelId]);
+
+  const filteredLoras = useMemo(() => {
+    return (lorasQuery.data || []).filter((x) => x.baseModelId === modelId);
+  }, [lorasQuery.data, modelId]);
+
+  const selectedModel = useMemo(() => {
+    return (modelsQuery.data || []).find((x) => x.id === modelId) || null;
+  }, [modelsQuery.data, modelId]);
 
   const startMutation = useMutation({
     mutationFn: api.startFineTune,
@@ -6450,28 +9306,46 @@ export default function TrainingPage() {
 
   return (
     <div>
-      <PageHeader title="Training" description="Запуск fine-tune job с QLoRA-настройками." />
-      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+      <PageHeader title="Training" description="Выбери базовую модель, датасет и настройки обучения. Справа видно LoRA уже созданные под эту модель." />
+
+      <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
         <Card>
           <CardHeader>
             <CardTitle>New fine-tune job</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
+              <label className="mb-2 block text-sm text-slate-400">Base model</label>
+              <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
+                <option value="">Select model</option>
+                {(modelsQuery.data || []).map((m) => (
+                  <option key={m.id} value={m.id} disabled={m.status !== 'ready'}>
+                    {m.name} {m.status !== 'ready' ? `(${m.status})` : ''}
+                  </option>
+                ))}
+              </Select>
+              <div className="mt-2 text-xs text-slate-500">
+                Сначала скачай модель на странице Models. Для обучения используется локальная модель из базы.
+              </div>
+            </div>
+
+            <div>
               <label className="mb-2 block text-sm text-slate-400">Dataset</label>
               <Select value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
                 <option value="">Select dataset</option>
-                {(datasetsQuery.data || []).map((ds) => <option key={ds.id} value={ds.id}>{ds.name} ({ds.rows})</option>)}
+                {(datasetsQuery.data || []).map((ds) => (
+                  <option key={ds.id} value={ds.id}>
+                    {ds.name} ({ds.rows})
+                  </option>
+                ))}
               </Select>
             </div>
+
             <div>
-              <label className="mb-2 block text-sm text-slate-400">Job name</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-qlora-run" />
+              <label className="mb-2 block text-sm text-slate-400">Job / LoRA name</label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="support-bot-v1" />
             </div>
-            <div>
-              <label className="mb-2 block text-sm text-slate-400">Base model</label>
-              <Input value={baseModel} onChange={(e) => setBaseModel(e.target.value)} placeholder="Qwen/Qwen2.5-7B-Instruct" />
-            </div>
+
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-2 block text-sm text-slate-400">Epochs</label>
@@ -6489,38 +9363,84 @@ export default function TrainingPage() {
                 <label className="mb-2 block text-sm text-slate-400">Grad accumulation</label>
                 <Input value={gradAcc} onChange={(e) => setGradAcc(e.target.value)} />
               </div>
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Max seq length</label>
+                <Input value={maxSeqLength} onChange={(e) => setMaxSeqLength(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">LoRA R</label>
+                <Input value={loraR} onChange={(e) => setLoraR(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">LoRA Alpha</label>
+                <Input value={loraAlpha} onChange={(e) => setLoraAlpha(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">LoRA Dropout</label>
+                <Input value={loraDropout} onChange={(e) => setLoraDropout(e.target.value)} />
+              </div>
             </div>
+
+            <div className="rounded-xl bg-slate-950/50 p-3 text-sm text-slate-400">
+              Подсказка: для smoke test используй 1 эпоху, маленький датасет и batch size = 1.
+            </div>
+
             <Button
-              onClick={() => startMutation.mutate({
-                datasetId,
-                name,
-                baseModel,
-                qlora: {
-                  numTrainEpochs: Number(epochs),
-                  learningRate: Number(lr),
-                  perDeviceTrainBatchSize: Number(batchSize),
-                  gradientAccumulationSteps: Number(gradAcc),
-                },
-              })}
-              disabled={!datasetId || !baseModel || startMutation.isPending}
+              onClick={() =>
+                startMutation.mutate({
+                  datasetId,
+                  name,
+                  modelId,
+                  qlora: {
+                    numTrainEpochs: Number(epochs),
+                    learningRate: Number(lr),
+                    perDeviceTrainBatchSize: Number(batchSize),
+                    gradientAccumulationSteps: Number(gradAcc),
+                    maxSeqLength: Number(maxSeqLength),
+                    loraR: Number(loraR),
+                    loraAlpha: Number(loraAlpha),
+                    loraDropout: Number(loraDropout),
+                  },
+                })
+              }
+              disabled={!datasetId || !modelId || startMutation.isPending}
             >
               {startMutation.isPending ? 'Starting…' : 'Start fine-tune'}
             </Button>
+
             {startMutation.error ? <p className="text-sm text-rose-300">{(startMutation.error as Error).message}</p> : null}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Summary</CardTitle>
+            <CardTitle>Model summary</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div className="flex justify-between gap-3"><span className="text-slate-400">Dataset</span><span className="text-right text-white">{datasetId || '—'}</span></div>
-            <div className="flex justify-between gap-3"><span className="text-slate-400">Model</span><span className="text-right text-white">{baseModel || '—'}</span></div>
-            <div className="flex justify-between gap-3"><span className="text-slate-400">Epochs</span><span className="text-white">{epochs}</span></div>
-            <div className="flex justify-between gap-3"><span className="text-slate-400">LR</span><span className="text-white">{lr}</span></div>
-            <div className="flex justify-between gap-3"><span className="text-slate-400">Batch size</span><span className="text-white">{batchSize}</span></div>
-            <div className="flex justify-between gap-3"><span className="text-slate-400">Grad acc</span><span className="text-white">{gradAcc}</span></div>
+          <CardContent className="space-y-4">
+            <div>
+              <div className="text-sm text-slate-400">Selected model</div>
+              <div className="mt-1 text-white">{selectedModel?.name || '—'}</div>
+            </div>
+
+            <div>
+              <div className="text-sm text-slate-400">Existing LoRAs under this model</div>
+              <div className="mt-2 space-y-2">
+                {!filteredLoras.length ? (
+                  <div className="text-sm text-slate-500">No LoRAs yet for this model.</div>
+                ) : (
+                  filteredLoras.map((item) => (
+                    <div key={item.id} className="rounded-xl bg-slate-950/40 p-3">
+                      <div className="font-medium text-white">{item.name}</div>
+                      <div className="mt-1 text-xs text-slate-500">Job: {item.jobId}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-sm text-slate-400">
+              После completed job LoRA автоматически появится в списке LoRAs и её можно будет запустить на инференс или упаковать.
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -6543,14 +9463,24 @@ export function useEvents() {
     const invalidate = () => {
       queryClient.invalidateQueries();
     };
+
     source.addEventListener('job_updated', invalidate);
     source.addEventListener('dataset_created', invalidate);
     source.addEventListener('dataset_deleted', invalidate);
     source.addEventListener('runtime_started', invalidate);
     source.addEventListener('runtime_stopped', invalidate);
+    source.addEventListener('model_updated', invalidate);
+    source.addEventListener('model_deleted', invalidate);
+    source.addEventListener('lora_created', invalidate);
+    source.addEventListener('lora_updated', invalidate);
+    source.addEventListener('lora_deleted', invalidate);
+    source.addEventListener('lora_activated', invalidate);
+    source.addEventListener('lora_deactivated', invalidate);
+
     source.onerror = () => {
       source.close();
     };
+
     return () => {
       source.close();
     };
@@ -6611,61 +9541,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export type JobStatus =
-  | 'queued'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'stopped';
-
-export type Dataset = {
-  id: string;
-  name: string;
-  createdAt: string;
-  format: string;
-  rawPath?: string;
-  processedPath: string;
-  rows: number;
-};
-
-export type DatasetPreviewItem = {
-  messages: Array<{ role: string; content: string }>;
-};
-
-export type DatasetPreviewResponse = {
-  id: string;
-  name: string;
-  totalRows: number;
-  preview: DatasetPreviewItem[];
-};
-
-export type Job = {
-  id: string;
-  type: string;
-  name: string;
-  status: JobStatus;
-  createdAt: string;
-  startedAt: string | null;
-  finishedAt: string | null;
-  datasetId: string;
-  datasetPath: string;
-  baseModel: string;
-  qlora?: Partial<Settings['qlora']>;
-  outputDir: string;
-  logFile: string;
-  pid: number | null;
-  error: string | null;
-};
-
-export type RuntimeState = {
-  vllm: {
-    pid: number | null;
-    model: string | null;
-    startedAt: string | null;
-    port: number;
-    logFile?: string;
-  };
-};
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
 
 export type Settings = {
   baseModel: string;
@@ -6693,6 +9569,109 @@ export type Settings = {
   };
 };
 
+export type ModelItem = {
+  id: string;
+  name: string;
+  repoId: string;
+  createdAt: string;
+  status: 'downloading' | 'ready' | 'failed';
+  path: string;
+  logFile: string;
+  pid: number | null;
+  error: string | null;
+};
+
+export type LoraItem = {
+  id: string;
+  name: string;
+  jobId: string;
+  baseModelId: string | null;
+  baseModelName: string;
+  baseModelRef: string;
+  adapterPath: string;
+  mergedPath: string | null;
+  packagePath: string | null;
+  createdAt: string;
+  status: string;
+  mergeStatus: string;
+  packageStatus: string;
+  error: string | null;
+};
+
+export type Dataset = {
+  id: string;
+  name: string;
+  createdAt: string;
+  format: string;
+  rawPath?: string;
+  processedPath: string;
+  rows: number;
+};
+
+export type DatasetPreviewResponse = {
+  id: string;
+  name: string;
+  totalRows: number;
+  preview: Array<{ messages: Array<{ role: string; content: string }> }>;
+};
+
+export type DatasetValidationResponse = {
+  ok: boolean;
+  detectedFormat: string;
+  totalLines?: number;
+  totalItems?: number;
+  validCount: number;
+  invalidCount: number;
+  preview: Array<{ messages: Array<{ role: string; content: string }> }>;
+  errors: Array<{ line?: number; index?: number; error: string; raw: unknown }>;
+};
+
+export type Job = {
+  id: string;
+  type: string;
+  name: string;
+  status: JobStatus;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  datasetId: string;
+  datasetPath: string;
+  modelId?: string | null;
+  baseModel: string;
+  qlora?: Partial<Settings['qlora']>;
+  outputDir: string;
+  logFile: string;
+  pid: number | null;
+  error: string | null;
+};
+
+export type RuntimeState = {
+  vllm: {
+    pid: number | null;
+    model: string | null;
+    startedAt: string | null;
+    port: number;
+    logFile?: string;
+    baseModel?: string | null;
+    activeModelId?: string | null;
+    activeModelName?: string | null;
+    activeLoraId?: string | null;
+    activeLoraName?: string | null;
+  };
+};
+
+export type RuntimeHealth = {
+  ok: boolean;
+  raw?: string;
+};
+
+export type LogEntry = {
+  timestamp: string;
+  level: 'info' | 'warn' | 'error' | 'debug';
+  message: string;
+  [key: string]: any;
+};
+
 export type DashboardSummary = {
   health: {
     ok: boolean;
@@ -6716,105 +9695,13 @@ export type DashboardSummary = {
   recentJobs: Job[];
 };
 
-export type RuntimeHealth = {
-  ok: boolean;
-  raw?: string;
-};
-
-export type ChatMessage = {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-};
-
 export type ChatResponse = {
-  id?: string;
-  object?: string;
-  created?: number;
-  model?: string;
   choices?: Array<{
-    index?: number;
     message?: {
       role?: string;
       content?: string;
     };
-    finish_reason?: string;
   }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-};
-
-export type StartFineTunePayload = {
-  datasetId: string;
-  name?: string;
-  baseModel?: string;
-  qlora?: Partial<Settings['qlora']>;
-};
-
-export type StartFineTuneResponse = {
-  ok: boolean;
-  jobId: string;
-  logFile: string;
-  outputDir: string;
-};
-
-export type StartVllmPayload = {
-  model: string;
-  port: number;
-  maxModelLen: number;
-  gpuMemoryUtilization: number;
-  tensorParallelSize: number;
-};
-
-export type StartVllmResponse = {
-  ok: boolean;
-  runtime: RuntimeState['vllm'];
-};
-
-export type UseJobOutputPayload = {
-  jobId: string;
-  port?: number;
-  maxModelLen?: number;
-  gpuMemoryUtilization?: number;
-  tensorParallelSize?: number;
-};
-
-export type UseJobOutputResponse = {
-  ok: boolean;
-  runtime: {
-    pid: number | null;
-    model: string | null;
-    startedAt: string | null;
-    port: number;
-    logFile?: string;
-  };
-  job: {
-    id: string;
-    outputDir: string;
-    status: string;
-  };
-};
-
-export type JobLogsResponse = {
-  id: string;
-  logFile: string;
-  content: string;
-};
-
-export type CreateDatasetFromJsonlPayload = {
-  name: string;
-  jsonl: string;
-};
-
-export type CreateDatasetFromItemsPayload = {
-  name: string;
-  items: Array<
-    | { messages: Array<{ role: string; content: string }> }
-    | { instruction?: string; input?: string; output?: string }
-    | { prompt?: string; completion?: string }
-  >;
 };
 
 type DeepPartial<T> = {
@@ -6825,31 +9712,12 @@ type DeepPartial<T> = {
       : T[K];
 };
 
-export type DatasetValidationResponse = {
-  ok: boolean;
-  detectedFormat: string;
-  totalLines?: number;
-  totalItems?: number;
-  validCount: number;
-  invalidCount: number;
-  preview: Array<{
-    messages: Array<{ role: string; content: string }>;
-  }>;
-  errors: Array<{
-    line?: number;
-    index?: number;
-    error: string;
-    raw: unknown;
-  }>;
-};
-
 export function createEventsSource() {
   return new EventSource(`${API_BASE}/events`);
 }
 
 export const api = {
   health: () => request<{ ok: boolean; service?: string; time?: string }>('/health'),
-
   getDashboardSummary: () => request<DashboardSummary>('/dashboard/summary'),
 
   getSettings: () => request<Settings>('/settings'),
@@ -6859,13 +9727,76 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  getModels: () => request<ModelItem[]>('/models'),
+  getModel: (id: string) => request<ModelItem>(`/models/${id}`),
+  getModelLogs: (id: string, tail = 200) => request<{ id: string; logFile: string; content: string }>(`/models/${id}/logs?tail=${tail}`),
+  downloadModel: (payload: { repoId: string; name?: string }) =>
+    request<ModelItem>('/models/download', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  activateModel: (id: string, payload?: Partial<Settings['inference']>) =>
+    request<{ ok: boolean; model: ModelItem; runtime: RuntimeState['vllm'] }>(`/models/${id}/activate`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  deleteModel: (id: string) =>
+    request<{ ok: boolean }>(`/models/${id}`, {
+      method: 'DELETE',
+    }),
+
+  getLoras: () => request<LoraItem[]>('/loras'),
+  getLora: (id: string) => request<LoraItem>(`/loras/${id}`),
+  registerLoraFromJob: (payload: { jobId: string; name?: string }) =>
+    request<LoraItem>('/loras/from-job', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  renameLora: (id: string, payload: { name: string }) =>
+    request<LoraItem>(`/loras/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  buildMergedLora: (id: string) =>
+    request<LoraItem>(`/loras/${id}/build-merged`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  packageLora: (id: string) =>
+    request<{ ok: boolean; lora: LoraItem; downloadPath: string }>(`/loras/${id}/package`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  activateLora: (id: string, payload?: Partial<Settings['inference']>) =>
+    request<{ ok: boolean; lora: LoraItem; runtime: RuntimeState['vllm'] }>(`/loras/${id}/activate`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  deactivateLora: () =>
+    request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/loras/deactivate', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  deleteLora: (id: string) =>
+    request<{ ok: boolean }>(`/loras/${id}`, {
+      method: 'DELETE',
+    }),
+
   getDatasets: () => request<Dataset[]>('/datasets'),
-  createDatasetFromJsonl: (payload: CreateDatasetFromJsonlPayload) =>
+  validateDatasetJsonl: (payload: { jsonl: string }) =>
+    request<DatasetValidationResponse>('/datasets/validate-jsonl', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  createDatasetFromJsonl: (payload: { name: string; jsonl: string }) =>
     request<Dataset>('/datasets/from-jsonl', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  createDatasetFromItems: (payload: CreateDatasetFromItemsPayload) =>
+  createDatasetFromItems: (payload: {
+    name: string;
+    items: Array<{ messages: Array<{ role: string; content: string }> }>;
+  }) =>
     request<Dataset>('/datasets/from-items', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -6880,9 +9811,15 @@ export const api = {
   getJobs: () => request<Job[]>('/jobs'),
   getJob: (id: string) => request<Job>(`/jobs/${id}`),
   getJobLogs: (id: string, tail = 200) =>
-    request<JobLogsResponse>(`/jobs/${id}/logs?tail=${tail}`),
-  startFineTune: (payload: StartFineTunePayload) =>
-    request<StartFineTuneResponse>('/jobs/fine-tune', {
+    request<{ id: string; logFile: string; content: string }>(`/jobs/${id}/logs?tail=${tail}`),
+  startFineTune: (payload: {
+    datasetId: string;
+    name?: string;
+    modelId?: string;
+    baseModel?: string;
+    qlora?: Partial<Settings['qlora']>;
+  }) =>
+    request<{ ok: boolean; jobId: string; logFile: string; outputDir: string }>('/jobs/fine-tune', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -6893,8 +9830,14 @@ export const api = {
 
   getRuntime: () => request<RuntimeState>('/runtime'),
   getRuntimeHealth: () => request<RuntimeHealth>('/runtime/health'),
-  startVllm: (payload: StartVllmPayload) =>
-    request<StartVllmResponse>('/runtime/vllm/start', {
+  startVllm: (payload: {
+    model: string;
+    port: number;
+    maxModelLen: number;
+    gpuMemoryUtilization: number;
+    tensorParallelSize: number;
+  }) =>
+    request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/runtime/vllm/start', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -6902,36 +9845,70 @@ export const api = {
     request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/runtime/vllm/stop', {
       method: 'POST',
     }),
-  useJobOutput: (payload: UseJobOutputPayload) =>
-    request<UseJobOutputResponse>('/runtime/use-job-output', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+
+  getLogs: (params: { level?: string; q?: string; limit?: number }) => {
+    const search = new URLSearchParams();
+    if (params.level) search.append('level', params.level);
+    if (params.q) search.append('q', params.q);
+    if (params.limit) search.append('limit', String(params.limit));
+    return request<LogEntry[]>(`/logs?${search.toString()}`);
+  },
+
+  getMonitorStats: () => request<{
+    cpu: { load: number; cores: number[] };
+    memory: { total: number; used: number; free: number; active: number; swaptotal: number; swapused: number };
+    gpus: Array<{ model: string; vendor: string; vram: number; vramUsed: number; utilizationGpu: number; temperatureGpu: number }>;
+    disks: Array<{ fs: string; type: string; size: number; used: number; available: number; use: number; mount: string }>;
+    network: Array<{ iface: string; operstate: string; rx_sec: number; tx_sec: number }>;
+    gpuProcesses: Array<{ pid: number; name: string; cpu: number; mem: number; user: string; command: string }>;
+  }>('/monitor/stats'),
+
+  killProcess: (pid: number) => request<{ ok: boolean }>('/monitor/kill', {
+    method: 'POST',
+    body: JSON.stringify({ pid }),
+  }),
+
+  clearGpu: () => request<{ ok: boolean; killedCount: number }>('/monitor/clear-gpu', {
+    method: 'POST',
+  }),
   chat: (payload: {
     model?: string;
-    messages: ChatMessage[];
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
     temperature?: number;
     max_tokens?: number;
+    stream?: boolean;
   }) =>
     request<ChatResponse>('/runtime/chat', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
 
-  validateDatasetJsonl: (payload: { jsonl: string }) =>
-    request<DatasetValidationResponse>('/datasets/validate-jsonl', {
+  chatStream: async (payload: {
+    model?: string;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    temperature?: number;
+    max_tokens?: number;
+  }) => {
+    const res = await fetch(`${API_BASE}/runtime/chat`, {
       method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-
-  validateDatasetItems: (payload: { items: Array<{ messages: Array<{ role: string; content: string }> }> }) =>
-    request<DatasetValidationResponse>('/datasets/validate-items', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, stream: true }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+    return res.body;
+  },
+  useJobOutput: (jobId: string) =>
+  request<{ ok: boolean; runtime: RuntimeState['vllm']; job: Job }>('/runtime/use-job-output', {
+    method: 'POST',
+    body: JSON.stringify({ jobId }),
+  }),
 };
 
 export type Api = typeof api;
+export const apiBase = API_BASE;
 
 
 path: /web/src/lib/utils.ts
@@ -7019,7 +9996,7 @@ path: /web/tsconfig.json
 
 path: /web/tsconfig.tsbuildinfo
 ----------------------------------------
-{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/app-shell.tsx","./src/components/log-viewer.tsx","./src/components/page-header.tsx","./src/components/stat-card.tsx","./src/components/status-badge.tsx","./src/components/ui/button.tsx","./src/components/ui/card.tsx","./src/components/ui/input.tsx","./src/components/ui/select.tsx","./src/components/ui/textarea.tsx","./src/features/dashboard/page.tsx","./src/features/datasets/page.tsx","./src/features/jobs/page.tsx","./src/features/playground/page.tsx","./src/features/runtime/page.tsx","./src/features/settings/page.tsx","./src/features/training/page.tsx","./src/hooks/use-events.ts","./src/lib/api.ts","./src/lib/utils.ts"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/app-shell.tsx","./src/components/log-viewer.tsx","./src/components/page-header.tsx","./src/components/stat-card.tsx","./src/components/status-badge.tsx","./src/components/ui/button.tsx","./src/components/ui/card.tsx","./src/components/ui/input.tsx","./src/components/ui/select.tsx","./src/components/ui/textarea.tsx","./src/features/dashboard/page.tsx","./src/features/datasets/page.tsx","./src/features/jobs/page.tsx","./src/features/logs/logs-page.tsx","./src/features/loras/page.tsx","./src/features/models/page.tsx","./src/features/monitor/monitor-page.tsx","./src/features/playground/page.tsx","./src/features/runtime/page.tsx","./src/features/settings/page.tsx","./src/features/training/page.tsx","./src/hooks/use-events.ts","./src/lib/api.ts","./src/lib/utils.ts"],"version":"5.9.3"}
 
 
 path: /web/vite.config.ts
@@ -7037,8 +10014,8 @@ export default defineConfig({
 
 
 === SUMMARY ===
-included: 53
-skipped(binary): 70
+included: 80
+skipped(binary): 1
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 225951
+totalBytes(approx): 326567

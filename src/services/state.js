@@ -316,21 +316,24 @@ async function recoverState() {
         }
       }
     }
-    if (jobsChanged) await saveJobs(jobs);
+    if (jobsChanged) {
+      await writeJson(CONFIG.jobsFile, jobs);
+    }
   });
 
   // Recover runtime
   await withLock(CONFIG.runtimeFile, async () => {
     const runtime = await getRuntime();
     if (runtime.vllm?.pid && !isPidRunning(runtime.vllm.pid)) {
-      await saveRuntime({
+      const next = {
         ...runtime,
         vllm: {
           ...runtime.vllm,
           pid: null,
           startedAt: null,
         },
-      });
+      };
+      await writeJson(CONFIG.runtimeFile, next);
     }
   });
 
@@ -354,7 +357,9 @@ async function recoverState() {
         }
       }
     }
-    if (lorasChanged) await saveLoras(loras);
+    if (lorasChanged) {
+      await writeJson(CONFIG.lorasFile, loras);
+    }
   });
 }
 
