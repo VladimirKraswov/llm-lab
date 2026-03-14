@@ -18,8 +18,17 @@ const logsRoute = require('./routes/logs');
 const monitorRoute = require('./routes/monitor');
 
 async function main() {
-  await ensureWorkspace();
-  await recoverState();
+  try {
+    console.log('Initializing workspace...');
+    await ensureWorkspace();
+    console.log('Recovering state...');
+    await recoverState();
+    console.log('Starting Express app...');
+  } catch (err) {
+    console.error('Critical failure during initialization:');
+    console.error(err);
+    process.exit(1);
+  }
 
   const app = express();
   app.use(cors({ origin: true, credentials: false }));
@@ -70,10 +79,19 @@ async function main() {
     });
   }
 
-  app.listen(CONFIG.port, CONFIG.host, () => {
+  const server = app.listen(CONFIG.port, CONFIG.host, () => {
     console.log(`LLM Lab Service listening on http://${CONFIG.host}:${CONFIG.port}`);
     console.log(`Workspace: ${CONFIG.workspace}`);
     console.log(`Python: ${CONFIG.pythonBin}`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${CONFIG.port} is already in use.`);
+    } else {
+      console.error('Server error:', err);
+    }
+    process.exit(1);
   });
 }
 
