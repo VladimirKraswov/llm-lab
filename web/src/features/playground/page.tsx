@@ -62,6 +62,7 @@ export default function PlaygroundPage() {
 
     try {
       const stream = await api.chatStream({
+        // vLLM identifies the model by its serving path or alias
         model: runtimeQuery.data?.vllm?.model || undefined,
         messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
         temperature: Number(temperature),

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../../lib/api';
 import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
@@ -10,6 +11,7 @@ import { fmtDate } from '../../lib/utils';
 
 export default function RuntimePage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const runtimeQuery = useQuery({ queryKey: ['runtime'], queryFn: api.getRuntime, refetchInterval: 5000 });
   const healthQuery = useQuery({ queryKey: ['runtime-health'], queryFn: api.getRuntimeHealth, refetchInterval: 5000 });
@@ -131,7 +133,13 @@ export default function RuntimePage() {
           <CardContent className="space-y-4 text-sm">
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Health</span>
-              <StatusBadge value={healthQuery.data?.ok ? 'healthy' : 'failed'} />
+              <StatusBadge
+                value={
+                  healthQuery.data?.ok
+                    ? 'healthy'
+                    : (runtimeQuery.data?.vllm.pid ? 'starting' : 'failed')
+                }
+              />
             </div>
             <div className="flex items-center justify-between">
               <span className="text-slate-400">PID</span>
@@ -164,6 +172,15 @@ export default function RuntimePage() {
             <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 text-xs text-slate-300">
               {healthQuery.data?.raw || 'No health output'}
             </pre>
+
+            {healthQuery.data?.ok && (
+              <Button
+                onClick={() => navigate('/app/playground')}
+                className="w-full bg-blue-600 hover:bg-blue-500 mt-2"
+              >
+                Go to Playground
+              </Button>
+            )}
           </CardContent>
         </Card>
       </div>

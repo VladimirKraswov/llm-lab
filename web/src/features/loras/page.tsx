@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -9,6 +10,7 @@ import { fmtDate } from '../../lib/utils';
 
 export default function LorasPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
@@ -32,6 +34,7 @@ export default function LorasPage() {
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['runtime'] });
       await qc.invalidateQueries({ queryKey: ['runtime-health'] });
+      navigate('/app/runtime');
     },
   });
 
