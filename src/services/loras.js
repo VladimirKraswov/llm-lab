@@ -83,10 +83,12 @@ output_dir = ${JSON.stringify(mergedPath)}
 try:
     os.makedirs(output_dir, exist_ok=True)
 
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     model = AutoPeftModelForCausalLM.from_pretrained(
         adapter_path,
         torch_dtype="auto",
-        device_map="cpu",
+        device_map=device,
     )
 
     merged = model.merge_and_unload()

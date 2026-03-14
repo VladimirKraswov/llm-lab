@@ -331,11 +331,30 @@ export const api = {
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
     temperature?: number;
     max_tokens?: number;
+    stream?: boolean;
   }) =>
     request<ChatResponse>('/runtime/chat', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  chatStream: async (payload: {
+    model?: string;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    temperature?: number;
+    max_tokens?: number;
+  }) => {
+    const res = await fetch(`${API_BASE}/runtime/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, stream: true }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+    return res.body;
+  },
   useJobOutput: (jobId: string) =>
   request<{ ok: boolean; runtime: RuntimeState['vllm']; job: Job }>('/runtime/use-job-output', {
     method: 'POST',

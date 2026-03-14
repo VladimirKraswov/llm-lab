@@ -1,6 +1,8 @@
 // src/services/datasets.js
 
+const fs = require('fs');
 const fsp = require('fs/promises');
+const readline = require('readline');
 const path = require('path');
 const { CONFIG } = require('../config');
 const { uid, nowIso } = require('../utils/ids');
@@ -196,14 +198,31 @@ async function previewDataset(datasetId, limit = 20) {
   const ds = datasets.find((x) => x.id === datasetId);
   if (!ds) throw new Error('dataset not found');
 
-  const raw = await fsp.readFile(ds.processedPath, 'utf8');
-  const lines = raw.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, limit);
+  const fileStream = fs.createReadStream(ds.processedPath);
+  const rl = readline.createInterface({
+    input: fileStream,
+    crlfDelay: Infinity,
+  });
+
+  const preview = [];
+  try {
+    for await (const line of rl) {
+      if (preview.length >= limit) break;
+      const trimmed = line.trim();
+      if (trimmed) {
+        preview.push(JSON.parse(trimmed));
+      }
+    }
+  } finally {
+    rl.close();
+    fileStream.destroy();
+  }
 
   return {
     id: ds.id,
     name: ds.name,
     totalRows: ds.rows,
-    preview: lines.map((line) => JSON.parse(line)),
+    preview,
   };
 }
 

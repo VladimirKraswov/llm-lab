@@ -47,33 +47,71 @@ export default function PlaygroundPage() {
   const [maxTokens, setMaxTokens] = useState('128');
   const [messages, setMessages] = useState<Msg[]>([]);
 
-  const chatMutation = useMutation({
-    mutationFn: api.chat,
-    onSuccess: (data) => {
-      const assistant = data?.choices?.[0]?.message?.content || JSON.stringify(data, null, 2);
-      setMessages((prev) => [...prev, { role: 'assistant', content: assistant }]);
-    },
-    onError: (err) => {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: `Error: ${String((err as Error)?.message || err)}` },
-      ]);
-    },
-  });
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function sendMessage() {
+  async function sendMessage() {
     const text = input.trim();
-    if (!text || chatMutation.isPending) return;
+    if (!text || isStreaming) return;
 
     const nextMessages = [...messages, { role: 'user' as const, content: text }];
-    setMessages(nextMessages);
+    setMessages([...nextMessages, { role: 'assistant', content: '' }]);
     setInput('');
+    setIsStreaming(true);
+    setError(null);
 
-    chatMutation.mutate({
-      messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
-      temperature: Number(temperature),
-      max_tokens: Number(maxTokens),
-    });
+    try {
+      const stream = await api.chatStream({
+        messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
+        temperature: Number(temperature),
+        max_tokens: Number(maxTokens),
+      });
+
+      if (!stream) throw new Error('No response body');
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let assistantText = '';
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.includes(': ping')) continue;
+          if (trimmed.startsWith('data: ')) {
+            const data = trimmed.slice(6);
+            if (data === '[DONE]') break;
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content || '';
+              assistantText += content;
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last && last.role === 'assistant') {
+                  last.content = assistantText;
+                }
+                return next;
+              });
+            } catch (e) {
+              console.error('Error parsing SSE:', e, data);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      const errMsg = String((err as Error)?.message || err);
+      setError(errMsg);
+      setMessages((prev) => prev.slice(0, -1)); // Remove the empty assistant message if error occurred
+    } finally {
+      setIsStreaming(false);
+    }
   }
 
   return (
@@ -140,7 +178,10 @@ export default function PlaygroundPage() {
         </div>
 
         <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-          <div className="mb-4 text-sm font-semibold text-white">Chat</div>
+          <div className="mb-4 flex items-center justify-between">
+            <div className="text-sm font-semibold text-white">Chat</div>
+            {error && <div className="text-xs text-red-500 font-medium">Error: {error}</div>}
+          </div>
 
           <div className="mb-4 h-[460px] overflow-auto rounded-2xl bg-slate-950 p-4">
             {!messages.length ? (
@@ -172,7 +213,7 @@ export default function PlaygroundPage() {
               placeholder="Напиши сообщение модели..."
             />
             <div className="flex gap-3">
-              <Button onClick={sendMessage} disabled={!runtimeQuery.data?.vllm?.model || chatMutation.isPending}>
+              <Button onClick={sendMessage} disabled={!runtimeQuery.data?.vllm?.model || isStreaming}>
                 Send
               </Button>
               <Button className="bg-slate-800 hover:bg-slate-700" onClick={() => setMessages([])}>

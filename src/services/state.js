@@ -303,53 +303,59 @@ async function recoverState() {
   const { nowIso } = require('../utils/ids');
 
   // Recover jobs
-  const jobs = await getJobs();
-  let jobsChanged = false;
-  for (let i = 0; i < jobs.length; i++) {
-    if (jobs[i].status === 'running' || jobs[i].status === 'queued') {
-      if (!jobs[i].pid || !isPidRunning(jobs[i].pid)) {
-        jobs[i].status = 'failed';
-        jobs[i].finishedAt = nowIso();
-        jobs[i].error = 'Process lost after restart';
-        jobsChanged = true;
+  await withLock(CONFIG.jobsFile, async () => {
+    const jobs = await getJobs();
+    let jobsChanged = false;
+    for (let i = 0; i < jobs.length; i++) {
+      if (jobs[i].status === 'running' || jobs[i].status === 'queued') {
+        if (!jobs[i].pid || !isPidRunning(jobs[i].pid)) {
+          jobs[i].status = 'failed';
+          jobs[i].finishedAt = nowIso();
+          jobs[i].error = 'Process lost after restart';
+          jobsChanged = true;
+        }
       }
     }
-  }
-  if (jobsChanged) await saveJobs(jobs);
+    if (jobsChanged) await saveJobs(jobs);
+  });
 
   // Recover runtime
-  const runtime = await getRuntime();
-  if (runtime.vllm?.pid && !isPidRunning(runtime.vllm.pid)) {
-    await saveRuntime({
-      ...runtime,
-      vllm: {
-        ...runtime.vllm,
-        pid: null,
-        startedAt: null,
-      },
-    });
-  }
+  await withLock(CONFIG.runtimeFile, async () => {
+    const runtime = await getRuntime();
+    if (runtime.vllm?.pid && !isPidRunning(runtime.vllm.pid)) {
+      await saveRuntime({
+        ...runtime,
+        vllm: {
+          ...runtime.vllm,
+          pid: null,
+          startedAt: null,
+        },
+      });
+    }
+  });
 
   // Recover LoRAs
-  const loras = await getLoras();
-  let lorasChanged = false;
-  for (let i = 0; i < loras.length; i++) {
-    if (loras[i].mergeStatus === 'building') {
-      if (!loras[i].mergePid || !isPidRunning(loras[i].mergePid)) {
-        loras[i].mergeStatus = 'failed';
-        loras[i].error = 'Merge process lost after restart';
-        lorasChanged = true;
+  await withLock(CONFIG.lorasFile, async () => {
+    const loras = await getLoras();
+    let lorasChanged = false;
+    for (let i = 0; i < loras.length; i++) {
+      if (loras[i].mergeStatus === 'building') {
+        if (!loras[i].mergePid || !isPidRunning(loras[i].mergePid)) {
+          loras[i].mergeStatus = 'failed';
+          loras[i].error = 'Merge process lost after restart';
+          lorasChanged = true;
+        }
+      }
+      if (loras[i].packageStatus === 'building') {
+        if (!loras[i].packagePid || !isPidRunning(loras[i].packagePid)) {
+          loras[i].packageStatus = 'failed';
+          loras[i].error = 'Package process lost after restart';
+          lorasChanged = true;
+        }
       }
     }
-    if (loras[i].packageStatus === 'building') {
-      if (!loras[i].packagePid || !isPidRunning(loras[i].packagePid)) {
-        loras[i].packageStatus = 'failed';
-        loras[i].error = 'Package process lost after restart';
-        lorasChanged = true;
-      }
-    }
-  }
-  if (lorasChanged) await saveLoras(loras);
+    if (lorasChanged) await saveLoras(loras);
+  });
 }
 
 module.exports = {
