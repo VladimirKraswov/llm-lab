@@ -6,7 +6,7 @@ const { LOG_FILE } = require('../utils/logger');
 const router = express.Router();
 
 router.get('/', async (req, res) => {
-  const { level, q, limit = 100 } = req.query;
+  const { level, q, limit = 500 } = req.query;
 
   if (!fs.existsSync(LOG_FILE)) {
     return res.json([]);

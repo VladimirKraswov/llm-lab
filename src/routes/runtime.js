@@ -99,14 +99,19 @@ router.post('/use-job-output', async (req, res) => {
       job,
     });
   } catch (err) {
-    res.status(500).json({ error: String(err.message || err) });
+    const errorMsg = String(err.message || err);
+    const logger = require('../utils/logger');
+    logger.error(`Failed to use job output in runtime`, { error: errorMsg });
+    res.status(500).json({ error: errorMsg });
   }
 });
 
 router.post('/chat', async (req, res) => {
   try {
     const settings = await getSettings();
-    const model = req.body?.model || settings.inference.model;
+    const runtime = await getRuntime();
+    // Use model from request, or currently loaded model in runtime, or fallback to settings
+    const model = req.body?.model || runtime.vllm?.model || settings.inference.model;
     const messages = req.body?.messages;
     const stream = !!req.body?.stream;
 

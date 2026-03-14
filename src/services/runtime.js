@@ -30,7 +30,8 @@ async function startVllmRuntime({
 
   const runtime = await getRuntime();
   if (runtime.vllm?.pid && isPidRunning(runtime.vllm.pid)) {
-    return runtime.vllm;
+    logger.info('Stopping existing runtime before starting new one');
+    await stopVllmRuntime();
   }
 
   const args = [

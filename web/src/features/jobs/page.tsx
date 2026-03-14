@@ -93,7 +93,8 @@ export default function JobsPage() {
       await qc.invalidateQueries({ queryKey: ['runtime'] });
       await qc.invalidateQueries({ queryKey: ['runtime-health'] });
       await qc.invalidateQueries({ queryKey: ['loras'] });
-      navigate('/app/playground');
+      // Short delay to allow runtime health check to catch up
+      setTimeout(() => navigate('/app/playground'), 1500);
     },
   });
 

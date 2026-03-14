@@ -62,6 +62,7 @@ export default function PlaygroundPage() {
 
     try {
       const stream = await api.chatStream({
+        model: runtimeQuery.data?.vllm?.model || undefined,
         messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
         temperature: Number(temperature),
         max_tokens: Number(maxTokens),
