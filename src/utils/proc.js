@@ -17,11 +17,31 @@ function runText(cmd, args = [], options = {}) {
 
 function isPidRunning(pid) {
   if (!pid) return false;
-  const r = runText('bash', ['-lc', `ps -p ${pid} -o pid=`]);
-  return r.ok && !!r.stdout;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+async function killProcessGroup(pid, signal = 'SIGTERM') {
+  if (!pid) return;
+  try {
+    // Try to kill the process group (negative pid)
+    process.kill(-pid, signal);
+  } catch (e) {
+    // Fallback to killing just the process if group kill fails
+    try {
+      process.kill(pid, signal);
+    } catch (e2) {
+      // Ignore if process already dead
+    }
+  }
 }
 
 module.exports = {
   runText,
   isPidRunning,
+  killProcessGroup,
 };

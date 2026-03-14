@@ -3,7 +3,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso, uid } = require('../utils/ids');
-const { isPidRunning } = require('../utils/proc');
+const { isPidRunning, killProcessGroup } = require('../utils/proc');
 const { getSettings, getDatasets, getJobs, upsertJob, getModelById } = require('./state');
 const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
@@ -118,7 +118,27 @@ print(json.dumps({
 `.trim();
 }
 
+function validateQLoraParams(params) {
+  if (params.learningRate !== undefined && (typeof params.learningRate !== 'number' || params.learningRate <= 0)) {
+    throw new Error('learningRate must be a positive number');
+  }
+  if (params.numTrainEpochs !== undefined && (!Number.isInteger(params.numTrainEpochs) || params.numTrainEpochs < 1)) {
+    throw new Error('numTrainEpochs must be an integer >= 1');
+  }
+  if (params.perDeviceTrainBatchSize !== undefined && (!Number.isInteger(params.perDeviceTrainBatchSize) || params.perDeviceTrainBatchSize < 1)) {
+    throw new Error('perDeviceTrainBatchSize must be an integer >= 1');
+  }
+  if (params.gradientAccumulationSteps !== undefined && (!Number.isInteger(params.gradientAccumulationSteps) || params.gradientAccumulationSteps < 1)) {
+    throw new Error('gradientAccumulationSteps must be an integer >= 1');
+  }
+  if (params.maxSeqLength !== undefined && (!Number.isInteger(params.maxSeqLength) || params.maxSeqLength < 1)) {
+    throw new Error('maxSeqLength must be an integer >= 1');
+  }
+}
+
 async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
+  if (qlora) validateQLoraParams(qlora);
+
   const settings = await getSettings();
   const datasets = await getDatasets();
   const ds = datasets.find((x) => x.id === datasetId);
@@ -231,9 +251,15 @@ async function stopJob(jobId) {
   const jobs = await getJobs();
   const job = jobs.find((j) => j.id === jobId);
   if (!job) throw new Error('job not found');
-  if (!job.pid || !isPidRunning(job.pid)) throw new Error('job is not running');
+  if (!job.pid || !isPidRunning(job.pid)) {
+    // If state says running but PID is not, update state
+    if (job.status === 'running') {
+      await upsertJob({ ...job, status: 'failed', finishedAt: nowIso(), error: 'Process not found' });
+    }
+    throw new Error('job is not running');
+  }
 
-  require('child_process').spawnSync('bash', ['-lc', `kill ${job.pid}`]);
+  await killProcessGroup(job.pid);
 
   const next = await upsertJob({
     ...job,

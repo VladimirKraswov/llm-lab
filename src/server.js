@@ -3,7 +3,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { CONFIG } = require('./config');
-const { ensureWorkspace } = require('./services/state');
+const { ensureWorkspace, recoverState } = require('./services/state');
 
 const healthRoute = require('./routes/health');
 const settingsRoute = require('./routes/settings');
@@ -17,6 +17,7 @@ const lorasRoute = require('./routes/loras');
 
 async function main() {
   await ensureWorkspace();
+  await recoverState();
 
   const app = express();
   app.use(cors({ origin: true, credentials: false }));

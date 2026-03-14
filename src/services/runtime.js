@@ -3,7 +3,7 @@ const fsp = require('fs/promises');
 const { spawn } = require('child_process');
 const { CONFIG } = require('../config');
 const { nowIso } = require('../utils/ids');
-const { runText, isPidRunning } = require('../utils/proc');
+const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
 const { getRuntime, saveRuntime, getSettings } = require('./state');
 const { emitEvent } = require('./events');
 
@@ -98,10 +98,13 @@ async function stopVllmRuntime() {
   const pid = runtime.vllm?.pid;
 
   if (pid && isPidRunning(pid)) {
-    runText('bash', ['-lc', `kill ${pid}`]);
+    await killProcessGroup(pid);
     for (let i = 0; i < 20; i += 1) {
       if (!isPidRunning(pid)) break;
       await sleep(500);
+    }
+    if (isPidRunning(pid)) {
+      await killProcessGroup(pid, 'SIGKILL');
     }
   }
 

@@ -11,6 +11,7 @@ const {
   getModelById,
   upsertLora,
 } = require('./state');
+const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');
 
 async function registerLoraFromJob(jobId, customName = null) {
@@ -51,24 +52,12 @@ async function registerLoraFromJob(jobId, customName = null) {
   return item;
 }
 
-function runPy(script) {
-  const r = spawnSync(CONFIG.pythonBin, ['-u', '-c', script], {
-    cwd: CONFIG.workspace,
-    encoding: 'utf8',
-    stdio: 'pipe',
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
-  });
-
-  if (r.status !== 0) {
-    throw new Error((r.stderr || r.stdout || 'python failed').trim());
-  }
-
-  return (r.stdout || '').trim();
-}
-
 async function buildMergedLora(loraId) {
   const item = await getLoraById(loraId);
   if (!item) throw new Error('lora not found');
+  if (item.mergeStatus === 'building' && item.mergePid && isPidRunning(item.mergePid)) {
+    return item;
+  }
 
   const mergedPath = path.join(CONFIG.mergedModelsDir, `${item.id}-merged`);
   fs.mkdirSync(CONFIG.mergedModelsDir, { recursive: true });
@@ -77,113 +66,163 @@ async function buildMergedLora(loraId) {
     ...item,
     mergeStatus: 'building',
     mergedPath,
+    mergePid: null,
     error: null,
   });
   emitEvent('lora_updated', next0);
 
   const py = `
 import os
+import sys
 from peft import AutoPeftModelForCausalLM
 from transformers import AutoTokenizer
 
 adapter_path = ${JSON.stringify(item.adapterPath)}
 output_dir = ${JSON.stringify(mergedPath)}
 
-os.makedirs(output_dir, exist_ok=True)
+try:
+    os.makedirs(output_dir, exist_ok=True)
 
-model = AutoPeftModelForCausalLM.from_pretrained(
-    adapter_path,
-    torch_dtype="auto",
-    device_map="cpu",
-)
+    model = AutoPeftModelForCausalLM.from_pretrained(
+        adapter_path,
+        torch_dtype="auto",
+        device_map="cpu",
+    )
 
-merged = model.merge_and_unload()
-merged.save_pretrained(output_dir, safe_serialization=True)
+    merged = model.merge_and_unload()
+    merged.save_pretrained(output_dir, safe_serialization=True)
 
-tokenizer = AutoTokenizer.from_pretrained(adapter_path)
-tokenizer.save_pretrained(output_dir)
-
-print(output_dir)
+    tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+    tokenizer.save_pretrained(output_dir)
+    print(output_dir)
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
 `.trim();
 
-  try {
-    runPy(py);
+  const child = require('child_process').spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+    cwd: CONFIG.workspace,
+    detached: true,
+    stdio: 'pipe',
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
 
+  const building = await upsertLora({
+    ...next0,
+    mergePid: child.pid,
+  });
+  emitEvent('lora_updated', building);
+
+  let stderr = '';
+  child.stderr.on('data', (data) => {
+    stderr += data.toString();
+  });
+
+  child.on('exit', async (code) => {
+    const current = await getLoraById(loraId);
     const next = await upsertLora({
-      ...next0,
-      mergeStatus: 'ready',
-      mergedPath,
-      error: null,
+      ...current,
+      mergeStatus: code === 0 ? 'ready' : 'failed',
+      mergePid: null,
+      mergedPath: code === 0 ? mergedPath : current.mergedPath,
+      error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
     });
     emitEvent('lora_updated', next);
-    return next;
-  } catch (err) {
-    const failed = await upsertLora({
-      ...next0,
-      mergeStatus: 'failed',
-      error: String(err.message || err),
-    });
-    emitEvent('lora_updated', failed);
-    throw err;
-  }
+  });
+
+  return building;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function ensureMergedLora(loraId) {
-  const item = await getLoraById(loraId);
+  let item = await getLoraById(loraId);
   if (!item) throw new Error('lora not found');
 
   if (item.mergeStatus === 'ready' && item.mergedPath && fs.existsSync(item.mergedPath)) {
     return item;
   }
 
-  return buildMergedLora(loraId);
+  if (item.mergeStatus !== 'building' || !item.mergePid || !isPidRunning(item.mergePid)) {
+    await buildMergedLora(loraId);
+  }
+
+  // Wait for it to complete
+  while (true) {
+    await sleep(2000);
+    item = await getLoraById(loraId);
+    if (item.mergeStatus !== 'building') break;
+  }
+
+  if (item.mergeStatus === 'ready') return item;
+  throw new Error(item.error || 'LoRA merge failed');
 }
 
 async function packageMergedLora(loraId) {
-  const built = await ensureMergedLora(loraId);
+  let item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
 
-  const archivePath = path.join(CONFIG.packagesDir, `${built.id}.tar.gz`);
+  if (item.mergeStatus !== 'ready') {
+    item = await ensureMergedLora(loraId);
+  }
+
+  if (item.packageStatus === 'building' && item.packagePid && isPidRunning(item.packagePid)) {
+    return item;
+  }
+
+  const archivePath = path.join(CONFIG.packagesDir, `${item.id}.tar.gz`);
   fs.mkdirSync(CONFIG.packagesDir, { recursive: true });
 
   const next0 = await upsertLora({
-    ...built,
+    ...item,
     packageStatus: 'building',
     packagePath: archivePath,
+    packagePid: null,
     error: null,
   });
   emitEvent('lora_updated', next0);
 
-  const r = spawnSync(
-    'bash',
+  const child = require('child_process').spawn(
+    'tar',
     [
-      '-lc',
-      `tar -czf ${JSON.stringify(archivePath)} -C ${JSON.stringify(path.dirname(built.mergedPath))} ${JSON.stringify(path.basename(built.mergedPath))}`,
+      '-czf',
+      archivePath,
+      '-C',
+      path.dirname(item.mergedPath),
+      path.basename(item.mergedPath),
     ],
     {
       cwd: CONFIG.workspace,
-      encoding: 'utf8',
       stdio: 'pipe',
     },
   );
 
-  if (r.status !== 0) {
-    const failed = await upsertLora({
-      ...next0,
-      packageStatus: 'failed',
-      error: (r.stderr || r.stdout || 'packaging failed').trim(),
-    });
-    emitEvent('lora_updated', failed);
-    throw new Error((r.stderr || r.stdout || 'packaging failed').trim());
-  }
-
-  const next = await upsertLora({
+  const building = await upsertLora({
     ...next0,
-    packageStatus: 'ready',
-    packagePath: archivePath,
-    error: null,
+    packagePid: child.pid,
   });
-  emitEvent('lora_updated', next);
-  return next;
+  emitEvent('lora_updated', building);
+
+  let stderr = '';
+  child.stderr.on('data', (data) => {
+    stderr += data.toString();
+  });
+
+  child.on('exit', async (code) => {
+    const current = await getLoraById(loraId);
+    const next = await upsertLora({
+      ...current,
+      packageStatus: code === 0 ? 'ready' : 'failed',
+      packagePid: null,
+      packagePath: code === 0 ? archivePath : current.packagePath,
+      error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
+    });
+    emitEvent('lora_updated', next);
+  });
+
+  return building;
 }
 
 module.exports = {

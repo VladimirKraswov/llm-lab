@@ -1,6 +1,31 @@
 const { CONFIG } = require('../config');
 const { ensureDir, exists, readJson, writeJson } = require('../utils/fs');
 
+const locks = new Map();
+
+/**
+ * Ensures that the provided async function runs exclusively for the given key.
+ * This prevents race conditions during read-modify-write cycles.
+ */
+async function withLock(key, fn) {
+  const previous = locks.get(key) || Promise.resolve();
+  const next = (async () => {
+    try {
+      await previous;
+    } catch (err) {
+      // ignore errors from previous tasks in the queue
+    }
+    return await fn();
+  })();
+  locks.set(key, next);
+  next.finally(() => {
+    if (locks.get(key) === next) {
+      locks.delete(key);
+    }
+  });
+  return next;
+}
+
 const DEFAULT_SETTINGS = {
   baseModel: CONFIG.defaultBaseModel,
   qlora: {
@@ -70,15 +95,17 @@ async function getSettings() {
 }
 
 async function setSettings(next) {
-  const current = await getSettings();
-  const merged = {
-    ...current,
-    ...next,
-    qlora: { ...current.qlora, ...(next.qlora || {}) },
-    inference: { ...current.inference, ...(next.inference || {}) },
-  };
-  await writeJson(CONFIG.settingsFile, merged);
-  return merged;
+  return withLock(CONFIG.settingsFile, async () => {
+    const current = await getSettings();
+    const merged = {
+      ...current,
+      ...next,
+      qlora: { ...current.qlora, ...(next.qlora || {}) },
+      inference: { ...current.inference, ...(next.inference || {}) },
+    };
+    await writeJson(CONFIG.settingsFile, merged);
+    return merged;
+  });
 }
 
 async function getJobs() {
@@ -90,12 +117,20 @@ async function saveJobs(jobs) {
 }
 
 async function upsertJob(jobPatch) {
-  const jobs = await getJobs();
-  const idx = jobs.findIndex((j) => j.id === jobPatch.id);
-  if (idx === -1) jobs.push(jobPatch);
-  else jobs[idx] = { ...jobs[idx], ...jobPatch };
-  await saveJobs(jobs);
-  return idx === -1 ? jobPatch : jobs[idx];
+  return withLock(CONFIG.jobsFile, async () => {
+    const jobs = await getJobs();
+    const idx = jobs.findIndex((j) => j.id === jobPatch.id);
+    let result;
+    if (idx === -1) {
+      jobs.push(jobPatch);
+      result = jobPatch;
+    } else {
+      jobs[idx] = { ...jobs[idx], ...jobPatch };
+      result = jobs[idx];
+    }
+    await saveJobs(jobs);
+    return result;
+  });
 }
 
 async function getDatasets() {
@@ -107,17 +142,21 @@ async function saveDatasets(items) {
 }
 
 async function addDataset(meta) {
-  const list = await getDatasets();
-  list.push(meta);
-  await saveDatasets(list);
-  return meta;
+  return withLock(CONFIG.datasetsFile, async () => {
+    const list = await getDatasets();
+    list.push(meta);
+    await saveDatasets(list);
+    return meta;
+  });
 }
 
 async function removeDataset(id) {
-  const list = await getDatasets();
-  const next = list.filter((x) => x.id !== id);
-  await saveDatasets(next);
-  return next;
+  return withLock(CONFIG.datasetsFile, async () => {
+    const list = await getDatasets();
+    const next = list.filter((x) => x.id !== id);
+    await saveDatasets(next);
+    return next;
+  });
 }
 
 async function getModels() {
@@ -129,19 +168,29 @@ async function saveModels(items) {
 }
 
 async function addModel(meta) {
-  const list = await getModels();
-  list.push(meta);
-  await saveModels(list);
-  return meta;
+  return withLock(CONFIG.modelsFile, async () => {
+    const list = await getModels();
+    list.push(meta);
+    await saveModels(list);
+    return meta;
+  });
 }
 
 async function upsertModel(modelPatch) {
-  const list = await getModels();
-  const idx = list.findIndex((x) => x.id === modelPatch.id);
-  if (idx === -1) list.push(modelPatch);
-  else list[idx] = { ...list[idx], ...modelPatch };
-  await saveModels(list);
-  return idx === -1 ? modelPatch : list[idx];
+  return withLock(CONFIG.modelsFile, async () => {
+    const list = await getModels();
+    const idx = list.findIndex((x) => x.id === modelPatch.id);
+    let result;
+    if (idx === -1) {
+      list.push(modelPatch);
+      result = modelPatch;
+    } else {
+      list[idx] = { ...list[idx], ...modelPatch };
+      result = list[idx];
+    }
+    await saveModels(list);
+    return result;
+  });
 }
 
 async function getModelById(id) {
@@ -150,10 +199,12 @@ async function getModelById(id) {
 }
 
 async function removeModel(id) {
-  const list = await getModels();
-  const next = list.filter((x) => x.id !== id);
-  await saveModels(next);
-  return next;
+  return withLock(CONFIG.modelsFile, async () => {
+    const list = await getModels();
+    const next = list.filter((x) => x.id !== id);
+    await saveModels(next);
+    return next;
+  });
 }
 
 async function getLoras() {
@@ -165,19 +216,29 @@ async function saveLoras(items) {
 }
 
 async function addLora(meta) {
-  const list = await getLoras();
-  list.push(meta);
-  await saveLoras(list);
-  return meta;
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    list.push(meta);
+    await saveLoras(list);
+    return meta;
+  });
 }
 
 async function upsertLora(loraPatch) {
-  const list = await getLoras();
-  const idx = list.findIndex((x) => x.id === loraPatch.id);
-  if (idx === -1) list.push(loraPatch);
-  else list[idx] = { ...list[idx], ...loraPatch };
-  await saveLoras(list);
-  return idx === -1 ? loraPatch : list[idx];
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    const idx = list.findIndex((x) => x.id === loraPatch.id);
+    let result;
+    if (idx === -1) {
+      list.push(loraPatch);
+      result = loraPatch;
+    } else {
+      list[idx] = { ...list[idx], ...loraPatch };
+      result = list[idx];
+    }
+    await saveLoras(list);
+    return result;
+  });
 }
 
 async function getLoraById(id) {
@@ -191,19 +252,23 @@ async function getLoraByJobId(jobId) {
 }
 
 async function renameLora(id, name) {
-  const list = await getLoras();
-  const idx = list.findIndex((x) => x.id === id);
-  if (idx === -1) throw new Error('lora not found');
-  list[idx] = { ...list[idx], name };
-  await saveLoras(list);
-  return list[idx];
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    const idx = list.findIndex((x) => x.id === id);
+    if (idx === -1) throw new Error('lora not found');
+    list[idx] = { ...list[idx], name };
+    await saveLoras(list);
+    return list[idx];
+  });
 }
 
 async function removeLora(id) {
-  const list = await getLoras();
-  const next = list.filter((x) => x.id !== id);
-  await saveLoras(next);
-  return next;
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    const next = list.filter((x) => x.id !== id);
+    await saveLoras(next);
+    return next;
+  });
 }
 
 async function getRuntime() {
@@ -219,16 +284,72 @@ async function getRuntime() {
 }
 
 async function saveRuntime(next) {
-  const merged = {
-    ...DEFAULT_RUNTIME,
-    ...next,
-    vllm: {
-      ...DEFAULT_RUNTIME.vllm,
-      ...((next && next.vllm) || {}),
-    },
-  };
-  await writeJson(CONFIG.runtimeFile, merged);
-  return merged;
+  return withLock(CONFIG.runtimeFile, async () => {
+    const merged = {
+      ...DEFAULT_RUNTIME,
+      ...next,
+      vllm: {
+        ...DEFAULT_RUNTIME.vllm,
+        ...((next && next.vllm) || {}),
+      },
+    };
+    await writeJson(CONFIG.runtimeFile, merged);
+    return merged;
+  });
+}
+
+async function recoverState() {
+  const { isPidRunning } = require('../utils/proc');
+  const { nowIso } = require('../utils/ids');
+
+  // Recover jobs
+  const jobs = await getJobs();
+  let jobsChanged = false;
+  for (let i = 0; i < jobs.length; i++) {
+    if (jobs[i].status === 'running' || jobs[i].status === 'queued') {
+      if (!jobs[i].pid || !isPidRunning(jobs[i].pid)) {
+        jobs[i].status = 'failed';
+        jobs[i].finishedAt = nowIso();
+        jobs[i].error = 'Process lost after restart';
+        jobsChanged = true;
+      }
+    }
+  }
+  if (jobsChanged) await saveJobs(jobs);
+
+  // Recover runtime
+  const runtime = await getRuntime();
+  if (runtime.vllm?.pid && !isPidRunning(runtime.vllm.pid)) {
+    await saveRuntime({
+      ...runtime,
+      vllm: {
+        ...runtime.vllm,
+        pid: null,
+        startedAt: null,
+      },
+    });
+  }
+
+  // Recover LoRAs
+  const loras = await getLoras();
+  let lorasChanged = false;
+  for (let i = 0; i < loras.length; i++) {
+    if (loras[i].mergeStatus === 'building') {
+      if (!loras[i].mergePid || !isPidRunning(loras[i].mergePid)) {
+        loras[i].mergeStatus = 'failed';
+        loras[i].error = 'Merge process lost after restart';
+        lorasChanged = true;
+      }
+    }
+    if (loras[i].packageStatus === 'building') {
+      if (!loras[i].packagePid || !isPidRunning(loras[i].packagePid)) {
+        loras[i].packageStatus = 'failed';
+        loras[i].error = 'Package process lost after restart';
+        lorasChanged = true;
+      }
+    }
+  }
+  if (lorasChanged) await saveLoras(loras);
 }
 
 module.exports = {
@@ -260,4 +381,5 @@ module.exports = {
   removeLora,
   getRuntime,
   saveRuntime,
+  recoverState,
 };

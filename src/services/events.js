@@ -1,7 +1,22 @@
 const clients = new Set();
 
+let heartbeatInterval = null;
+
+function startHeartbeat() {
+  if (heartbeatInterval) return;
+  heartbeatInterval = setInterval(() => {
+    if (clients.size === 0) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+      return;
+    }
+    emitEvent('heartbeat', { alive: true });
+  }, 30000);
+}
+
 function addClient(res) {
   clients.add(res);
+  startHeartbeat();
 
   res.on('close', () => {
     clients.delete(res);
