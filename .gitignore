@@ -1,0 +1,8 @@
+/node
+/node_modules
+/build
+/dist
+/web/
+/web/build
+/web/dist
+/web/node_modules
