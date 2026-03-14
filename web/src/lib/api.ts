@@ -348,7 +348,17 @@ export const api = {
     gpus: Array<{ model: string; vendor: string; vram: number; vramUsed: number; utilizationGpu: number; temperatureGpu: number }>;
     disks: Array<{ fs: string; type: string; size: number; used: number; available: number; use: number; mount: string }>;
     network: Array<{ iface: string; operstate: string; rx_sec: number; tx_sec: number }>;
+    gpuProcesses: Array<{ pid: number; name: string; cpu: number; mem: number; user: string; command: string }>;
   }>('/monitor/stats'),
+
+  killProcess: (pid: number) => request<{ ok: boolean }>('/monitor/kill', {
+    method: 'POST',
+    body: JSON.stringify({ pid }),
+  }),
+
+  clearGpu: () => request<{ ok: boolean; killedCount: number }>('/monitor/clear-gpu', {
+    method: 'POST',
+  }),
   chat: (payload: {
     model?: string;
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;

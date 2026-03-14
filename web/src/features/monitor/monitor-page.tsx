@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
@@ -10,8 +10,12 @@ import {
   Thermometer,
   Activity,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Trash2,
+  Eraser,
+  Layers
 } from 'lucide-react';
+import { Button } from '../../components/ui/button';
 import {
   AreaChart,
   Area,
@@ -53,12 +57,23 @@ function UsageBar({ value, label, color = 'bg-blue-600' }: { value: number, labe
 }
 
 export default function MonitorPage() {
+  const queryClient = useQueryClient();
   const [history, setHistory] = useState<any[]>([]);
 
   const { data, isLoading } = useQuery({
     queryKey: ['monitor-stats'],
     queryFn: api.getMonitorStats,
     refetchInterval: 2000,
+  });
+
+  const killMutation = useMutation({
+    mutationFn: api.killProcess,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor-stats'] }),
+  });
+
+  const clearGpuMutation = useMutation({
+    mutationFn: api.clearGpu,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor-stats'] }),
   });
 
   useEffect(() => {
@@ -68,6 +83,7 @@ export default function MonitorPage() {
           time: new Date().toLocaleTimeString(),
           cpu: data.cpu?.load || 0,
           mem: data.memory?.total ? (data.memory.used / data.memory.total) * 100 : 0,
+          vram: data.gpus?.[0]?.vram ? (data.gpus[0].vramUsed / data.gpus[0].vram) * 100 : 0,
           gpu: data.gpus?.[0]?.utilizationGpu || 0,
         }];
         return next.slice(-30); // Keep last 60 seconds
@@ -90,31 +106,47 @@ export default function MonitorPage() {
         description="Ресурсы сервера: CPU, GPU, RAM, диски и сетевая активность."
       />
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
         <Card className="border-blue-500/20 bg-blue-500/5">
-          <CardContent className="pt-6">
+          <CardContent className="pt-6 px-4">
             <div className="flex items-center gap-3">
               <div className="rounded-xl bg-blue-500/20 p-2 text-blue-400">
                 <Cpu size={20} />
               </div>
               <div>
-                <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">CPU Load</div>
-                <div className="text-2xl font-bold text-white">{(data.cpu.load || 0).toFixed(1)}%</div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">CPU</div>
+                <div className="text-xl font-bold text-white">{(data.cpu?.load || 0).toFixed(1)}%</div>
               </div>
             </div>
           </CardContent>
         </Card>
 
         <Card className="border-purple-500/20 bg-purple-500/5">
-          <CardContent className="pt-6">
+          <CardContent className="pt-6 px-4">
             <div className="flex items-center gap-3">
               <div className="rounded-xl bg-purple-500/20 p-2 text-purple-400">
                 <MemoryStick size={20} />
               </div>
               <div>
-                <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">RAM Used</div>
-                <div className="text-2xl font-bold text-white">
-                  {(data.memory.total ? (data.memory.used / data.memory.total) * 100 : 0).toFixed(1)}%
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">RAM</div>
+                <div className="text-xl font-bold text-white">
+                  {(data.memory?.total ? (data.memory.used / data.memory.total) * 100 : 0).toFixed(1)}%
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-cyan-500/20 bg-cyan-500/5">
+          <CardContent className="pt-6 px-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-cyan-500/20 p-2 text-cyan-400">
+                <Layers size={20} />
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">VRAM</div>
+                <div className="text-xl font-bold text-white">
+                  {(data.gpus?.[0]?.vram ? (data.gpus[0].vramUsed / data.gpus[0].vram) * 100 : 0).toFixed(1)}%
                 </div>
               </div>
             </div>
@@ -122,28 +154,28 @@ export default function MonitorPage() {
         </Card>
 
         <Card className="border-emerald-500/20 bg-emerald-500/5">
-          <CardContent className="pt-6">
+          <CardContent className="pt-6 px-4">
             <div className="flex items-center gap-3">
               <div className="rounded-xl bg-emerald-500/20 p-2 text-emerald-400">
                 <Activity size={20} />
               </div>
               <div>
-                <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">GPU Load</div>
-                <div className="text-2xl font-bold text-white">{data.gpus[0]?.utilizationGpu || 0}%</div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">GPU Load</div>
+                <div className="text-xl font-bold text-white">{data.gpus?.[0]?.utilizationGpu || 0}%</div>
               </div>
             </div>
           </CardContent>
         </Card>
 
         <Card className="border-orange-500/20 bg-orange-500/5">
-          <CardContent className="pt-6">
+          <CardContent className="pt-6 px-4">
             <div className="flex items-center gap-3">
               <div className="rounded-xl bg-orange-500/20 p-2 text-orange-400">
                 <Thermometer size={20} />
               </div>
               <div>
-                <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">GPU Temp</div>
-                <div className="text-2xl font-bold text-white">{data.gpus[0]?.temperatureGpu || 0}°C</div>
+                <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">GPU Temp</div>
+                <div className="text-xl font-bold text-white">{data.gpus?.[0]?.temperatureGpu || 0}°C</div>
               </div>
             </div>
           </CardContent>
@@ -176,9 +208,10 @@ export default function MonitorPage() {
                     contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
                     itemStyle={{ fontSize: '12px' }}
                   />
-                  <Area type="monotone" dataKey="cpu" stroke="#3b82f6" fillOpacity={1} fill="url(#colorCpu)" name="CPU" />
-                  <Area type="monotone" dataKey="mem" stroke="#a855f7" fillOpacity={1} fill="url(#colorMem)" name="RAM" />
-                  <Area type="monotone" dataKey="gpu" stroke="#10b981" fillOpacity={0} name="GPU" />
+                  <Area type="monotone" dataKey="cpu" stroke="#3b82f6" fillOpacity={1} fill="url(#colorCpu)" name="CPU %" />
+                  <Area type="monotone" dataKey="mem" stroke="#a855f7" fillOpacity={1} fill="url(#colorMem)" name="RAM %" />
+                  <Area type="monotone" dataKey="vram" stroke="#06b6d4" fillOpacity={0} name="VRAM %" />
+                  <Area type="monotone" dataKey="gpu" stroke="#10b981" fillOpacity={0} name="GPU %" />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -285,6 +318,74 @@ export default function MonitorPage() {
         </Card>
       </div>
 
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>GPU Processes & Control</CardTitle>
+          <Button
+            className="gap-2 h-9 px-3 text-xs bg-rose-700 hover:bg-rose-600"
+            onClick={() => {
+              if (confirm('Are you sure? This will kill all Python/vLLM processes on the system.')) {
+                clearGpuMutation.mutate();
+              }
+            }}
+            disabled={clearGpuMutation.isPending}
+          >
+            <Eraser size={16} />
+            Clear GPU Memory
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-500">
+                  <th className="pb-3 font-medium">PID</th>
+                  <th className="pb-3 font-medium">Process</th>
+                  <th className="pb-3 font-medium">CPU %</th>
+                  <th className="pb-3 font-medium">RAM %</th>
+                  <th className="pb-3 font-medium">User</th>
+                  <th className="pb-3 text-right font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/50">
+                {data.gpuProcesses.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-slate-500">
+                      No active GPU processes detected.
+                    </td>
+                  </tr>
+                ) : (
+                  data.gpuProcesses.map((proc) => (
+                    <tr key={proc.pid} className="group hover:bg-slate-800/30">
+                      <td className="py-3 font-mono text-slate-400">{proc.pid}</td>
+                      <td className="py-3">
+                        <div className="font-medium text-white">{proc.name}</div>
+                        <div className="text-[10px] text-slate-500 truncate max-w-md">{proc.command}</div>
+                      </td>
+                      <td className="py-3 text-slate-300">{proc.cpu.toFixed(1)}%</td>
+                      <td className="py-3 text-slate-300">{proc.mem.toFixed(1)}%</td>
+                      <td className="py-3 text-slate-400">{proc.user}</td>
+                      <td className="py-3 text-right">
+                        <Button
+                          className="h-8 w-8 p-0 text-slate-500 hover:text-rose-500 bg-transparent border-none shadow-none"
+                          onClick={() => {
+                            if (confirm(`Kill process ${proc.pid} (${proc.name})?`)) {
+                              killMutation.mutate(proc.pid);
+                            }
+                          }}
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
       {data.gpus.length > 0 && (
         <Card>
           <CardHeader>
@@ -302,7 +403,7 @@ export default function MonitorPage() {
                   <UsageBar value={(gpu.vramUsed / gpu.vram) * 100} label="VRAM Usage" color="bg-cyan-500" />
                 </div>
                 <div className="flex flex-col items-end gap-1">
-                  <div className="text-xs text-slate-500 uppercase">Memory</div>
+                  <div className="text-xs text-slate-500 uppercase tracking-tighter">VRAM</div>
                   <div className="text-sm font-mono text-white">
                     {gpu.vramUsed} / {gpu.vram} MB
                   </div>
