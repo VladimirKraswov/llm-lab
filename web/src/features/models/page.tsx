@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -10,12 +11,20 @@ import { StatusBadge } from '../../components/status-badge';
 
 export default function ModelsPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [repoId, setRepoId] = useState('Qwen/Qwen2.5-7B-Instruct');
   const [name, setName] = useState('Qwen 2.5 7B Instruct');
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
     queryFn: api.getModels,
+    refetchInterval: 5000,
+  });
+
+  const lorasQuery = useQuery({
+    queryKey: ['loras'],
+    queryFn: api.getLoras,
     refetchInterval: 5000,
   });
 
@@ -31,6 +40,16 @@ export default function ModelsPage() {
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['runtime'] });
       await qc.invalidateQueries({ queryKey: ['runtime-health'] });
+      navigate('/app/runtime');
+    },
+  });
+
+  const activateLoraMutation = useMutation({
+    mutationFn: (id: string) => api.activateLora(id),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['runtime'] });
+      await qc.invalidateQueries({ queryKey: ['runtime-health'] });
+      navigate('/app/runtime');
     },
   });
 
@@ -41,16 +60,23 @@ export default function ModelsPage() {
     },
   });
 
+  const filteredLoras = useMemo(() => {
+    if (!selectedModelId) return [];
+    const model = modelsQuery.data?.find(m => m.id === selectedModelId);
+    if (!model) return [];
+    return (lorasQuery.data || []).filter(l => l.baseModelId === model.id || l.baseModelRef === model.repoId);
+  }, [selectedModelId, modelsQuery.data, lorasQuery.data]);
+
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Models"
-        description="База базовых моделей. Скачивай, удаляй и запускай их на инференс."
+        title="Models Library"
+        description="Библиотека моделей и их LoRA адаптеров. Выбирай модель и используй её с нужной LoRA."
       />
 
       <Card>
         <CardHeader>
-          <CardTitle>Add model</CardTitle>
+          <CardTitle>Add new base model</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
@@ -63,61 +89,115 @@ export default function ModelsPage() {
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Qwen 2.5 7B Instruct" />
             </div>
           </div>
-          <div className="rounded-xl bg-slate-950/50 p-3 text-sm text-slate-400">
-            Сначала модель скачивается в локальную базу. После этого её можно использовать для обучения и инференса.
-          </div>
           <Button
             onClick={() => downloadMutation.mutate({ repoId, name })}
             disabled={!repoId.trim() || downloadMutation.isPending}
           >
-            {downloadMutation.isPending ? 'Starting download…' : 'Download model'}
+            {downloadMutation.isPending ? 'Starting download…' : 'Download base model'}
           </Button>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Stored models</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {!modelsQuery.data?.length ? (
-            <div className="text-sm text-slate-500">No models yet.</div>
-          ) : (
-            <div className="space-y-3">
-              {modelsQuery.data.map((item) => (
-                <div key={item.id} className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div>
-                      <div className="text-base font-semibold text-white">{item.name}</div>
-                      <div className="mt-1 text-sm text-slate-400">{item.repoId}</div>
-                      <div className="mt-1 text-xs text-slate-500">{item.path}</div>
-                      <div className="mt-1 text-xs text-slate-500">Created: {fmtDate(item.createdAt)}</div>
-                      {item.error ? <div className="mt-2 text-sm text-rose-300">{item.error}</div> : null}
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle>Base Models</CardTitle>
+          </CardHeader>
+          <CardContent className="flex-1 space-y-3">
+            {modelsQuery.isLoading ? (
+              <div className="text-sm text-slate-500">Loading models…</div>
+            ) : !modelsQuery.data?.length ? (
+              <div className="text-sm text-slate-500">No models yet.</div>
+            ) : (
+              modelsQuery.data.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => setSelectedModelId(item.id)}
+                  className={`cursor-pointer rounded-2xl border p-4 transition ${
+                    selectedModelId === item.id
+                      ? 'border-blue-500 bg-blue-500/10'
+                      : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3 text-sm">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-white truncate">{item.name}</div>
+                      <div className="mt-1 text-xs text-slate-400 truncate">{item.repoId}</div>
                     </div>
-                    <StatusBadge value={item.status === 'ready' ? 'healthy' : item.status} />
+                    <StatusBadge value={item.status === 'ready' ? 'ready' : item.status} />
                   </div>
 
-                  <div className="mt-4 flex flex-wrap gap-2">
+                  {selectedModelId === item.id && (
+                    <div className="mt-4 flex gap-2">
+                      <Button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          activateMutation.mutate({ id: item.id });
+                        }}
+                        disabled={item.status !== 'ready' || activateMutation.isPending}
+                        className="h-8 px-3 text-xs bg-blue-600 hover:bg-blue-500"
+                      >
+                        Use in runtime
+                      </Button>
+                      <Button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteMutation.mutate(item.id);
+                        }}
+                        disabled={deleteMutation.isPending}
+                        className="h-8 px-3 text-xs bg-rose-700 hover:bg-rose-600"
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle>LoRA Adapters</CardTitle>
+          </CardHeader>
+          <CardContent className="flex-1 space-y-3">
+            {!selectedModelId ? (
+              <div className="text-sm text-slate-500">Select a base model to see its LoRAs.</div>
+            ) : !filteredLoras.length ? (
+              <div className="text-sm text-slate-500">No LoRAs found for this model.</div>
+            ) : (
+              filteredLoras.map((lora) => (
+                <div
+                  key={lora.id}
+                  className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4"
+                >
+                  <div className="flex items-start justify-between gap-3 text-sm">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-white truncate">{lora.name}</div>
+                      <div className="mt-1 text-xs text-slate-500">Created {fmtDate(lora.createdAt)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] uppercase tracking-wider text-slate-500">Merge status</div>
+                      <div className="text-xs font-medium text-white">{lora.mergeStatus}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
                     <Button
-                      onClick={() => activateMutation.mutate({ id: item.id })}
-                      disabled={item.status !== 'ready' || activateMutation.isPending}
+                      onClick={() => activateLoraMutation.mutate(lora.id)}
+                      disabled={activateLoraMutation.isPending}
+                      className="h-8 w-full px-3 text-xs bg-emerald-600 hover:bg-emerald-500"
                     >
-                      Use in runtime
-                    </Button>
-                    <Button
-                      className="bg-rose-700 text-white hover:bg-rose-600"
-                      onClick={() => deleteMutation.mutate(item.id)}
-                      disabled={deleteMutation.isPending}
-                    >
-                      Delete
+                      {activateLoraMutation.isPending ? 'Activating…' : 'Use with this LoRA'}
                     </Button>
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
