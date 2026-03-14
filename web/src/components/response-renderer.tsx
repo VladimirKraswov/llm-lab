@@ -1,13 +1,38 @@
 import { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
 import { Check, Copy } from 'lucide-react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
-function detectLanguage(className?: string) {
-  const match = /language-([\w-]+)/.exec(className || '');
+type HastNode = {
+  type?: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+};
+
+function classNameFromNode(node?: HastNode) {
+  const className = node?.properties?.className;
+  if (Array.isArray(className)) {
+    return className.filter(Boolean).join(' ');
+  }
+  if (typeof className === 'string') {
+    return className;
+  }
+  return '';
+}
+
+function detectLanguage(className: string) {
+  const match = /language-([\w-]+)/.exec(className);
   return match?.[1] || 'text';
+}
+
+function extractText(node?: HastNode): string {
+  if (!node) return '';
+  if (typeof node.value === 'string') return node.value;
+  if (!Array.isArray(node.children)) return '';
+  return node.children.map(extractText).join('');
 }
 
 async function copyText(text: string) {
@@ -16,12 +41,10 @@ async function copyText(text: string) {
 
 function CopyButton({
   value,
-  label = 'Copy',
-  className = '',
+  label,
 }: {
   value: string;
-  label?: string;
-  className?: string;
+  label: string;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -32,12 +55,12 @@ function CopyButton({
         try {
           await copyText(value);
           setCopied(true);
-          window.setTimeout(() => setCopied(false), 1500);
+          window.setTimeout(() => setCopied(false), 1400);
         } catch (err) {
           console.error('Copy failed', err);
         }
       }}
-      className={`inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-slate-600 hover:bg-slate-800 ${className}`}
+      className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-slate-600 hover:bg-slate-800"
     >
       {copied ? <Check size={14} /> : <Copy size={14} />}
       {copied ? 'Copied' : label}
@@ -58,13 +81,20 @@ export function ResponseRenderer({ content }: { content: string }) {
         <CopyButton value={normalized} label="Copy answer" />
       </div>
 
-      <div className="prose prose-invert max-w-none prose-p:my-3 prose-pre:my-0 prose-code:text-slate-100 prose-strong:text-white prose-headings:text-white prose-a:text-blue-300 prose-li:marker:text-slate-500">
+      <div className="prose prose-invert max-w-none prose-headings:text-white prose-strong:text-white prose-p:text-slate-100 prose-li:text-slate-100 prose-a:text-blue-300 prose-blockquote:text-slate-300 prose-hr:border-slate-800">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeHighlight]}
           components={{
-            p: ({ children }) => <p className="whitespace-pre-wrap leading-7 text-slate-100">{children}</p>,
-            ul: ({ children }) => <ul className="my-3 list-disc space-y-2 pl-6 text-slate-100">{children}</ul>,
-            ol: ({ children }) => <ol className="my-3 list-decimal space-y-2 pl-6 text-slate-100">{children}</ol>,
+            p: ({ children }) => (
+              <p className="whitespace-pre-wrap leading-7 text-slate-100">{children}</p>
+            ),
+            ul: ({ children }) => (
+              <ul className="my-3 list-disc space-y-2 pl-6 text-slate-100">{children}</ul>
+            ),
+            ol: ({ children }) => (
+              <ol className="my-3 list-decimal space-y-2 pl-6 text-slate-100">{children}</ol>
+            ),
             li: ({ children }) => <li className="leading-7">{children}</li>,
             blockquote: ({ children }) => (
               <blockquote className="my-4 border-l-4 border-slate-700 pl-4 italic text-slate-300">
@@ -83,26 +113,15 @@ export function ResponseRenderer({ content }: { content: string }) {
               </th>
             ),
             td: ({ children }) => (
-              <td className="border-b border-slate-900 px-3 py-2 align-top text-slate-200">{children}</td>
+              <td className="border-b border-slate-900 px-3 py-2 align-top text-slate-200">
+                {children}
+              </td>
             ),
-            code(props) {
-              const { className, children, ...rest } = props;
-              const code = String(children ?? '');
-              const isBlock = code.includes('\n') || Boolean(className);
-
-              if (!isBlock) {
-                return (
-                  <code
-                    {...rest}
-                    className="rounded-md bg-slate-800 px-1.5 py-0.5 text-[0.95em] text-cyan-300"
-                  >
-                    {code}
-                  </code>
-                );
-              }
-
+            pre: ({ children, node }) => {
+              const codeNode = (node as HastNode | undefined)?.children?.[0];
+              const className = classNameFromNode(codeNode);
               const language = detectLanguage(className);
-              const trimmed = code.replace(/\n$/, '');
+              const rawCode = extractText(codeNode).replace(/\n$/, '');
 
               return (
                 <div className="my-4 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
@@ -110,32 +129,31 @@ export function ResponseRenderer({ content }: { content: string }) {
                     <span className="text-xs font-medium uppercase tracking-wide text-slate-400">
                       {language}
                     </span>
-                    <CopyButton value={trimmed} label="Copy code" />
+                    <CopyButton value={rawCode} label="Copy code" />
                   </div>
 
-                  <SyntaxHighlighter
-                    {...rest}
-                    language={language}
-                    style={oneDark}
-                    customStyle={{
-                      margin: 0,
-                      padding: '16px',
-                      background: 'transparent',
-                      fontSize: '0.875rem',
-                      lineHeight: '1.6',
-                    }}
-                    wrapLongLines
-                    PreTag="div"
-                    codeTagProps={{
-                      style: {
-                        fontFamily:
-                          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace',
-                      },
-                    }}
-                  >
-                    {trimmed}
-                  </SyntaxHighlighter>
+                  <pre className="m-0 overflow-x-auto bg-transparent p-4 text-sm leading-6">
+                    {children}
+                  </pre>
                 </div>
+              );
+            },
+            code: ({ className, children }) => {
+              const text = String(children ?? '');
+              const isInline = !className;
+
+              if (isInline) {
+                return (
+                  <code className="rounded-md bg-slate-800 px-1.5 py-0.5 text-[0.95em] text-cyan-300">
+                    {text}
+                  </code>
+                );
+              }
+
+              return (
+                <code className={className}>
+                  {children}
+                </code>
               );
             },
           }}

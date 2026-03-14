@@ -44,7 +44,7 @@ export default function PlaygroundPage() {
   });
 
   const [input, setInput] = useState(
-    'Напиши короткий пример на Python с функцией fibonacci и объясни код.'
+    'Напиши пример на Python с fibonacci, потом покажи SQL запрос и кратко объясни оба блока.'
   );
   const [temperature, setTemperature] = useState('0.2');
   const [maxTokens, setMaxTokens] = useState('512');
@@ -157,11 +157,15 @@ export default function PlaygroundPage() {
 
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Serving path</div>
-            <div className="mt-1 break-all text-sm text-white">{runtimeQuery.data?.vllm.model || 'No runtime model'}</div>
+            <div className="mt-1 break-all text-sm text-white">
+              {runtimeQuery.data?.vllm.model || 'No runtime model'}
+            </div>
           </div>
 
           <div>
-            <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Temperature</label>
+            <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+              Temperature
+            </label>
             <input
               value={temperature}
               onChange={(e) => setTemperature(e.target.value)}
@@ -170,7 +174,9 @@ export default function PlaygroundPage() {
           </div>
 
           <div>
-            <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Max tokens</label>
+            <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+              Max tokens
+            </label>
             <input
               value={maxTokens}
               onChange={(e) => setMaxTokens(e.target.value)}
@@ -179,17 +185,17 @@ export default function PlaygroundPage() {
           </div>
 
           <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-xs text-slate-400">
-            Для красивой проверки попробуй:
-            <div className="mt-2 text-slate-300">Напиши SQL запрос с пояснением</div>
-            <div className="text-slate-300">Покажи React компонент карточки профиля</div>
-            <div className="text-slate-300">Сделай Python пример и объясни шаги</div>
+            Для теста попробуй:
+            <div className="mt-2 text-slate-300">Сделай React компонент карточки профиля</div>
+            <div className="text-slate-300">Напиши Dockerfile и объясни его</div>
+            <div className="text-slate-300">Покажи Python и SQL в одном ответе</div>
           </div>
         </div>
 
         <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="mb-4 flex items-center justify-between">
             <div className="text-sm font-semibold text-white">Chat</div>
-            {error && <div className="text-xs text-red-500 font-medium">Error: {error}</div>}
+            {error && <div className="text-xs font-medium text-red-500">Error: {error}</div>}
           </div>
 
           <div className="mb-4 h-[560px] overflow-auto rounded-2xl bg-slate-950 p-4">
