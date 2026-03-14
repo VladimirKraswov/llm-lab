@@ -5,7 +5,7 @@ import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
-import { api } from '../../lib/api';
+import { api, apiBase } from '../../lib/api';
 import { fmtDate } from '../../lib/utils';
 import { StatusBadge } from '../../components/status-badge';
 
@@ -139,6 +139,13 @@ export default function ModelsPage() {
                       >
                         Use in runtime
                       </Button>
+                      <a
+                        href={`${apiBase}/models/${item.id}/download`}
+                        className="inline-flex h-8 items-center justify-center rounded-xl bg-slate-800 px-3 text-xs font-medium text-white hover:bg-slate-700"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        Download
+                      </a>
                       <Button
                         onClick={(e) => {
                           e.stopPropagation();

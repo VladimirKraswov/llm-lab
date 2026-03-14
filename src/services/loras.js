@@ -10,6 +10,8 @@ const {
   getLoraById,
   getModelById,
   upsertLora,
+  addModel,
+  upsertModel,
 } = require('./state');
 const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');
@@ -67,6 +69,7 @@ async function buildMergedLora(loraId) {
   const next0 = await upsertLora({
     ...item,
     mergeStatus: 'building',
+    mergeProgress: 0,
     mergedPath,
     mergePid: null,
     error: null,
@@ -76,25 +79,38 @@ async function buildMergedLora(loraId) {
   const py = `
 import os
 import sys
-from peft import AutoPeftModelForCausalLM
-from transformers import AutoTokenizer
+import json
+
+def report(p):
+    print(f"__PROGRESS__:{p}", flush=True)
 
 adapter_path = ${JSON.stringify(item.adapterPath)}
 output_dir = ${JSON.stringify(mergedPath)}
 
 try:
     os.makedirs(output_dir, exist_ok=True)
+    report(10)
 
     import torch
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    report(15)
+
+    from peft import AutoPeftModelForCausalLM
+    from transformers import AutoTokenizer
+    report(20)
+
     model = AutoPeftModelForCausalLM.from_pretrained(
         adapter_path,
         torch_dtype="auto",
         device_map=device,
     )
+    report(50)
 
     merged = model.merge_and_unload()
+    report(70)
+
     merged.save_pretrained(output_dir, safe_serialization=True)
+    report(90)
 
     try:
         # Fix for Mistral tokenizer regex warning if applicable
@@ -104,7 +120,8 @@ try:
         tokenizer = AutoTokenizer.from_pretrained(adapter_path)
 
     tokenizer.save_pretrained(output_dir)
-    print(output_dir)
+    report(100)
+    print(f"__RESULT__:{output_dir}")
 except Exception as e:
     print(str(e), file=sys.stderr)
     sys.exit(1)
@@ -128,18 +145,56 @@ except Exception as e:
     stderr += data.toString();
   });
 
+  child.stdout.on('data', async (data) => {
+    const lines = data.toString().split('\n');
+    for (const line of lines) {
+      if (line.startsWith('__PROGRESS__:')) {
+        const p = parseInt(line.split(':')[1], 10);
+        const cur = await getLoraById(loraId);
+        if (cur) {
+          const next = await upsertLora({ ...cur, mergeProgress: p });
+          emitEvent('lora_updated', next);
+        }
+      }
+    }
+  });
+
   child.on('exit', async (code) => {
     const current = await getLoraById(loraId);
+    if (!current) return;
+
+    const isOk = code === 0;
+
     const next = await upsertLora({
       ...current,
-      mergeStatus: code === 0 ? 'ready' : 'failed',
+      mergeStatus: isOk ? 'ready' : 'failed',
+      mergeProgress: isOk ? 100 : current.mergeProgress,
       mergePid: null,
-      mergedPath: code === 0 ? mergedPath : current.mergedPath,
-      error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
+      mergedPath: isOk ? mergedPath : current.mergedPath,
+      error: isOk ? null : (stderr.trim() || `exit code ${code}`),
     });
     emitEvent('lora_updated', next);
-    if (code === 0) {
+
+    if (isOk) {
       logger.info(`LoRA merge completed: ${loraId}`, { mergedPath });
+
+      // Add to global model library
+      try {
+        const modelId = uid('model');
+        await addModel({
+          id: modelId,
+          name: `Merged: ${current.name}`,
+          repoId: `local/${current.id}`,
+          createdAt: nowIso(),
+          status: 'ready',
+          path: mergedPath,
+          error: null,
+          fromLoraId: loraId,
+        });
+        logger.info(`Merged model added to library`, { modelId, loraId });
+      } catch (err) {
+        logger.error(`Failed to add merged model to library`, { error: err.message });
+      }
     } else {
       logger.error(`LoRA merge failed: ${loraId}`, { error: next.error });
     }

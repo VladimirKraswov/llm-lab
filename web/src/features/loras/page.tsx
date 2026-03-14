@@ -103,6 +103,14 @@ export default function LorasPage() {
 
                     <div className="text-right text-sm">
                       <div className="text-slate-400">Merge: <span className="text-white">{item.mergeStatus}</span></div>
+                      {item.mergeStatus === 'building' && (
+                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                          <div
+                            className="h-full bg-blue-500 transition-all duration-500"
+                            style={{ width: `${item.mergeProgress || 0}%` }}
+                          />
+                        </div>
+                      )}
                       <div className="text-slate-400">Package: <span className="text-white">{item.packageStatus}</span></div>
                     </div>
                   </div>

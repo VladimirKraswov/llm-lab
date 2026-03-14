@@ -82,6 +82,7 @@ export type LoraItem = {
   createdAt: string;
   status: string;
   mergeStatus: string;
+  mergeProgress?: number;
   packageStatus: string;
   error: string | null;
 };

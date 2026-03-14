@@ -1,7 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const { getSettings, getLoras, getLoraById, renameLora, removeLora, getModelById } = require('../services/state');
-const { registerLoraFromJob, ensureMergedLora, packageMergedLora } = require('../services/loras');
+const { registerLoraFromJob, ensureMergedLora, packageMergedLora, buildMergedLora } = require('../services/loras');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { emitEvent } = require('../services/events');
 const { CONFIG } = require('../config');
@@ -44,7 +44,7 @@ router.put('/:id', async (req, res) => {
 
 router.post('/:id/build-merged', async (req, res) => {
   try {
-    res.json(await ensureMergedLora(req.params.id));
+    res.json(await buildMergedLora(req.params.id));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -68,7 +68,7 @@ router.get('/:id/package/download', async (req, res) => {
   if (!item || !item.packagePath || !fs.existsSync(item.packagePath)) {
     return res.status(404).json({ error: 'package not found' });
   }
-  res.download(item.packagePath);
+  res.download(item.packagePath, `${item.name}.tar.gz`);
 });
 
 router.post('/:id/activate', async (req, res) => {

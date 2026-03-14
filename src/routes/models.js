@@ -1,4 +1,7 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 const { getModels, getModelById, getSettings } = require('../services/state');
 const { downloadModel, deleteModel, getModelLogs } = require('../services/models');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
@@ -70,6 +73,27 @@ router.delete('/:id', async (req, res) => {
   } catch (err) {
     res.status(404).json({ error: String(err.message || err) });
   }
+});
+
+router.get('/:id/download', async (req, res) => {
+  const item = await getModelById(req.params.id);
+  if (!item || !item.path || !fs.existsSync(item.path)) {
+    return res.status(404).json({ error: 'model not found or not ready' });
+  }
+
+  // Models are directories, so we need to tar them
+  const archiveName = `${item.name.replace(/[^a-z0-9]/gi, '_')}.tar.gz`;
+  res.setHeader('Content-Disposition', `attachment; filename="${archiveName}"`);
+  res.setHeader('Content-Type', 'application/gzip');
+
+  const tar = spawn('tar', ['-cz', '-C', path.dirname(item.path), path.basename(item.path)]);
+  tar.stdout.pipe(res);
+
+  res.on('close', () => {
+    if (tar.exitCode === null) {
+      tar.kill('SIGKILL');
+    }
+  });
 });
 
 module.exports = router;
