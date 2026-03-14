@@ -1,6 +1,7 @@
 const express = require('express');
-const { getSettings, getRuntime, getJobs, getModelById } = require('../services/state');
+const { getSettings, getRuntime, getJobs, getModelById, getLoraByJobId } = require('../services/state');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
+const { ensureMergedLora } = require('../services/loras');
 const { CONFIG } = require('../config');
 
 const router = express.Router();
@@ -80,8 +81,21 @@ router.post('/use-job-output', async (req, res) => {
       if (model) modelName = model.name;
     }
 
+    // Check if there is a LoRA for this job and ensure it's merged
+    const lora = await getLoraByJobId(jobId);
+    let runtimeModelPath = job.outputDir;
+    let activeLoraId = null;
+    let activeLoraName = null;
+
+    if (lora) {
+      const merged = await ensureMergedLora(lora.id);
+      runtimeModelPath = merged.mergedPath;
+      activeLoraId = lora.id;
+      activeLoraName = lora.name;
+    }
+
     const runtime = await startVllmRuntime({
-      model: job.outputDir,
+      model: runtimeModelPath,
       port: Number(port || inf.port || CONFIG.vllmPort),
       maxModelLen: Number(maxModelLen || inf.maxModelLen || 2048),
       gpuMemoryUtilization: Number(gpuMemoryUtilization || inf.gpuMemoryUtilization || 0.85),
@@ -89,8 +103,8 @@ router.post('/use-job-output', async (req, res) => {
       baseModel: modelName,
       activeModelId: job.modelId || null,
       activeModelName: modelName,
-      activeLoraId: null,
-      activeLoraName: null,
+      activeLoraId,
+      activeLoraName,
     });
 
     res.json({

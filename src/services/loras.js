@@ -96,7 +96,13 @@ try:
     merged = model.merge_and_unload()
     merged.save_pretrained(output_dir, safe_serialization=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+    try:
+        # Fix for Mistral tokenizer regex warning if applicable
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path, fix_mistral_regex=True)
+    except TypeError:
+        # For older versions of transformers that don't support fix_mistral_regex
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+
     tokenizer.save_pretrained(output_dir)
     print(output_dir)
 except Exception as e:
