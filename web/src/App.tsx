@@ -10,6 +10,7 @@ import SettingsPage from './features/settings/page';
 import ModelsPage from './features/models/page';
 import LorasPage from './features/loras/page';
 import LogsPage from './features/logs/logs-page';
+import MonitorPage from './features/monitor/monitor-page';
 import { useEvents } from './hooks/use-events';
 
 export default function App() {
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="runtime" element={<RuntimePage />} />
         <Route path="playground" element={<PlaygroundPage />} />
         <Route path="logs" element={<LogsPage />} />
+        <Route path="monitor" element={<MonitorPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
 

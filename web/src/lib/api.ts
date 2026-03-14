@@ -341,6 +341,14 @@ export const api = {
     if (params.limit) search.append('limit', String(params.limit));
     return request<LogEntry[]>(`/logs?${search.toString()}`);
   },
+
+  getMonitorStats: () => request<{
+    cpu: { load: number; cores: number[] };
+    memory: { total: number; used: number; free: number; active: number; swaptotal: number; swapused: number };
+    gpus: Array<{ model: string; vendor: string; vram: number; vramUsed: number; utilizationGpu: number; temperatureGpu: number }>;
+    disks: Array<{ fs: string; type: string; size: number; used: number; available: number; use: number; mount: string }>;
+    network: Array<{ iface: string; operstate: string; rx_sec: number; tx_sec: number }>;
+  }>('/monitor/stats'),
   chat: (payload: {
     model?: string;
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
