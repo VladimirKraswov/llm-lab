@@ -9,6 +9,7 @@ const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const { registerLoraFromJob } = require('./loras');
 const logger = require('../utils/logger');
+const { clearGpuMemory } = require('../utils/gpu');
 
 function buildTrainPython(job, settings) {
   const cfg = {
@@ -139,6 +140,9 @@ function validateQLoraParams(params) {
 
 async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
   if (qlora) validateQLoraParams(qlora);
+
+  // Auto-cleanup GPU before starting new training
+  await clearGpuMemory();
 
   const settings = await getSettings();
   const datasets = await getDatasets();

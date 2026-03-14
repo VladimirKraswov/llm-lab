@@ -1,5 +1,6 @@
 const express = require('express');
 const si = require('systeminformation');
+const { clearGpuMemory } = require('../utils/gpu');
 
 const router = express.Router();
 
@@ -84,21 +85,8 @@ router.post('/kill', async (req, res) => {
 
 router.post('/clear-gpu', async (req, res) => {
   try {
-    const processes = await si.processes();
-    const toKill = processes.list.filter(p =>
-      p.name.toLowerCase().includes('python') ||
-      p.name.toLowerCase().includes('vllm') ||
-      p.name.toLowerCase().includes('torch')
-    );
-
-    for (const p of toKill) {
-      try {
-        process.kill(p.pid, 'SIGKILL');
-      } catch (e) {
-        // ignore
-      }
-    }
-    res.json({ ok: true, killedCount: toKill.length });
+    const killedCount = await clearGpuMemory();
+    res.json({ ok: true, killedCount });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }

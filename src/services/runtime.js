@@ -7,6 +7,7 @@ const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
 const { getRuntime, saveRuntime, getSettings } = require('./state');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
+const { clearGpuMemory } = require('../utils/gpu');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,9 +29,12 @@ async function startVllmRuntime({
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
   }
 
+  // Auto-cleanup GPU before starting new runtime
+  await clearGpuMemory();
+
   const runtime = await getRuntime();
+  // Double check if something is still running or state is stale
   if (runtime.vllm?.pid && isPidRunning(runtime.vllm.pid)) {
-    logger.info('Stopping existing runtime before starting new one');
     await stopVllmRuntime();
   }
 
