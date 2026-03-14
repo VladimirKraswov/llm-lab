@@ -13,6 +13,7 @@ const {
 } = require('./state');
 const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');
+const logger = require('../utils/logger');
 
 async function registerLoraFromJob(jobId, customName = null) {
   const existing = await getLoraByJobId(jobId);
@@ -49,6 +50,7 @@ async function registerLoraFromJob(jobId, customName = null) {
   });
 
   emitEvent('lora_created', item);
+  logger.info(`LoRA registered from job: ${item.name}`, { loraId: item.id, jobId });
   return item;
 }
 
@@ -130,6 +132,11 @@ except Exception as e:
       error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
     });
     emitEvent('lora_updated', next);
+    if (code === 0) {
+      logger.info(`LoRA merge completed: ${loraId}`, { mergedPath });
+    } else {
+      logger.error(`LoRA merge failed: ${loraId}`, { error: next.error });
+    }
   });
 
   return building;

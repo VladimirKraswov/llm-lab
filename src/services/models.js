@@ -6,6 +6,7 @@ const { uid, nowIso } = require('../utils/ids');
 const { addModel, getModels, getModelById, removeModel, upsertModel } = require('./state');
 const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
+const logger = require('../utils/logger');
 
 function safeSlug(value) {
   return String(value || '')
@@ -84,6 +85,11 @@ print(local_dir)
       pid: null,
     });
     emitEvent('model_updated', next);
+    if (code === 0) {
+      logger.info(`Model downloaded successfully: ${next.name}`, { modelId: next.id });
+    } else {
+      logger.error(`Model download failed: ${next.name}`, { modelId: next.id, error: next.error });
+    }
   });
 
   child.on('error', async (err) => {
@@ -109,6 +115,7 @@ async function deleteModel(modelId) {
 
   await removeModel(modelId);
   emitEvent('model_deleted', { id: modelId });
+  logger.info(`Model deleted: ${item.name}`, { modelId });
 
   return { ok: true };
 }

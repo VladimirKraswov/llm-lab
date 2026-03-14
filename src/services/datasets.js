@@ -7,6 +7,7 @@ const path = require('path');
 const { CONFIG } = require('../config');
 const { uid, nowIso } = require('../utils/ids');
 const { addDataset, getDatasets, saveDatasets } = require('./state');
+const logger = require('../utils/logger');
 
 function normalizeConversationRecord(item) {
   if (Array.isArray(item.messages)) {
@@ -164,6 +165,7 @@ async function createDatasetFromJsonl(name, jsonl) {
     invalidRows: parsed.invalidCount,
   };
 
+  logger.info(`Dataset created from JSONL: ${name}`, { datasetId, rows: meta.rows });
   return addDataset(meta);
 }
 
@@ -241,6 +243,7 @@ async function deleteDataset(datasetId) {
   const next = datasets.filter((x) => x.id !== datasetId);
   await saveDatasets(next);
 
+  logger.info(`Dataset deleted: ${ds.name}`, { datasetId });
   return { ok: true };
 }
 

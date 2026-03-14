@@ -6,6 +6,7 @@ const { nowIso } = require('../utils/ids');
 const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
 const { getRuntime, saveRuntime, getSettings } = require('./state');
 const { emitEvent } = require('./events');
+const logger = require('../utils/logger');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,6 +91,7 @@ async function startVllmRuntime({
 
   await saveRuntime(next);
   emitEvent('runtime_started', next.vllm);
+  logger.info(`vLLM runtime started`, { pid: child.pid, model, port });
   return next.vllm;
 }
 
@@ -127,6 +129,7 @@ async function stopVllmRuntime() {
 
   await saveRuntime(next);
   emitEvent('runtime_stopped', next.vllm);
+  logger.info(`vLLM runtime stopped`);
   return next.vllm;
 }
 

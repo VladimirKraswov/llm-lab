@@ -14,6 +14,7 @@ const dashboardRoute = require('./routes/dashboard');
 const eventsRoute = require('./routes/events');
 const modelsRoute = require('./routes/models');
 const lorasRoute = require('./routes/loras');
+const logsRoute = require('./routes/logs');
 
 async function main() {
   await ensureWorkspace();
@@ -32,6 +33,7 @@ async function main() {
   app.use('/events', eventsRoute);
   app.use('/models', modelsRoute);
   app.use('/loras', lorasRoute);
+  app.use('/logs', logsRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -48,7 +50,8 @@ async function main() {
         req.path.startsWith('/dashboard') ||
         req.path.startsWith('/events') ||
         req.path.startsWith('/models') ||
-        req.path.startsWith('/loras')
+        req.path.startsWith('/loras') ||
+        req.path.startsWith('/logs')
       ) {
         return next();
       }

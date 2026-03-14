@@ -153,6 +153,13 @@ export type RuntimeHealth = {
   raw?: string;
 };
 
+export type LogEntry = {
+  timestamp: string;
+  level: 'info' | 'warn' | 'error' | 'debug';
+  message: string;
+  [key: string]: any;
+};
+
 export type DashboardSummary = {
   health: {
     ok: boolean;
@@ -326,6 +333,14 @@ export const api = {
     request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/runtime/vllm/stop', {
       method: 'POST',
     }),
+
+  getLogs: (params: { level?: string; q?: string; limit?: number }) => {
+    const search = new URLSearchParams();
+    if (params.level) search.append('level', params.level);
+    if (params.q) search.append('q', params.q);
+    if (params.limit) search.append('limit', String(params.limit));
+    return request<LogEntry[]>(`/logs?${search.toString()}`);
+  },
   chat: (payload: {
     model?: string;
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;

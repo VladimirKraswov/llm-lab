@@ -8,6 +8,7 @@ const { getSettings, getDatasets, getJobs, upsertJob, getModelById } = require('
 const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const { registerLoraFromJob } = require('./loras');
+const logger = require('../utils/logger');
 
 function buildTrainPython(job, settings) {
   const cfg = {
@@ -179,6 +180,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 
   await upsertJob(job);
   emitEvent('job_updated', job);
+  logger.info(`Starting fine-tune job: ${job.name}`, { jobId, datasetId, baseModel });
 
   fs.mkdirSync(outputDir, { recursive: true });
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
@@ -216,6 +218,11 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     });
 
     emitEvent('job_updated', next);
+    if (code === 0) {
+      logger.info(`Job completed: ${jobId}`);
+    } else {
+      logger.error(`Job failed: ${jobId}`, { code, error: next.error });
+    }
 
     if (code === 0) {
       try {
