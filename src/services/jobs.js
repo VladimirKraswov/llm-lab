@@ -252,7 +252,6 @@ async function stopJob(jobId) {
   const job = jobs.find((j) => j.id === jobId);
   if (!job) throw new Error('job not found');
   if (!job.pid || !isPidRunning(job.pid)) {
-    // If state says running but PID is not, update state
     if (job.status === 'running') {
       await upsertJob({ ...job, status: 'failed', finishedAt: nowIso(), error: 'Process not found' });
     }

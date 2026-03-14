@@ -1,4 +1,3 @@
-const express = require('express');
 const { getSettings, getRuntime, getJobs, getDatasets } = require('../services/state');
 const { CONFIG } = require('../config');
 const { exists } = require('../utils/fs');

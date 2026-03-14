@@ -1,5 +1,6 @@
+
 const express = require('express');
-const { getSettings, getRuntime, getJobs, getModelById } = require('../services/state');
+const { getSettings, getRuntime, getJobs } = require('../services/state');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { CONFIG } = require('../config');
 
@@ -34,15 +35,13 @@ router.post('/vllm/start', async (req, res) => {
 
     const runtime = await startVllmRuntime({
       model: inf.model,
-      port: inf.port,
-      maxModelLen: inf.maxModelLen,
-      gpuMemoryUtilization: inf.gpuMemoryUtilization,
-      tensorParallelSize: inf.tensorParallelSize,
+      port: Number(inf.port),
+      maxModelLen: Number(inf.maxModelLen),
+      gpuMemoryUtilization: Number(inf.gpuMemoryUtilization),
+      tensorParallelSize: Number(inf.tensorParallelSize),
       baseModel: inf.model,
       activeModelId: null,
       activeModelName: inf.model,
-      activeLoraId: null,
-      activeLoraName: null,
     });
 
     res.json({ ok: true, runtime });
@@ -74,23 +73,15 @@ router.post('/use-job-output', async (req, res) => {
     const settings = await getSettings();
     const inf = settings.inference || {};
 
-    let modelName = job.baseModel;
-    if (job.modelId) {
-      const model = await getModelById(job.modelId);
-      if (model) modelName = model.name;
-    }
-
     const runtime = await startVllmRuntime({
       model: job.outputDir,
       port: Number(port || inf.port || CONFIG.vllmPort),
       maxModelLen: Number(maxModelLen || inf.maxModelLen || 2048),
       gpuMemoryUtilization: Number(gpuMemoryUtilization || inf.gpuMemoryUtilization || 0.85),
       tensorParallelSize: Number(tensorParallelSize || inf.tensorParallelSize || 1),
-      baseModel: modelName,
-      activeModelId: job.modelId || null,
-      activeModelName: modelName,
-      activeLoraId: null,
-      activeLoraName: null,
+      baseModel: job.baseModel,
+      activeModelId: job.modelId,
+      activeModelName: job.name,
     });
 
     res.json({

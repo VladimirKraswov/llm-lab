@@ -1,4 +1,3 @@
-const express = require('express');
 const { CONFIG } = require('../config');
 const { exists } = require('../utils/fs');
 

@@ -10,6 +10,7 @@ const {
   getLoraById,
   getModelById,
   upsertLora,
+  getLoras,
 } = require('./state');
 const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');

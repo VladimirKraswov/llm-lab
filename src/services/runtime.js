@@ -4,7 +4,7 @@ const { spawn } = require('child_process');
 const { CONFIG } = require('../config');
 const { nowIso } = require('../utils/ids');
 const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
-const { getRuntime, saveRuntime, getSettings } = require('./state');
+const { getRuntime, saveRuntime } = require('./state');
 const { emitEvent } = require('./events');
 
 function sleep(ms) {
@@ -33,21 +33,13 @@ async function startVllmRuntime({
   }
 
   const args = [
-    'serve',
-    model,
-    '--host',
-    '0.0.0.0',
-    '--port',
-    String(port),
-    '--gpu-memory-utilization',
-    String(gpuMemoryUtilization),
-    '--tensor-parallel-size',
-    String(tensorParallelSize),
-    '--max-model-len',
-    String(maxModelLen),
+    'serve', model,
+    '--host', '0.0.0.0',
+    '--port', String(port),
+    '--gpu-memory-utilization', String(gpuMemoryUtilization),
+    '--tensor-parallel-size', String(tensorParallelSize),
+    '--max-model-len', String(maxModelLen),
   ];
-
-  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
 
   const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
   const child = spawn(CONFIG.vllmBin, args, {
@@ -56,22 +48,19 @@ async function startVllmRuntime({
     stdio: ['ignore', outFd, outFd],
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
   });
-
   child.unref();
   await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
 
   for (let i = 0; i < 120; i += 1) {
     const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
     if (r.ok) break;
-
     if (!isPidRunning(child.pid)) {
       throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
     }
-
     await sleep(1000);
   }
 
-  const settings = await getSettings();
+  const settings = await require('./state').getSettings();
 
   const next = {
     vllm: {
@@ -87,7 +76,6 @@ async function startVllmRuntime({
       activeLoraName,
     },
   };
-
   await saveRuntime(next);
   emitEvent('runtime_started', next.vllm);
   return next.vllm;
@@ -96,7 +84,6 @@ async function startVllmRuntime({
 async function stopVllmRuntime() {
   const runtime = await getRuntime();
   const pid = runtime.vllm?.pid;
-
   if (pid && isPidRunning(pid)) {
     await killProcessGroup(pid);
     for (let i = 0; i < 20; i += 1) {
@@ -108,7 +95,7 @@ async function stopVllmRuntime() {
     }
   }
 
-  const settings = await getSettings();
+  const settings = await require('./state').getSettings();
 
   const next = {
     vllm: {
@@ -124,7 +111,6 @@ async function stopVllmRuntime() {
       activeLoraName: null,
     },
   };
-
   await saveRuntime(next);
   emitEvent('runtime_stopped', next.vllm);
   return next.vllm;
@@ -133,7 +119,6 @@ async function stopVllmRuntime() {
 async function getRuntimeHealth(port) {
   const targetPort = port || CONFIG.vllmPort;
   const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${targetPort}/health`]);
-
   return {
     ok: r.ok,
     port: targetPort,

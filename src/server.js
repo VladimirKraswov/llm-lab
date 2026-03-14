@@ -20,9 +20,10 @@ async function main() {
   await recoverState();
 
   const app = express();
-  app.use(cors({ origin: true, credentials: false }));
+  app.use(cors());
   app.use(express.json({ limit: `${CONFIG.maxJsonMb}mb` }));
 
+  // API
   app.use('/health', healthRoute);
   app.use('/settings', settingsRoute);
   app.use('/datasets', datasetsRoute);
@@ -33,6 +34,7 @@ async function main() {
   app.use('/models', modelsRoute);
   app.use('/loras', lorasRoute);
 
+  // Frontend static
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
   if (fs.existsSync(webDist)) {
@@ -41,20 +43,20 @@ async function main() {
     app.get('*', (req, res, next) => {
       if (
         req.path.startsWith('/health') ||
-        req.path.startsWith('/settings') ||
-        req.path.startsWith('/datasets') ||
-        req.path.startsWith('/jobs') ||
-        req.path.startsWith('/runtime') ||
-        req.path.startsWith('/dashboard') ||
-        req.path.startsWith('/events') ||
-        req.path.startsWith('/models') ||
-        req.path.startsWith('/loras')
-      ) {
-        return next();
-      }
+    req.path.startsWith('/settings') ||
+    req.path.startsWith('/datasets') ||
+    req.path.startsWith('/jobs') ||
+    req.path.startsWith('/runtime') ||
+    req.path.startsWith('/dashboard') ||
+    req.path.startsWith('/events') ||
+    req.path.startsWith('/models') ||
+    req.path.startsWith('/loras')
+  ) {
+    return next();
+  }
 
-      res.sendFile(path.join(webDist, 'index.html'));
-    });
+  res.sendFile(path.join(webDist, 'index.html'));
+});
   } else {
     app.get('/', (_req, res) => {
       res.json({

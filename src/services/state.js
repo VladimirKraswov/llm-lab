@@ -52,31 +52,13 @@ const DEFAULT_SETTINGS = {
   },
 };
 
-const DEFAULT_RUNTIME = {
-  vllm: {
-    pid: null,
-    model: null,
-    startedAt: null,
-    port: CONFIG.vllmPort,
-    logFile: CONFIG.vllmLogFile,
-    baseModel: CONFIG.defaultBaseModel,
-    activeModelId: null,
-    activeModelName: null,
-    activeLoraId: null,
-    activeLoraName: null,
-  },
-};
-
 async function ensureWorkspace() {
   for (const dir of [
     CONFIG.stateDir,
-    CONFIG.modelsDir,
     CONFIG.datasetsDir,
     CONFIG.rawDatasetsDir,
     CONFIG.trainingConfigsDir,
     CONFIG.trainingOutputsDir,
-    CONFIG.mergedModelsDir,
-    CONFIG.packagesDir,
     CONFIG.logsDir,
   ]) {
     await ensureDir(dir);
@@ -85,9 +67,11 @@ async function ensureWorkspace() {
   if (!exists(CONFIG.settingsFile)) await writeJson(CONFIG.settingsFile, DEFAULT_SETTINGS);
   if (!exists(CONFIG.jobsFile)) await writeJson(CONFIG.jobsFile, []);
   if (!exists(CONFIG.datasetsFile)) await writeJson(CONFIG.datasetsFile, []);
-  if (!exists(CONFIG.modelsFile)) await writeJson(CONFIG.modelsFile, []);
-  if (!exists(CONFIG.lorasFile)) await writeJson(CONFIG.lorasFile, []);
-  if (!exists(CONFIG.runtimeFile)) await writeJson(CONFIG.runtimeFile, DEFAULT_RUNTIME);
+  if (!exists(CONFIG.runtimeFile)) {
+    await writeJson(CONFIG.runtimeFile, {
+      vllm: { pid: null, model: null, startedAt: null, port: CONFIG.vllmPort },
+    });
+  }
 }
 
 async function getSettings() {
@@ -159,142 +143,13 @@ async function removeDataset(id) {
   });
 }
 
-async function getModels() {
-  return (await readJson(CONFIG.modelsFile, [])) || [];
-}
-
-async function saveModels(items) {
-  await writeJson(CONFIG.modelsFile, items);
-}
-
-async function addModel(meta) {
-  return withLock(CONFIG.modelsFile, async () => {
-    const list = await getModels();
-    list.push(meta);
-    await saveModels(list);
-    return meta;
-  });
-}
-
-async function upsertModel(modelPatch) {
-  return withLock(CONFIG.modelsFile, async () => {
-    const list = await getModels();
-    const idx = list.findIndex((x) => x.id === modelPatch.id);
-    let result;
-    if (idx === -1) {
-      list.push(modelPatch);
-      result = modelPatch;
-    } else {
-      list[idx] = { ...list[idx], ...modelPatch };
-      result = list[idx];
-    }
-    await saveModels(list);
-    return result;
-  });
-}
-
-async function getModelById(id) {
-  const list = await getModels();
-  return list.find((x) => x.id === id) || null;
-}
-
-async function removeModel(id) {
-  return withLock(CONFIG.modelsFile, async () => {
-    const list = await getModels();
-    const next = list.filter((x) => x.id !== id);
-    await saveModels(next);
-    return next;
-  });
-}
-
-async function getLoras() {
-  return (await readJson(CONFIG.lorasFile, [])) || [];
-}
-
-async function saveLoras(items) {
-  await writeJson(CONFIG.lorasFile, items);
-}
-
-async function addLora(meta) {
-  return withLock(CONFIG.lorasFile, async () => {
-    const list = await getLoras();
-    list.push(meta);
-    await saveLoras(list);
-    return meta;
-  });
-}
-
-async function upsertLora(loraPatch) {
-  return withLock(CONFIG.lorasFile, async () => {
-    const list = await getLoras();
-    const idx = list.findIndex((x) => x.id === loraPatch.id);
-    let result;
-    if (idx === -1) {
-      list.push(loraPatch);
-      result = loraPatch;
-    } else {
-      list[idx] = { ...list[idx], ...loraPatch };
-      result = list[idx];
-    }
-    await saveLoras(list);
-    return result;
-  });
-}
-
-async function getLoraById(id) {
-  const list = await getLoras();
-  return list.find((x) => x.id === id) || null;
-}
-
-async function getLoraByJobId(jobId) {
-  const list = await getLoras();
-  return list.find((x) => x.jobId === jobId) || null;
-}
-
-async function renameLora(id, name) {
-  return withLock(CONFIG.lorasFile, async () => {
-    const list = await getLoras();
-    const idx = list.findIndex((x) => x.id === id);
-    if (idx === -1) throw new Error('lora not found');
-    list[idx] = { ...list[idx], name };
-    await saveLoras(list);
-    return list[idx];
-  });
-}
-
-async function removeLora(id) {
-  return withLock(CONFIG.lorasFile, async () => {
-    const list = await getLoras();
-    const next = list.filter((x) => x.id !== id);
-    await saveLoras(next);
-    return next;
-  });
-}
-
 async function getRuntime() {
-  const current = (await readJson(CONFIG.runtimeFile, DEFAULT_RUNTIME)) || DEFAULT_RUNTIME;
-  return {
-    ...DEFAULT_RUNTIME,
-    ...current,
-    vllm: {
-      ...DEFAULT_RUNTIME.vllm,
-      ...(current.vllm || {}),
-    },
-  };
+  return (await readJson(CONFIG.runtimeFile, { vllm: {} })) || { vllm: {} };
 }
 
 async function saveRuntime(next) {
   return withLock(CONFIG.runtimeFile, async () => {
-    const merged = {
-      ...DEFAULT_RUNTIME,
-      ...next,
-      vllm: {
-        ...DEFAULT_RUNTIME.vllm,
-        ...((next && next.vllm) || {}),
-      },
-    };
-    await writeJson(CONFIG.runtimeFile, merged);
-    return merged;
+    await writeJson(CONFIG.runtimeFile, next);
   });
 }
 
@@ -354,7 +209,6 @@ async function recoverState() {
 
 module.exports = {
   DEFAULT_SETTINGS,
-  DEFAULT_RUNTIME,
   ensureWorkspace,
   getSettings,
   setSettings,
@@ -365,20 +219,8 @@ module.exports = {
   saveDatasets,
   addDataset,
   removeDataset,
-  getModels,
-  saveModels,
-  addModel,
-  upsertModel,
-  getModelById,
-  removeModel,
   getLoras,
   saveLoras,
-  addLora,
-  upsertLora,
-  getLoraById,
-  getLoraByJobId,
-  renameLora,
-  removeLora,
   getRuntime,
   saveRuntime,
   recoverState,

@@ -1,4 +1,3 @@
-const express = require('express');
 const { getSettings, setSettings } = require('../services/state');
 
 const router = express.Router();

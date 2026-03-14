@@ -1,3 +1,4 @@
+
 const { spawn, spawnSync } = require('child_process');
 
 function runText(cmd, args = [], options = {}) {
@@ -28,10 +29,8 @@ function isPidRunning(pid) {
 async function killProcessGroup(pid, signal = 'SIGTERM') {
   if (!pid) return;
   try {
-    // Try to kill the process group (negative pid)
     process.kill(-pid, signal);
   } catch (e) {
-    // Fallback to killing just the process if group kill fails
     try {
       process.kill(pid, signal);
     } catch (e2) {
