@@ -302,10 +302,10 @@ async function recoverState() {
   const { isPidRunning } = require('../utils/proc');
   const { nowIso } = require('../utils/ids');
 
-  // Recover jobs
   await withLock(CONFIG.jobsFile, async () => {
     const jobs = await getJobs();
     let jobsChanged = false;
+
     for (let i = 0; i < jobs.length; i++) {
       if (jobs[i].status === 'running' || jobs[i].status === 'queued') {
         if (!jobs[i].pid || !isPidRunning(jobs[i].pid)) {
@@ -316,14 +316,15 @@ async function recoverState() {
         }
       }
     }
+
     if (jobsChanged) {
       await writeJson(CONFIG.jobsFile, jobs);
     }
   });
 
-  // Recover runtime
   await withLock(CONFIG.runtimeFile, async () => {
     const runtime = await getRuntime();
+
     if (runtime.vllm?.pid && !isPidRunning(runtime.vllm.pid)) {
       const next = {
         ...runtime,
@@ -337,10 +338,10 @@ async function recoverState() {
     }
   });
 
-  // Recover LoRAs
   await withLock(CONFIG.lorasFile, async () => {
     const loras = await getLoras();
     let lorasChanged = false;
+
     for (let i = 0; i < loras.length; i++) {
       if (loras[i].mergeStatus === 'building') {
         if (!loras[i].mergePid || !isPidRunning(loras[i].mergePid)) {
@@ -349,6 +350,7 @@ async function recoverState() {
           lorasChanged = true;
         }
       }
+
       if (loras[i].packageStatus === 'building') {
         if (!loras[i].packagePid || !isPidRunning(loras[i].packagePid)) {
           loras[i].packageStatus = 'failed';
@@ -357,6 +359,7 @@ async function recoverState() {
         }
       }
     }
+
     if (lorasChanged) {
       await writeJson(CONFIG.lorasFile, loras);
     }

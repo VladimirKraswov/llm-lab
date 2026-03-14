@@ -38,6 +38,13 @@ function fmtBytes(bytes: number) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+function percent(part?: number, total?: number) {
+  const p = Number(part) || 0;
+  const t = Number(total) || 0;
+  if (!t) return 0;
+  return (p / t) * 100;
+}
+
 function UsageBar({ value, label, color = 'bg-blue-600' }: { value: number, label: string, color?: string }) {
   const safeValue = typeof value === 'number' && Number.isFinite(value) ? value : 0;
   return (
@@ -78,15 +85,15 @@ export default function MonitorPage() {
 
   useEffect(() => {
     if (data) {
-      setHistory(prev => {
+      setHistory((prev) => {
         const next = [...prev, {
           time: new Date().toLocaleTimeString(),
           cpu: data.cpu?.load || 0,
           mem: data.memory?.total ? (data.memory.used / data.memory.total) * 100 : 0,
-          vram: data.gpus?.[0]?.vram ? (data.gpus[0].vramUsed / data.gpus[0].vram) * 100 : 0,
+          vram: percent(data.gpus?.[0]?.vramUsed, data.gpus?.[0]?.vram),
           gpu: data.gpus?.[0]?.utilizationGpu || 0,
         }];
-        return next.slice(-30); // Keep last 60 seconds
+        return next.slice(-30);
       });
     }
   }, [data]);
@@ -146,7 +153,7 @@ export default function MonitorPage() {
               <div>
                 <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">VRAM</div>
                 <div className="text-xl font-bold text-white">
-                  {(data.gpus?.[0]?.vram ? (data.gpus[0].vramUsed / data.gpus[0].vram) * 100 : 0).toFixed(1)}%
+                  {percent(data.gpus?.[0]?.vramUsed, data.gpus?.[0]?.vram).toFixed(1)}%
                 </div>
               </div>
             </div>
@@ -290,7 +297,7 @@ export default function MonitorPage() {
             <Network className="text-slate-500" size={18} />
           </CardHeader>
           <CardContent className="space-y-4">
-            {data.network.filter(n => n.operstate === 'up').map((net, idx) => (
+            {data.network.filter((n) => n.operstate === 'up').map((net, idx) => (
               <div key={idx} className="rounded-xl bg-slate-950/40 p-4 border border-slate-800">
                 <div className="flex justify-between mb-3">
                   <span className="text-sm font-semibold text-white uppercase">{net.iface}</span>
@@ -400,7 +407,7 @@ export default function MonitorPage() {
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <UsageBar value={gpu.utilizationGpu} label="GPU Utilization" color="bg-emerald-500" />
-                  <UsageBar value={(gpu.vramUsed / gpu.vram) * 100} label="VRAM Usage" color="bg-cyan-500" />
+                  <UsageBar value={percent(gpu.vramUsed, gpu.vram)} label="VRAM Usage" color="bg-cyan-500" />
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <div className="text-xs text-slate-500 uppercase tracking-tighter">VRAM</div>

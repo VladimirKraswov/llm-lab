@@ -16,11 +16,9 @@ router.get('/stats', async (req, res) => {
       si.processes(),
     ]);
 
-    // Filter processes that might be using GPU (heuristic if nvidia-smi not available)
-    // In a real environment with NVIDIA GPUs, we'd use si.getDynamicData or parse nvidia-smi
     const gpuProcesses = processes.list
-      .filter(p => p.name.toLowerCase().includes('python') || p.name.toLowerCase().includes('vllm') || p.name.toLowerCase().includes('torch'))
-      .map(p => ({
+      .filter((p) => p.name.toLowerCase().includes('python') || p.name.toLowerCase().includes('vllm') || p.name.toLowerCase().includes('torch'))
+      .map((p) => ({
         pid: p.pid,
         name: p.name,
         cpu: p.cpu,
@@ -32,7 +30,7 @@ router.get('/stats', async (req, res) => {
     res.json({
       cpu: {
         load: cpu.currentLoad,
-        cores: cpu.cpus.map(c => c.load),
+        cores: cpu.cpus.map((c) => c.load),
       },
       memory: {
         total: mem.total,
@@ -42,15 +40,22 @@ router.get('/stats', async (req, res) => {
         swaptotal: mem.swaptotal,
         swapused: mem.swapused,
       },
-      gpus: gpus.controllers.map(g => ({
-        model: g.model,
-        vendor: g.vendor,
-        vram: g.vram,
-        vramUsed: g.vramUsed,
-        utilizationGpu: g.utilizationGpu,
-        temperatureGpu: g.temperatureGpu,
-      })),
-      disks: fsSize.map(f => ({
+      gpus: gpus.controllers.map((g) => {
+        const vram = Number(g.vram) || 0;
+        const vramUsed = Number(g.vramUsed ?? g.memoryUsed ?? 0) || 0;
+        const utilizationGpu = Number(g.utilizationGpu) || 0;
+        const temperatureGpu = Number(g.temperatureGpu) || 0;
+
+        return {
+          model: g.model,
+          vendor: g.vendor,
+          vram,
+          vramUsed,
+          utilizationGpu,
+          temperatureGpu,
+        };
+      }),
+      disks: fsSize.map((f) => ({
         fs: f.fs,
         type: f.type,
         size: f.size,
@@ -59,7 +64,7 @@ router.get('/stats', async (req, res) => {
         use: f.use,
         mount: f.mount,
       })),
-      network: network.map(n => ({
+      network: network.map((n) => ({
         iface: n.iface,
         operstate: n.operstate,
         rx_sec: n.rx_sec,
