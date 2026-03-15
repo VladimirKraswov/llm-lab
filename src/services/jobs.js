@@ -128,7 +128,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
   };
 
   const outFd = fs.openSync(logFile, 'a');
-  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'train.py');
+  const scriptPath = path.join(__dirname, '..', 'python', 'train.py');
 
   const { child, configPath } = await spawnPythonJsonScript({
     pythonBin: CONFIG.pythonBin,

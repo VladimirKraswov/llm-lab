@@ -84,7 +84,7 @@ async function buildMergedLora(loraId) {
   });
   emitEvent('lora_updated', next0);
 
-  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'merge_lora.py');
+  const scriptPath = path.join(__dirname, '..', 'python', 'merge_lora.py');
   const payload = {
     adapterPath: item.adapterPath,
     outputDir: mergedPath,

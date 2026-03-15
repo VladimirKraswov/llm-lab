@@ -148,7 +148,7 @@ async function startVllmRuntime(params = {}) {
   try {
     outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
 
-    const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'start_vllm.py');
+    const scriptPath = path.join(__dirname, '..', 'python', 'start_vllm.py');
     const payload = {
       vllmBin: CONFIG.vllmBin,
       model: normalizedModel,

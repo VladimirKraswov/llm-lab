@@ -47,7 +47,7 @@ async function downloadModel({ repoId, name }) {
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'download_model.py');
+  const scriptPath = path.join(__dirname, '..', 'python', 'download_model.py');
   const payload = {
     repoId,
     localDir: modelPath,
@@ -195,7 +195,7 @@ async function quantizeModel({ modelId, method, name }) {
     throw new Error(`Quantization method ${method} not implemented in this version`);
   }
 
-  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', scriptFile);
+  const scriptPath = path.join(__dirname, '..', 'python', scriptFile);
   const outFd = fs.openSync(logFile, 'a');
 
   const { child, configPath } = await spawnPythonJsonScript({
