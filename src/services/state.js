@@ -41,6 +41,12 @@ const DEFAULT_SETTINGS = {
     loraDropout: 0,
     targetModules: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
   },
+  wandb: {
+    enabled: false,
+    apiKey: '',
+    project: 'llm-lab',
+    entity: '',
+  },
   inference: {
     backend: 'vllm',
     model: CONFIG.defaultBaseModel,
@@ -101,6 +107,7 @@ async function setSettings(next) {
       ...current,
       ...next,
       qlora: { ...current.qlora, ...(next.qlora || {}) },
+      wandb: { ...current.wandb, ...(next.wandb || {}) },
       inference: { ...current.inference, ...(next.inference || {}) },
     };
     await writeJson(CONFIG.settingsFile, merged);

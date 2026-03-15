@@ -55,6 +55,12 @@ export type Settings = {
     tensorParallelSize: number;
     maxModelLen: number;
   };
+  wandb?: {
+    enabled: boolean;
+    apiKey: string;
+    project: string;
+    entity: string;
+  };
 };
 
 export type ModelItem = {

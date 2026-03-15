@@ -13,19 +13,32 @@ export default function SettingsPage() {
   const [port, setPort] = useState('8000');
   const [maxSeqLength, setMaxSeqLength] = useState('4096');
 
+  const [wandbEnabled, setWandbEnabled] = useState(false);
+  const [wandbApiKey, setWandbApiKey] = useState('');
+  const [wandbProject, setWandbProject] = useState('llm-lab');
+  const [wandbEntity, setWandbEntity] = useState('');
+
   useEffect(() => {
     if (settingsQuery.data) {
       setBaseModel(settingsQuery.data.baseModel);
       setInferenceModel(settingsQuery.data.inference.model);
       setPort(String(settingsQuery.data.inference.port));
       setMaxSeqLength(String(settingsQuery.data.qlora.maxSeqLength));
+
+      const w = (settingsQuery.data as any).wandb;
+      if (w) {
+        setWandbEnabled(!!w.enabled);
+        setWandbApiKey(w.apiKey || '');
+        setWandbProject(w.project || 'llm-lab');
+        setWandbEntity(w.entity || '');
+      }
     }
   }, [settingsQuery.data]);
 
   const mutation = useMutation({ mutationFn: api.updateSettings });
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader title="Settings" description="Дефолтные параметры модели, inference и QLoRA." />
       <Card>
         <CardHeader>
@@ -50,11 +63,87 @@ export default function SettingsPage() {
               <Input value={maxSeqLength} onChange={(e) => setMaxSeqLength(e.target.value)} />
             </div>
           </div>
-          <Button onClick={() => mutation.mutate({ baseModel, qlora: { maxSeqLength: Number(maxSeqLength) }, inference: { model: inferenceModel, port: Number(port) } })} disabled={mutation.isPending}>
+          <Button onClick={() => mutation.mutate({
+            baseModel,
+            qlora: { maxSeqLength: Number(maxSeqLength) },
+            inference: { model: inferenceModel, port: Number(port) },
+            wandb: {
+              enabled: wandbEnabled,
+              apiKey: wandbApiKey,
+              project: wandbProject,
+              entity: wandbEntity,
+            }
+          })} disabled={mutation.isPending}>
             {mutation.isPending ? 'Saving…' : 'Save settings'}
           </Button>
           {mutation.data ? <p className="text-sm text-emerald-300">Saved.</p> : null}
           {mutation.error ? <p className="text-sm text-rose-300">{(mutation.error as Error).message}</p> : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Weights & Biases (WandB)</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-3">
+            <input
+              id="wandb-enabled"
+              type="checkbox"
+              checked={wandbEnabled}
+              onChange={(e) => setWandbEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-blue-500"
+            />
+            <label htmlFor="wandb-enabled" className="text-sm font-medium text-white cursor-pointer">
+              Enable WandB Logging
+            </label>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">API Key</label>
+              <Input
+                type="password"
+                value={wandbApiKey}
+                onChange={(e) => setWandbApiKey(e.target.value)}
+                placeholder="Enter your WandB API key"
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Project Name</label>
+              <Input
+                value={wandbProject}
+                onChange={(e) => setWandbProject(e.target.value)}
+                placeholder="llm-lab"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm text-slate-400">Entity (Optional)</label>
+            <Input
+              value={wandbEntity}
+              onChange={(e) => setWandbEntity(e.target.value)}
+              placeholder="Team or username"
+            />
+          </div>
+
+          <div className="pt-2">
+            <Button
+              onClick={() => mutation.mutate({
+                wandb: {
+                  enabled: wandbEnabled,
+                  apiKey: wandbApiKey,
+                  project: wandbProject,
+                  entity: wandbEntity,
+                }
+              })}
+              disabled={mutation.isPending}
+              className="bg-emerald-700 hover:bg-emerald-600"
+            >
+              {mutation.isPending ? 'Saving…' : 'Save WandB settings'}
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>

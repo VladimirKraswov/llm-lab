@@ -17,6 +17,7 @@ function buildTrainPython(job, settings) {
     datasetPath: job.datasetPath,
     outputDir: job.outputDir,
     qlora: { ...settings.qlora, ...(job.qlora || {}) },
+    wandb: settings.wandb || {},
   };
 
   return `
@@ -33,6 +34,17 @@ from trl import SFTTrainer
 cfg = json.loads(${JSON.stringify(JSON.stringify(cfg))})
 
 os.makedirs(cfg["outputDir"], exist_ok=True)
+
+if cfg.get("wandb", {}).get("enabled"):
+    import wandb
+    if cfg["wandb"].get("apiKey"):
+        wandb.login(key=cfg["wandb"]["apiKey"])
+    wandb.init(
+        project=cfg["wandb"].get("project", "llm-lab"),
+        entity=cfg["wandb"].get("entity"),
+        name=os.path.basename(cfg["outputDir"]),
+        config=cfg
+    )
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=cfg["baseModel"],
@@ -91,7 +103,7 @@ args = TrainingArguments(
     save_safetensors=True,
     bf16=use_bf16,
     fp16=not use_bf16,
-    report_to=[],
+    report_to=["wandb"] if cfg.get("wandb", {}).get("enabled") else [],
     remove_unused_columns=False,
     group_by_length=False,
     optim="adamw_8bit",
