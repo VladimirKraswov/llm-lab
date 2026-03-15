@@ -17,6 +17,13 @@ const lorasRoute = require('./routes/loras');
 const logsRoute = require('./routes/logs');
 const monitorRoute = require('./routes/monitor');
 
+function buildCorsOrigin() {
+  if (!CONFIG.webUiOrigin || CONFIG.webUiOrigin === '*') {
+    return true;
+  }
+  return CONFIG.webUiOrigin;
+}
+
 async function main() {
   try {
     console.log('Initializing workspace...');
@@ -31,7 +38,12 @@ async function main() {
   }
 
   const app = express();
-  app.use(cors({ origin: true, credentials: false }));
+
+  app.use(cors({
+    origin: buildCorsOrigin(),
+    credentials: false,
+  }));
+
   app.use(express.json({ limit: `${CONFIG.maxJsonMb}mb` }));
 
   app.use('/health', healthRoute);
@@ -83,6 +95,7 @@ async function main() {
     console.log(`LLM Lab Service listening on http://${CONFIG.host}:${CONFIG.port}`);
     console.log(`Workspace: ${CONFIG.workspace}`);
     console.log(`Python: ${CONFIG.pythonBin}`);
+    console.log(`Web UI origin: ${CONFIG.webUiOrigin}`);
   });
 
   server.on('error', (err) => {

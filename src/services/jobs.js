@@ -35,13 +35,22 @@ cfg = json.loads(${JSON.stringify(JSON.stringify(cfg))})
 
 os.makedirs(cfg["outputDir"], exist_ok=True)
 
-if cfg.get("wandb", {}).get("enabled"):
+wandb_cfg = cfg.get("wandb", {}) or {}
+wandb_enabled = bool(wandb_cfg.get("enabled")) and wandb_cfg.get("mode", "online") != "disabled"
+
+if wandb_cfg.get("mode") == "offline":
+    os.environ["WANDB_MODE"] = "offline"
+
+if wandb_cfg.get("baseUrl"):
+    os.environ["WANDB_BASE_URL"] = wandb_cfg["baseUrl"]
+
+if wandb_enabled:
     import wandb
-    if cfg["wandb"].get("apiKey"):
-        wandb.login(key=cfg["wandb"]["apiKey"])
+    if wandb_cfg.get("apiKey"):
+        wandb.login(key=wandb_cfg["apiKey"])
     wandb.init(
-        project=cfg["wandb"].get("project", "llm-lab"),
-        entity=cfg["wandb"].get("entity"),
+        project=wandb_cfg.get("project", "llm-lab"),
+        entity=wandb_cfg.get("entity"),
         name=os.path.basename(cfg["outputDir"]),
         config=cfg
     )
@@ -103,7 +112,7 @@ args = TrainingArguments(
     save_safetensors=True,
     bf16=use_bf16,
     fp16=not use_bf16,
-    report_to=["wandb"] if cfg.get("wandb", {}).get("enabled") else [],
+    report_to=["wandb"] if wandb_enabled else [],
     remove_unused_columns=False,
     group_by_length=False,
     optim="adamw_8bit",
@@ -128,6 +137,8 @@ print(json.dumps({
     "outputDir": cfg["outputDir"],
     "rows": len(dataset),
     "bf16": use_bf16,
+    "wandbEnabled": wandb_enabled,
+    "wandbMode": wandb_cfg.get("mode", "online"),
 }))
 `.trim();
 }
@@ -150,10 +161,43 @@ function validateQLoraParams(params) {
   }
 }
 
+function buildTrainingEnv(settings) {
+  const env = {
+    ...process.env,
+    PYTHONUNBUFFERED: '1',
+  };
+
+  const wandb = settings.wandb || {};
+
+  if (wandb.httpProxy) {
+    env.HTTP_PROXY = wandb.httpProxy;
+    env.http_proxy = wandb.httpProxy;
+  }
+
+  if (wandb.httpsProxy) {
+    env.HTTPS_PROXY = wandb.httpsProxy;
+    env.https_proxy = wandb.httpsProxy;
+  }
+
+  if (wandb.noProxy) {
+    env.NO_PROXY = wandb.noProxy;
+    env.no_proxy = wandb.noProxy;
+  }
+
+  if (wandb.baseUrl) {
+    env.WANDB_BASE_URL = wandb.baseUrl;
+  }
+
+  if (wandb.mode) {
+    env.WANDB_MODE = wandb.mode;
+  }
+
+  return env;
+}
+
 async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
   if (qlora) validateQLoraParams(qlora);
 
-  // Auto-cleanup GPU before starting new training
   await clearGpuMemory();
 
   const settings = await getSettings();
@@ -196,7 +240,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 
   await upsertJob(job);
   emitEvent('job_updated', job);
-  logger.info(`Starting fine-tune job: ${job.name}`, { jobId, datasetId, baseModel });
+  logger.info(`Starting fine-tune job: ${job.name}`, { jobId, datasetId, baseModel: selectedBaseModel });
 
   fs.mkdirSync(outputDir, { recursive: true });
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
@@ -208,7 +252,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    env: buildTrainingEnv(settings),
   });
 
   child.unref();
@@ -275,7 +319,6 @@ async function stopJob(jobId) {
   const job = jobs.find((j) => j.id === jobId);
   if (!job) throw new Error('job not found');
   if (!job.pid || !isPidRunning(job.pid)) {
-    // If state says running but PID is not, update state
     if (job.status === 'running') {
       await upsertJob({ ...job, status: 'failed', finishedAt: nowIso(), error: 'Process not found' });
     }

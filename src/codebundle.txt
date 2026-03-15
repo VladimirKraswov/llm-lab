@@ -1,0 +1,3179 @@
+=== CODE BUNDLE ===
+root: /Volumes/Extend/work/llm-lab/src
+ignore: .codebundleignore
+generated: 2026-03-15T07:34:28.334Z
+
+
+
+path: /bundle-code.js
+----------------------------------------
+#!/usr/bin/env node
+/**
+ * bundle-code.js
+ * Собирает весь текстовый код проекта в один файл, помечая секции путями.
+ * - Рекурсивный обход
+ * - Пропуск бинарных файлов (по содержимому)
+ * - Игнор по .codebundleignore (gitignore-like)
+ */
+
+const  fs = require("fs");
+const  fsp = require("fs/promises");
+const  path = require("path");
+
+const PROJECT_ROOT = process.cwd();
+const IGNORE_FILE_NAME = ".codebundleignore";
+const OUTPUT_FILE = path.join(PROJECT_ROOT, "codebundle.txt");
+
+const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
+const MAX_TOTAL_BYTES = 200 * 1024 * 1024;   // 200MB
+
+// Если заполнить — соберёт только эти расширения. Если пусто — любые текстовые.
+const ONLY_EXTENSIONS = new Set([
+  // ".js", ".jsx", ".ts", ".tsx", ".json", ".css", ".scss", ".md", ".html", ".yml", ".yaml"
+]);
+
+function normalizeToPosix(p) {
+  return p.split(path.sep).join("/");
+}
+
+function stripBom(s) {
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}
+
+async function readIgnoreFile(ignorePath) {
+  try {
+    const raw = await fsp.readFile(ignorePath, "utf8");
+    return stripBom(raw)
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith("#"));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Компилируем игнор-правила.
+ * Поддержка:
+ * - "node_modules/" (игнор любой сегмент /node_modules/ в любом месте)
+ * - "dist/" и т.п.
+ * - "*.ext"
+ * - "path/to/file" (точный относительный путь)
+ * - "!pattern" (снять игнор)
+ */
+function buildIgnoreMatcher(patterns) {
+  // дефолтные, чтобы не протекало даже если забыли
+  const defaultPatterns = [
+    "node_modules/",
+    ".git/",
+    "dist/",
+    "build/",
+    ".next/",
+    "coverage/",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+  ];
+
+  const all = [...defaultPatterns, ...patterns];
+
+  const rules = all.map(p => ({
+    neg: p.startsWith("!"),
+    pat: (p.startsWith("!") ? p.slice(1) : p).trim(),
+  })).filter(r => r.pat);
+
+  function matchRule(relPosix, pat) {
+    // relPosix: "admin/node_modules/express/index.js"
+
+    // directory pattern: "node_modules/"
+    if (pat.endsWith("/")) {
+      const seg = pat.slice(0, -1);
+      if (!seg) return false;
+
+      // матч:
+      // - если путь начинается с seg/
+      // - или содержит /seg/ как сегмент
+      return (
+        relPosix === seg ||
+        relPosix.startsWith(seg + "/") ||
+        relPosix.includes("/" + seg + "/") ||
+        relPosix.endsWith("/" + seg)
+      );
+    }
+
+    // glob extension: "*.png"
+    if (pat.startsWith("*.") && !pat.includes("/")) {
+      const ext = pat.slice(1); // ".png"
+      return relPosix.toLowerCase().endsWith(ext.toLowerCase());
+    }
+
+    // exact file path
+    return relPosix === pat;
+  }
+
+  return function isIgnored(relPosix) {
+    let ignored = false;
+    for (const r of rules) {
+      if (matchRule(relPosix, r.pat)) {
+        ignored = !r.neg; // если negation — снимаем игнор
+      }
+    }
+    return ignored;
+  };
+}
+
+async function isProbablyBinary(filePath) {
+  const fd = await fsp.open(filePath, "r");
+  try {
+    const { size } = await fd.stat();
+    const toRead = Math.min(size, 8192);
+    const buf = Buffer.allocUnsafe(toRead);
+    const { bytesRead } = await fd.read(buf, 0, toRead, 0);
+    if (bytesRead === 0) return false;
+
+    let nulCount = 0;
+    let weirdCount = 0;
+    for (let i = 0; i < bytesRead; i++) {
+      const b = buf[i];
+      if (b === 0) nulCount++;
+      const ok =
+        b === 9 || b === 10 || b === 13 || (b >= 32 && b <= 126) || b >= 128;
+      if (!ok) weirdCount++;
+    }
+    if (nulCount > 0) return true;
+    return (weirdCount / bytesRead) > 0.25;
+  } finally {
+    await fd.close();
+  }
+}
+
+async function* walk(dirAbs, isIgnored) {
+  let entries;
+  try {
+    entries = await fsp.readdir(dirAbs, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const ent of entries) {
+    const abs = path.join(dirAbs, ent.name);
+    const rel = path.relative(PROJECT_ROOT, abs);
+    const relPosix = normalizeToPosix(rel);
+
+    // не включаем output и ignore файл
+    if (path.resolve(abs) === path.resolve(OUTPUT_FILE)) continue;
+    if (relPosix === IGNORE_FILE_NAME) continue;
+
+    if (isIgnored(relPosix)) continue;
+
+    if (ent.isDirectory()) {
+      yield* walk(abs, isIgnored);
+    } else if (ent.isFile()) {
+      yield { abs, relPosix };
+    }
+  }
+}
+
+async function bundle() {
+  const ignorePath = path.join(PROJECT_ROOT, IGNORE_FILE_NAME);
+  const patterns = await readIgnoreFile(ignorePath);
+  const isIgnored = buildIgnoreMatcher(patterns);
+
+  const out = fs.createWriteStream(OUTPUT_FILE, { encoding: "utf8" });
+
+  let totalBytes = 0;
+  let included = 0;
+  let skippedBinary = 0;
+  let skippedSize = 0;
+  let skippedExt = 0;
+
+  out.write(`=== CODE BUNDLE ===\n`);
+  out.write(`root: ${normalizeToPosix(PROJECT_ROOT)}\n`);
+  out.write(`ignore: ${IGNORE_FILE_NAME}\n`);
+  out.write(`generated: ${new Date().toISOString()}\n\n`);
+
+  for await (const file of walk(PROJECT_ROOT, isIgnored)) {
+    const ext = path.extname(file.relPosix).toLowerCase();
+    if (ONLY_EXTENSIONS.size && !ONLY_EXTENSIONS.has(ext)) {
+      skippedExt++;
+      continue;
+    }
+
+    let stat;
+    try {
+      stat = await fsp.stat(file.abs);
+    } catch {
+      continue;
+    }
+
+    if (stat.size > MAX_FILE_SIZE_BYTES) {
+      skippedSize++;
+      continue;
+    }
+    if (totalBytes + stat.size > MAX_TOTAL_BYTES) {
+      out.write(`\n\n=== STOP: total size limit reached (${MAX_TOTAL_BYTES} bytes) ===\n`);
+      break;
+    }
+
+    let binary;
+    try {
+      binary = await isProbablyBinary(file.abs);
+    } catch {
+      continue;
+    }
+    if (binary) {
+      skippedBinary++;
+      continue;
+    }
+
+    let content;
+    try {
+      content = await fsp.readFile(file.abs, "utf8");
+    } catch {
+      continue;
+    }
+
+    out.write(`\n\npath: /${file.relPosix}\n`);
+    out.write(`----------------------------------------\n`);
+    out.write(content);
+    if (!content.endsWith("\n")) out.write("\n");
+
+    totalBytes += stat.size;
+    included++;
+  }
+
+  out.write(`\n\n=== SUMMARY ===\n`);
+  out.write(`included: ${included}\n`);
+  out.write(`skipped(binary): ${skippedBinary}\n`);
+  out.write(`skipped(size): ${skippedSize}\n`);
+  out.write(`skipped(ext): ${skippedExt}\n`);
+  out.write(`totalBytes(approx): ${totalBytes}\n`);
+
+  await new Promise((res, rej) => {
+    out.end(res);
+    out.on("error", rej);
+  });
+
+  console.log(`Done. Output: ${OUTPUT_FILE}`);
+}
+
+bundle().catch(err => {
+  console.error("Error:", err);
+  process.exitCode = 1;
+});
+
+
+path: /config.js
+----------------------------------------
+const path = require('path');
+require('dotenv').config();
+
+const CONFIG = {
+  host: process.env.SVC_HOST || '0.0.0.0',
+  port: Number(process.env.SVC_PORT || 8787),
+  workspace: process.env.WORKSPACE || '/opt/deepseek-workspace',
+  mlEnv: process.env.ML_ENV || '/opt/deepseek-workspace/environments/ml_env',
+  openWebUiPort: Number(process.env.OPENWEBUI_PORT || 3000),
+  vllmPort: Number(process.env.VLLM_PORT || 8000),
+  defaultBaseModel: process.env.DEFAULT_BASE_MODEL || 'Qwen/Qwen2.5-7B-Instruct',
+  maxJsonMb: Number(process.env.MAX_JSON_MB || 25),
+  webUiOrigin: process.env.WEB_UI_ORIGIN || '*',
+};
+
+CONFIG.stateDir = path.join(CONFIG.workspace, '.llm-lab');
+CONFIG.modelsDir = path.join(CONFIG.workspace, 'models', 'base');
+CONFIG.datasetsDir = path.join(CONFIG.workspace, 'data', 'processed');
+CONFIG.rawDatasetsDir = path.join(CONFIG.workspace, 'data', 'raw');
+CONFIG.trainingConfigsDir = path.join(CONFIG.workspace, 'training', 'configs');
+CONFIG.trainingOutputsDir = path.join(CONFIG.workspace, 'training', 'outputs');
+CONFIG.mergedModelsDir = path.join(CONFIG.workspace, 'exports', 'merged');
+CONFIG.packagesDir = path.join(CONFIG.workspace, 'exports', 'packages');
+CONFIG.logsDir = path.join(CONFIG.workspace, 'logs');
+
+CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json');
+CONFIG.settingsFile = path.join(CONFIG.stateDir, 'settings.json');
+CONFIG.datasetsFile = path.join(CONFIG.stateDir, 'datasets.json');
+CONFIG.runtimeFile = path.join(CONFIG.stateDir, 'runtime.json');
+CONFIG.modelsFile = path.join(CONFIG.stateDir, 'models.json');
+CONFIG.lorasFile = path.join(CONFIG.stateDir, 'loras.json');
+
+CONFIG.vllmPidFile = path.join(CONFIG.logsDir, 'vllm.pid');
+CONFIG.vllmLogFile = path.join(CONFIG.logsDir, 'vllm.log');
+CONFIG.pythonBin = path.join(CONFIG.mlEnv, 'bin', 'python');
+CONFIG.vllmBin = path.join(CONFIG.mlEnv, 'bin', 'vllm');
+
+module.exports = { CONFIG };
+
+
+path: /routes/dashboard.js
+----------------------------------------
+const express = require('express');
+const { getSettings, getRuntime, getJobs, getDatasets } = require('../services/state');
+const { CONFIG } = require('../config');
+const { exists } = require('../utils/fs');
+
+const router = express.Router();
+
+router.get('/summary', async (_req, res) => {
+  const [settings, runtime, jobs, datasets] = await Promise.all([
+    getSettings(),
+    getRuntime(),
+    getJobs(),
+    getDatasets(),
+  ]);
+
+  const recentJobs = [...jobs].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 5);
+
+  res.json({
+    health: {
+      ok: true,
+      python: exists(CONFIG.pythonBin),
+      vllmBin: exists(CONFIG.vllmBin),
+      time: new Date().toISOString(),
+    },
+    settings: {
+      baseModel: settings.baseModel,
+      inferenceModel: settings.inference.model,
+      inferencePort: settings.inference.port,
+    },
+    runtime,
+    counts: {
+      datasets: datasets.length,
+      jobs: jobs.length,
+      runningJobs: jobs.filter((x) => x.status === 'running').length,
+      completedJobs: jobs.filter((x) => x.status === 'completed').length,
+      failedJobs: jobs.filter((x) => x.status === 'failed').length,
+    },
+    recentJobs,
+  });
+});
+
+module.exports = router;
+
+
+path: /routes/datasets.js
+----------------------------------------
+// src/routes/datasets.js
+
+const express = require('express');
+const { getDatasets } = require('../services/state');
+const {
+  createDatasetFromJsonl,
+  createDatasetFromItems,
+  previewDataset,
+  deleteDataset,
+  validateJsonl,
+  validateItems,
+} = require('../services/datasets');
+
+const router = express.Router();
+
+router.get('/', async (_req, res) => {
+  res.json(await getDatasets());
+});
+
+router.post('/validate-jsonl', (req, res) => {
+  try {
+    const { jsonl } = req.body || {};
+    if (!jsonl) return res.status(400).json({ error: 'jsonl is required' });
+    res.json(validateJsonl(jsonl));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/validate-items', (req, res) => {
+  try {
+    const { items } = req.body || {};
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ error: 'items[] are required' });
+    }
+    res.json(validateItems(items));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/from-jsonl', async (req, res) => {
+  try {
+    const { name, jsonl } = req.body || {};
+    if (!name || !jsonl) return res.status(400).json({ error: 'name and jsonl are required' });
+    res.json(await createDatasetFromJsonl(name, jsonl));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/from-items', async (req, res) => {
+  try {
+    const { name, items } = req.body || {};
+    if (!name || !Array.isArray(items) || !items.length) {
+      return res.status(400).json({ error: 'name and non-empty items[] are required' });
+    }
+    res.json(await createDatasetFromItems(name, items));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/preview', async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
+    res.json(await previewDataset(req.params.id, limit));
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  try {
+    res.json(await deleteDataset(req.params.id));
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
+
+
+path: /routes/events.js
+----------------------------------------
+const express = require('express');
+const { addClient } = require('../services/events');
+
+const router = express.Router();
+
+router.get('/', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+
+  res.write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`);
+
+  addClient(res);
+});
+
+module.exports = router;
+
+
+path: /routes/health.js
+----------------------------------------
+const express = require('express');
+const { CONFIG } = require('../config');
+const { exists } = require('../utils/fs');
+
+const router = express.Router();
+
+router.get('/', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'llm-lab-service',
+    time: new Date().toISOString(),
+    python: exists(CONFIG.pythonBin),
+    vllmBin: exists(CONFIG.vllmBin),
+    openWebUiPort: CONFIG.openWebUiPort,
+    vllmPort: CONFIG.vllmPort,
+  });
+});
+
+module.exports = router;
+
+
+path: /routes/jobs.js
+----------------------------------------
+const express = require('express');
+const { getJobs } = require('../services/state');
+const { startFineTuneJob, stopJob, getJobById, getJobLogs } = require('../services/jobs');
+
+const router = express.Router();
+
+router.get('/', async (_req, res) => {
+  res.json(await getJobs());
+});
+
+router.get('/:id', async (req, res) => {
+  try {
+    res.json(await getJobById(req.params.id));
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/logs', async (req, res) => {
+  try {
+    const tail = Math.max(20, Math.min(2000, Number(req.query.tail || 200)));
+    res.json(await getJobLogs(req.params.id, tail));
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/fine-tune', async (req, res) => {
+  try {
+    res.json(await startFineTuneJob(req.body || {}));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/stop', async (req, res) => {
+  try {
+    res.json(await stopJob(req.params.id));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
+
+
+path: /routes/logs.js
+----------------------------------------
+const express = require('express');
+const fs = require('fs');
+const readline = require('readline');
+const { LOG_FILE } = require('../utils/logger');
+
+const router = express.Router();
+
+router.get('/', async (req, res) => {
+  const { level, q, limit = 500 } = req.query;
+
+  if (!fs.existsSync(LOG_FILE)) {
+    return res.json([]);
+  }
+
+  const fileStream = fs.createReadStream(LOG_FILE);
+  const rl = readline.createInterface({
+    input: fileStream,
+    crlfDelay: Infinity,
+  });
+
+  const results = [];
+
+  // We read the whole file to filter, but in a production app we'd use a better storage
+  // For now, streaming it line by line to keep memory low
+  for await (const line of rl) {
+    try {
+      const entry = JSON.parse(line);
+
+      if (level && entry.level !== level) continue;
+      if (q && !JSON.stringify(entry).toLowerCase().includes(q.toLowerCase())) continue;
+
+      results.push(entry);
+    } catch (e) {
+      // skip invalid lines
+    }
+  }
+
+  // Return last N logs
+  res.json(results.reverse().slice(0, Number(limit)));
+});
+
+module.exports = router;
+
+
+path: /routes/loras.js
+----------------------------------------
+const express = require('express');
+const fs = require('fs');
+const { getSettings, getLoras, getLoraById, renameLora, removeLora, getModelById } = require('../services/state');
+const { registerLoraFromJob, ensureMergedLora, packageMergedLora, buildMergedLora } = require('../services/loras');
+const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
+const { emitEvent } = require('../services/events');
+const { CONFIG } = require('../config');
+
+const router = express.Router();
+
+router.get('/', async (_req, res) => {
+  res.json(await getLoras());
+});
+
+router.get('/:id', async (req, res) => {
+  const item = await getLoraById(req.params.id);
+  if (!item) return res.status(404).json({ error: 'lora not found' });
+  res.json(item);
+});
+
+router.post('/from-job', async (req, res) => {
+  try {
+    const { jobId, name } = req.body || {};
+    res.json(await registerLoraFromJob(jobId, name));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.put('/:id', async (req, res) => {
+  try {
+    const { name } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    const item = await renameLora(req.params.id, String(name).trim());
+    emitEvent('lora_updated', item);
+    res.json(item);
+  } catch (err) {
+    const message = String(err.message || err);
+    res.status(message.includes('not found') ? 404 : 500).json({ error: message });
+  }
+});
+
+router.post('/:id/build-merged', async (req, res) => {
+  try {
+    res.json(await buildMergedLora(req.params.id));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/package', async (req, res) => {
+  try {
+    const item = await packageMergedLora(req.params.id);
+    res.json({
+      ok: true,
+      lora: item,
+      downloadPath: `/loras/${item.id}/package/download`,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/package/download', async (req, res) => {
+  const item = await getLoraById(req.params.id);
+  if (!item || !item.packagePath || !fs.existsSync(item.packagePath)) {
+    return res.status(404).json({ error: 'package not found' });
+  }
+  res.download(item.packagePath, `${item.name}.tar.gz`);
+});
+
+router.post('/:id/activate', async (req, res) => {
+  try {
+    const item = await ensureMergedLora(req.params.id);
+    const settings = await getSettings();
+    const inf = { ...settings.inference, ...(req.body || {}) };
+
+    await stopVllmRuntime();
+
+    let baseModelName = item.baseModelName;
+    if (item.baseModelId) {
+      const model = await getModelById(item.baseModelId);
+      if (model) baseModelName = model.name;
+    }
+
+    const runtime = await startVllmRuntime({
+      model: item.mergedPath,
+      port: Number(inf.port || CONFIG.vllmPort),
+      maxModelLen: Number(inf.maxModelLen || 2048),
+      gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
+      tensorParallelSize: Number(inf.tensorParallelSize || 1),
+      baseModel: baseModelName,
+      activeModelId: item.baseModelId || null,
+      activeModelName: baseModelName || null,
+      activeLoraId: item.id,
+      activeLoraName: item.name,
+    });
+
+    emitEvent('lora_activated', {
+      loraId: item.id,
+      loraName: item.name,
+      runtime,
+    });
+
+    res.json({
+      ok: true,
+      lora: item,
+      runtime,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/deactivate', async (_req, res) => {
+  try {
+    const settings = await getSettings();
+    const inf = settings.inference || {};
+
+    await stopVllmRuntime();
+    const runtime = await startVllmRuntime({
+      model: inf.model || settings.baseModel,
+      port: Number(inf.port || CONFIG.vllmPort),
+      maxModelLen: Number(inf.maxModelLen || 2048),
+      gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
+      tensorParallelSize: Number(inf.tensorParallelSize || 1),
+      baseModel: settings.baseModel,
+      activeModelId: null,
+      activeModelName: null,
+      activeLoraId: null,
+      activeLoraName: null,
+    });
+
+    emitEvent('lora_deactivated', runtime);
+    res.json({ ok: true, runtime });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  try {
+    await removeLora(req.params.id);
+    emitEvent('lora_deleted', { id: req.params.id });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
+
+
+path: /routes/models.js
+----------------------------------------
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+const { getModels, getModelById, getSettings } = require('../services/state');
+const { downloadModel, deleteModel, getModelLogs } = require('../services/models');
+const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
+const { CONFIG } = require('../config');
+
+const router = express.Router();
+
+router.get('/', async (_req, res) => {
+  res.json(await getModels());
+});
+
+router.get('/:id', async (req, res) => {
+  const item = await getModelById(req.params.id);
+  if (!item) return res.status(404).json({ error: 'model not found' });
+  res.json(item);
+});
+
+router.get('/:id/logs', async (req, res) => {
+  try {
+    const tail = Math.max(20, Math.min(2000, Number(req.query.tail || 200)));
+    res.json(await getModelLogs(req.params.id, tail));
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/download', async (req, res) => {
+  try {
+    const { repoId, name } = req.body || {};
+    res.json(await downloadModel({ repoId, name }));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/activate', async (req, res) => {
+  try {
+    const item = await getModelById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'model not found' });
+    if (item.status !== 'ready') return res.status(400).json({ error: 'model is not ready' });
+
+    const settings = await getSettings();
+    const inf = { ...settings.inference, ...(req.body || {}) };
+
+    await stopVllmRuntime();
+
+    const runtime = await startVllmRuntime({
+      model: item.path,
+      port: Number(inf.port || CONFIG.vllmPort),
+      maxModelLen: Number(inf.maxModelLen || 2048),
+      gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
+      tensorParallelSize: Number(inf.tensorParallelSize || 1),
+      baseModel: item.name,
+      activeModelId: item.id,
+      activeModelName: item.name,
+      activeLoraId: null,
+      activeLoraName: null,
+    });
+
+    res.json({ ok: true, model: item, runtime });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  try {
+    res.json(await deleteModel(req.params.id));
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/download', async (req, res) => {
+  const item = await getModelById(req.params.id);
+  if (!item || !item.path || !fs.existsSync(item.path)) {
+    return res.status(404).json({ error: 'model not found or not ready' });
+  }
+
+  // Models are directories, so we need to tar them
+  const archiveName = `${item.name.replace(/[^a-z0-9]/gi, '_')}.tar.gz`;
+  res.setHeader('Content-Disposition', `attachment; filename="${archiveName}"`);
+  res.setHeader('Content-Type', 'application/gzip');
+
+  const tar = spawn('tar', ['-cz', '-C', path.dirname(item.path), path.basename(item.path)]);
+  tar.stdout.pipe(res);
+
+  res.on('close', () => {
+    if (tar.exitCode === null) {
+      tar.kill('SIGKILL');
+    }
+  });
+});
+
+module.exports = router;
+
+
+path: /routes/monitor.js
+----------------------------------------
+const express = require('express');
+const si = require('systeminformation');
+const { clearGpuMemory } = require('../utils/gpu');
+
+const router = express.Router();
+
+router.get('/stats', async (req, res) => {
+  try {
+    const [cpu, mem, gpus, disks, fsSize, network, processes] = await Promise.all([
+      si.currentLoad(),
+      si.mem(),
+      si.graphics(),
+      si.diskLayout(),
+      si.fsSize(),
+      si.networkStats(),
+      si.processes(),
+    ]);
+
+    const gpuProcesses = processes.list
+      .filter((p) => p.name.toLowerCase().includes('python') || p.name.toLowerCase().includes('vllm') || p.name.toLowerCase().includes('torch'))
+      .map((p) => ({
+        pid: p.pid,
+        name: p.name,
+        cpu: p.cpu,
+        mem: p.mem,
+        user: p.user,
+        command: p.command,
+      }));
+
+    res.json({
+      cpu: {
+        load: cpu.currentLoad,
+        cores: cpu.cpus.map((c) => c.load),
+      },
+      memory: {
+        total: mem.total,
+        used: mem.used,
+        free: mem.free,
+        active: mem.active,
+        swaptotal: mem.swaptotal,
+        swapused: mem.swapused,
+      },
+      gpus: gpus.controllers.map((g) => {
+        const vram = Number(g.vram) || 0;
+        const vramUsed = Number(g.vramUsed ?? g.memoryUsed ?? 0) || 0;
+        const utilizationGpu = Number(g.utilizationGpu) || 0;
+        const temperatureGpu = Number(g.temperatureGpu) || 0;
+
+        return {
+          model: g.model,
+          vendor: g.vendor,
+          vram,
+          vramUsed,
+          utilizationGpu,
+          temperatureGpu,
+        };
+      }),
+      disks: fsSize.map((f) => ({
+        fs: f.fs,
+        type: f.type,
+        size: f.size,
+        used: f.used,
+        available: f.available,
+        use: f.use,
+        mount: f.mount,
+      })),
+      network: network.map((n) => ({
+        iface: n.iface,
+        operstate: n.operstate,
+        rx_sec: n.rx_sec,
+        tx_sec: n.tx_sec,
+      })),
+      gpuProcesses,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/kill', async (req, res) => {
+  try {
+    const { pid } = req.body;
+    if (!pid) return res.status(400).json({ error: 'PID is required' });
+    process.kill(pid, 'SIGKILL');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/clear-gpu', async (req, res) => {
+  try {
+    const killedCount = await clearGpuMemory();
+    res.json({ ok: true, killedCount });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
+
+
+path: /routes/runtime.js
+----------------------------------------
+const express = require('express');
+const { getSettings, getRuntime, getJobs, getModelById, getLoraByJobId } = require('../services/state');
+const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
+const { ensureMergedLora } = require('../services/loras');
+const { CONFIG } = require('../config');
+
+const router = express.Router();
+
+router.get('/', async (_req, res) => {
+  res.json(await getRuntime());
+});
+
+router.get('/health', async (_req, res) => {
+  try {
+    const settings = await getSettings();
+    const response = await fetch(`http://127.0.0.1:${settings.inference.port}/health`);
+    const text = await response.text();
+
+    res.json({
+      ok: response.ok,
+      raw: text,
+    });
+  } catch (err) {
+    res.json({
+      ok: false,
+      raw: String(err.message || err),
+    });
+  }
+});
+
+router.post('/vllm/start', async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const inf = { ...settings.inference, ...(req.body || {}) };
+
+    const runtime = await startVllmRuntime({
+      model: inf.model,
+      port: inf.port,
+      maxModelLen: inf.maxModelLen,
+      gpuMemoryUtilization: inf.gpuMemoryUtilization,
+      tensorParallelSize: inf.tensorParallelSize,
+      baseModel: inf.model,
+      activeModelId: null,
+      activeModelName: inf.model,
+      activeLoraId: null,
+      activeLoraName: null,
+    });
+
+    res.json({ ok: true, runtime });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/vllm/stop', async (_req, res) => {
+  res.json({ ok: true, runtime: await stopVllmRuntime() });
+});
+
+router.post('/use-job-output', async (req, res) => {
+  try {
+    const { jobId, port, maxModelLen, gpuMemoryUtilization, tensorParallelSize } = req.body || {};
+    if (!jobId) {
+      return res.status(400).json({ error: 'jobId is required' });
+    }
+
+    const jobs = await getJobs();
+    const job = jobs.find((x) => x.id === jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'job not found' });
+    }
+    if (job.status !== 'completed') {
+      return res.status(400).json({ error: 'job is not completed' });
+    }
+
+    const settings = await getSettings();
+    const inf = settings.inference || {};
+
+    let modelName = job.baseModel;
+    if (job.modelId) {
+      const model = await getModelById(job.modelId);
+      if (model) modelName = model.name;
+    }
+
+    // Check if there is a LoRA for this job and ensure it's merged
+    const lora = await getLoraByJobId(jobId);
+    let runtimeModelPath = job.outputDir;
+    let activeLoraId = null;
+    let activeLoraName = null;
+
+    if (lora) {
+      const merged = await ensureMergedLora(lora.id);
+      runtimeModelPath = merged.mergedPath;
+      activeLoraId = lora.id;
+      activeLoraName = lora.name;
+    }
+
+    const runtime = await startVllmRuntime({
+      model: runtimeModelPath,
+      port: Number(port || inf.port || CONFIG.vllmPort),
+      maxModelLen: Number(maxModelLen || inf.maxModelLen || 2048),
+      gpuMemoryUtilization: Number(gpuMemoryUtilization || inf.gpuMemoryUtilization || 0.85),
+      tensorParallelSize: Number(tensorParallelSize || inf.tensorParallelSize || 1),
+      baseModel: modelName,
+      activeModelId: job.modelId || null,
+      activeModelName: modelName,
+      activeLoraId,
+      activeLoraName,
+    });
+
+    res.json({
+      ok: true,
+      runtime,
+      job,
+    });
+  } catch (err) {
+    const errorMsg = String(err.message || err);
+    const logger = require('../utils/logger');
+    logger.error(`Failed to use job output in runtime`, { error: errorMsg });
+    res.status(500).json({ error: errorMsg });
+  }
+});
+
+router.post('/chat', async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const runtime = await getRuntime();
+    // Use model from request, or currently loaded model in runtime, or fallback to settings
+    const model = req.body?.model || runtime.vllm?.model || settings.inference.model;
+    const messages = req.body?.messages;
+    const stream = !!req.body?.stream;
+
+    if (!Array.isArray(messages) || !messages.length) {
+      return res.status(400).json({ error: 'messages are required' });
+    }
+
+    const response = await fetch(`http://127.0.0.1:${settings.inference.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: req.body?.temperature ?? 0.7,
+        max_tokens: req.body?.max_tokens ?? 512,
+        stream,
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(500).json({ error: text || 'inference failed' });
+    }
+
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      return res.end();
+    } else {
+      const text = await response.text();
+      try {
+        return res.json(JSON.parse(text));
+      } catch {
+        return res.status(500).json({ error: 'invalid inference response', raw: text });
+      }
+    }
+  } catch (err) {
+    return res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/ui', async (_req, res) => {
+  res.json({
+    openWebUI: `http://127.0.0.1:${CONFIG.openWebUiPort}`,
+    vllmApi: `http://127.0.0.1:${CONFIG.vllmPort}/v1`,
+  });
+});
+
+module.exports = router;
+
+
+path: /routes/settings.js
+----------------------------------------
+const express = require('express');
+const { getSettings, setSettings } = require('../services/state');
+
+const router = express.Router();
+
+router.get('/', async (_req, res) => {
+  res.json(await getSettings());
+});
+
+router.put('/', async (req, res) => {
+  res.json(await setSettings(req.body || {}));
+});
+
+module.exports = router;
+
+
+path: /server.js
+----------------------------------------
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
+const { CONFIG } = require('./config');
+const { ensureWorkspace, recoverState } = require('./services/state');
+
+const healthRoute = require('./routes/health');
+const settingsRoute = require('./routes/settings');
+const datasetsRoute = require('./routes/datasets');
+const jobsRoute = require('./routes/jobs');
+const runtimeRoute = require('./routes/runtime');
+const dashboardRoute = require('./routes/dashboard');
+const eventsRoute = require('./routes/events');
+const modelsRoute = require('./routes/models');
+const lorasRoute = require('./routes/loras');
+const logsRoute = require('./routes/logs');
+const monitorRoute = require('./routes/monitor');
+
+async function main() {
+  try {
+    console.log('Initializing workspace...');
+    await ensureWorkspace();
+    console.log('Recovering state...');
+    await recoverState();
+    console.log('Starting Express app...');
+  } catch (err) {
+    console.error('Critical failure during initialization:');
+    console.error(err);
+    process.exit(1);
+  }
+
+  const app = express();
+  app.use(cors({ origin: true, credentials: false }));
+  app.use(express.json({ limit: `${CONFIG.maxJsonMb}mb` }));
+
+  app.use('/health', healthRoute);
+  app.use('/settings', settingsRoute);
+  app.use('/datasets', datasetsRoute);
+  app.use('/jobs', jobsRoute);
+  app.use('/runtime', runtimeRoute);
+  app.use('/dashboard', dashboardRoute);
+  app.use('/events', eventsRoute);
+  app.use('/models', modelsRoute);
+  app.use('/loras', lorasRoute);
+  app.use('/logs', logsRoute);
+  app.use('/monitor', monitorRoute);
+
+  const webDist = path.join(__dirname, '..', 'web', 'dist');
+
+  if (fs.existsSync(webDist)) {
+    app.use(express.static(webDist));
+
+    app.get('*', (req, res, next) => {
+      if (
+        req.path.startsWith('/health') ||
+        req.path.startsWith('/settings') ||
+        req.path.startsWith('/datasets') ||
+        req.path.startsWith('/jobs') ||
+        req.path.startsWith('/runtime') ||
+        req.path.startsWith('/dashboard') ||
+        req.path.startsWith('/events') ||
+        req.path.startsWith('/models') ||
+        req.path.startsWith('/loras') ||
+        req.path.startsWith('/logs') ||
+        req.path.startsWith('/monitor')
+      ) {
+        return next();
+      }
+
+      res.sendFile(path.join(webDist, 'index.html'));
+    });
+  } else {
+    app.get('/', (_req, res) => {
+      res.json({
+        ok: true,
+        message: 'Backend is running, but frontend is not built',
+      });
+    });
+  }
+
+  const server = app.listen(CONFIG.port, CONFIG.host, () => {
+    console.log(`LLM Lab Service listening on http://${CONFIG.host}:${CONFIG.port}`);
+    console.log(`Workspace: ${CONFIG.workspace}`);
+    console.log(`Python: ${CONFIG.pythonBin}`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${CONFIG.port} is already in use.`);
+    } else {
+      console.error('Server error:', err);
+    }
+    process.exit(1);
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+
+
+path: /services/datasets.js
+----------------------------------------
+// src/services/datasets.js
+
+const fs = require('fs');
+const fsp = require('fs/promises');
+const readline = require('readline');
+const path = require('path');
+const { CONFIG } = require('../config');
+const { uid, nowIso } = require('../utils/ids');
+const { addDataset, getDatasets, saveDatasets } = require('./state');
+const logger = require('../utils/logger');
+
+function normalizeConversationRecord(item) {
+  if (Array.isArray(item.messages)) {
+    return { messages: item.messages };
+  }
+
+  if (typeof item.instruction === 'string' || typeof item.output === 'string') {
+    const userText = [item.instruction || '', item.input || ''].filter(Boolean).join('\n\n').trim();
+    return {
+      messages: [
+        { role: 'user', content: userText || '' },
+        { role: 'assistant', content: item.output || '' },
+      ],
+    };
+  }
+
+  if (typeof item.prompt === 'string' || typeof item.completion === 'string') {
+    return {
+      messages: [
+        { role: 'user', content: item.prompt || '' },
+        { role: 'assistant', content: item.completion || '' },
+      ],
+    };
+  }
+
+  throw new Error('Unsupported dataset record format');
+}
+
+function validateMessages(messages) {
+  if (!Array.isArray(messages) || messages.length < 2) {
+    throw new Error('messages must contain at least 2 items');
+  }
+
+  for (const msg of messages) {
+    if (!msg || typeof msg.role !== 'string' || typeof msg.content !== 'string') {
+      throw new Error('each message must have string role and content');
+    }
+    if (!msg.role.trim()) throw new Error('message.role cannot be empty');
+    if (!msg.content.trim()) throw new Error('message.content cannot be empty');
+  }
+}
+
+function detectFormat(item) {
+  if (Array.isArray(item?.messages)) return 'messages';
+  if (typeof item?.instruction === 'string' || typeof item?.output === 'string') return 'instruction-output';
+  if (typeof item?.prompt === 'string' || typeof item?.completion === 'string') return 'prompt-completion';
+  return 'unknown';
+}
+
+function parseJsonl(jsonl) {
+  const lines = String(jsonl || '')
+    .split('\n')
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+  const valid = [];
+  const invalid = [];
+  let detectedFormat = null;
+
+  lines.forEach((line, index) => {
+    try {
+      const parsed = JSON.parse(line);
+      const fmt = detectFormat(parsed);
+      if (!detectedFormat && fmt !== 'unknown') detectedFormat = fmt;
+
+      const normalized = normalizeConversationRecord(parsed);
+      validateMessages(normalized.messages);
+
+      valid.push({
+        line: index + 1,
+        original: parsed,
+        normalized,
+      });
+    } catch (err) {
+      invalid.push({
+        line: index + 1,
+        error: String(err.message || err),
+        raw: line,
+      });
+    }
+  });
+
+  return {
+    detectedFormat: detectedFormat || 'unknown',
+    totalLines: lines.length,
+    validCount: valid.length,
+    invalidCount: invalid.length,
+    valid,
+    invalid,
+  };
+}
+
+function parseItems(items) {
+  const list = Array.isArray(items) ? items : [];
+  const valid = [];
+  const invalid = [];
+  let detectedFormat = null;
+
+  list.forEach((item, index) => {
+    try {
+      const fmt = detectFormat(item);
+      if (!detectedFormat && fmt !== 'unknown') detectedFormat = fmt;
+
+      const normalized = normalizeConversationRecord(item);
+      validateMessages(normalized.messages);
+
+      valid.push({
+        index,
+        original: item,
+        normalized,
+      });
+    } catch (err) {
+      invalid.push({
+        index,
+        error: String(err.message || err),
+        raw: item,
+      });
+    }
+  });
+
+  return {
+    detectedFormat: detectedFormat || 'unknown',
+    totalItems: list.length,
+    validCount: valid.length,
+    invalidCount: invalid.length,
+    valid,
+    invalid,
+  };
+}
+
+async function createDatasetFromJsonl(name, jsonl) {
+  const parsed = parseJsonl(jsonl);
+  if (!parsed.validCount) {
+    throw new Error('No valid rows found in jsonl');
+  }
+
+  const datasetId = uid('ds');
+  const rawPath = path.join(CONFIG.rawDatasetsDir, `${datasetId}.jsonl`);
+  const processedPath = path.join(CONFIG.datasetsDir, `${datasetId}.jsonl`);
+
+  await fsp.writeFile(rawPath, jsonl, 'utf8');
+
+  const normalizedLines = parsed.valid.map((x) => JSON.stringify(x.normalized));
+  await fsp.writeFile(processedPath, normalizedLines.join('\n') + '\n', 'utf8');
+
+  const meta = {
+    id: datasetId,
+    name,
+    createdAt: nowIso(),
+    format: 'chat-jsonl',
+    sourceFormat: parsed.detectedFormat,
+    rawPath,
+    processedPath,
+    rows: normalizedLines.length,
+    invalidRows: parsed.invalidCount,
+  };
+
+  logger.info(`Dataset created from JSONL: ${name}`, { datasetId, rows: meta.rows });
+  return addDataset(meta);
+}
+
+async function createDatasetFromItems(name, items) {
+  const parsed = parseItems(items);
+  if (!parsed.validCount) {
+    throw new Error('No valid items found');
+  }
+
+  const datasetId = uid('ds');
+  const processedPath = path.join(CONFIG.datasetsDir, `${datasetId}.jsonl`);
+  const normalizedLines = parsed.valid.map((x) => JSON.stringify(x.normalized));
+
+  await fsp.writeFile(processedPath, normalizedLines.join('\n') + '\n', 'utf8');
+
+  const meta = {
+    id: datasetId,
+    name,
+    createdAt: nowIso(),
+    format: 'chat-jsonl',
+    sourceFormat: parsed.detectedFormat,
+    processedPath,
+    rows: normalizedLines.length,
+    invalidRows: parsed.invalidCount,
+  };
+
+  return addDataset(meta);
+}
+
+async function previewDataset(datasetId, limit = 20) {
+  const datasets = await getDatasets();
+  const ds = datasets.find((x) => x.id === datasetId);
+  if (!ds) throw new Error('dataset not found');
+
+  const fileStream = fs.createReadStream(ds.processedPath);
+  const rl = readline.createInterface({
+    input: fileStream,
+    crlfDelay: Infinity,
+  });
+
+  const preview = [];
+  try {
+    for await (const line of rl) {
+      if (preview.length >= limit) break;
+      const trimmed = line.trim();
+      if (trimmed) {
+        preview.push(JSON.parse(trimmed));
+      }
+    }
+  } finally {
+    rl.close();
+    fileStream.destroy();
+  }
+
+  return {
+    id: ds.id,
+    name: ds.name,
+    totalRows: ds.rows,
+    preview,
+  };
+}
+
+async function deleteDataset(datasetId) {
+  const datasets = await getDatasets();
+  const ds = datasets.find((x) => x.id === datasetId);
+  if (!ds) throw new Error('dataset not found');
+
+  if (ds.rawPath) {
+    await fsp.rm(ds.rawPath, { force: true }).catch(() => {});
+  }
+  if (ds.processedPath) {
+    await fsp.rm(ds.processedPath, { force: true }).catch(() => {});
+  }
+
+  const next = datasets.filter((x) => x.id !== datasetId);
+  await saveDatasets(next);
+
+  logger.info(`Dataset deleted: ${ds.name}`, { datasetId });
+  return { ok: true };
+}
+
+function validateJsonl(jsonl) {
+  const parsed = parseJsonl(jsonl);
+
+  return {
+    ok: parsed.validCount > 0,
+    detectedFormat: parsed.detectedFormat,
+    totalLines: parsed.totalLines,
+    validCount: parsed.validCount,
+    invalidCount: parsed.invalidCount,
+    preview: parsed.valid.slice(0, 5).map((x) => x.normalized),
+    errors: parsed.invalid.slice(0, 10),
+  };
+}
+
+function validateItems(items) {
+  const parsed = parseItems(items);
+
+  return {
+    ok: parsed.validCount > 0,
+    detectedFormat: parsed.detectedFormat,
+    totalItems: parsed.totalItems,
+    validCount: parsed.validCount,
+    invalidCount: parsed.invalidCount,
+    preview: parsed.valid.slice(0, 5).map((x) => x.normalized),
+    errors: parsed.invalid.slice(0, 10),
+  };
+}
+
+module.exports = {
+  createDatasetFromJsonl,
+  createDatasetFromItems,
+  previewDataset,
+  deleteDataset,
+  validateJsonl,
+  validateItems,
+};
+
+
+path: /services/events.js
+----------------------------------------
+const clients = new Set();
+
+let heartbeatInterval = null;
+
+function startHeartbeat() {
+  if (heartbeatInterval) return;
+  heartbeatInterval = setInterval(() => {
+    if (clients.size === 0) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+      return;
+    }
+    emitEvent('heartbeat', { alive: true });
+  }, 30000);
+}
+
+function addClient(res) {
+  clients.add(res);
+  startHeartbeat();
+
+  res.on('close', () => {
+    clients.delete(res);
+  });
+
+  res.on('error', () => {
+    clients.delete(res);
+  });
+}
+
+function emitEvent(type, payload = {}) {
+  const chunk = `event: ${type}\ndata: ${JSON.stringify({
+    type,
+    payload,
+    time: new Date().toISOString(),
+  })}\n\n`;
+
+  for (const client of clients) {
+    try {
+      client.write(chunk);
+    } catch {
+      clients.delete(client);
+    }
+  }
+}
+
+module.exports = {
+  addClient,
+  emitEvent,
+};
+
+
+path: /services/jobs.js
+----------------------------------------
+const fs = require('fs');
+const { spawn } = require('child_process');
+const path = require('path');
+const { CONFIG } = require('../config');
+const { nowIso, uid } = require('../utils/ids');
+const { isPidRunning, killProcessGroup } = require('../utils/proc');
+const { getSettings, getDatasets, getJobs, upsertJob, getModelById } = require('./state');
+const { emitEvent } = require('./events');
+const { readText } = require('../utils/fs');
+const { registerLoraFromJob } = require('./loras');
+const logger = require('../utils/logger');
+const { clearGpuMemory } = require('../utils/gpu');
+
+function buildTrainPython(job, settings) {
+  const cfg = {
+    baseModel: job.baseModel,
+    datasetPath: job.datasetPath,
+    outputDir: job.outputDir,
+    qlora: { ...settings.qlora, ...(job.qlora || {}) },
+    wandb: settings.wandb || {},
+  };
+
+  return `
+import json
+import os
+import unsloth
+import torch
+
+from datasets import load_dataset
+from unsloth import FastLanguageModel
+from transformers import TrainingArguments
+from trl import SFTTrainer
+
+cfg = json.loads(${JSON.stringify(JSON.stringify(cfg))})
+
+os.makedirs(cfg["outputDir"], exist_ok=True)
+
+if cfg.get("wandb", {}).get("enabled"):
+    import wandb
+    if cfg["wandb"].get("apiKey"):
+        wandb.login(key=cfg["wandb"]["apiKey"])
+    wandb.init(
+        project=cfg["wandb"].get("project", "llm-lab"),
+        entity=cfg["wandb"].get("entity"),
+        name=os.path.basename(cfg["outputDir"]),
+        config=cfg
+    )
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name=cfg["baseModel"],
+    max_seq_length=cfg["qlora"]["maxSeqLength"],
+    load_in_4bit=cfg["qlora"]["loadIn4bit"],
+    trust_remote_code=True,
+)
+
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=cfg["qlora"]["loraR"],
+    target_modules=cfg["qlora"]["targetModules"],
+    lora_alpha=cfg["qlora"]["loraAlpha"],
+    lora_dropout=cfg["qlora"]["loraDropout"],
+    bias="none",
+    use_gradient_checkpointing="unsloth",
+)
+
+if torch.cuda.is_available():
+    model = model.to("cuda")
+
+dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
+
+def format_row(row):
+    messages = row.get("messages", [])
+    if not isinstance(messages, list) or len(messages) < 2:
+        return {"text": ""}
+
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=False,
+    )
+    return {"text": text}
+
+dataset = dataset.map(format_row)
+dataset = dataset.filter(lambda x: bool(x["text"] and x["text"].strip()))
+
+if len(dataset) == 0:
+    raise ValueError("Dataset is empty after formatting/filtering")
+
+use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+
+args = TrainingArguments(
+    output_dir=cfg["outputDir"],
+    per_device_train_batch_size=cfg["qlora"]["perDeviceTrainBatchSize"],
+    gradient_accumulation_steps=cfg["qlora"]["gradientAccumulationSteps"],
+    learning_rate=cfg["qlora"]["learningRate"],
+    num_train_epochs=cfg["qlora"]["numTrainEpochs"],
+    warmup_ratio=cfg["qlora"]["warmupRatio"],
+    logging_steps=1,
+    save_strategy="epoch",
+    save_safetensors=True,
+    bf16=use_bf16,
+    fp16=not use_bf16,
+    report_to=["wandb"] if cfg.get("wandb", {}).get("enabled") else [],
+    remove_unused_columns=False,
+    group_by_length=False,
+    optim="adamw_8bit",
+)
+
+trainer = SFTTrainer(
+    model=model,
+    tokenizer=tokenizer,
+    train_dataset=dataset,
+    args=args,
+    dataset_text_field="text",
+    packing=False,
+    dataset_num_proc=1,
+)
+
+trainer.train()
+trainer.save_model(cfg["outputDir"])
+tokenizer.save_pretrained(cfg["outputDir"])
+
+print(json.dumps({
+    "ok": True,
+    "outputDir": cfg["outputDir"],
+    "rows": len(dataset),
+    "bf16": use_bf16,
+}))
+`.trim();
+}
+
+function validateQLoraParams(params) {
+  if (params.learningRate !== undefined && (typeof params.learningRate !== 'number' || params.learningRate <= 0)) {
+    throw new Error('learningRate must be a positive number');
+  }
+  if (params.numTrainEpochs !== undefined && (!Number.isInteger(params.numTrainEpochs) || params.numTrainEpochs < 1)) {
+    throw new Error('numTrainEpochs must be an integer >= 1');
+  }
+  if (params.perDeviceTrainBatchSize !== undefined && (!Number.isInteger(params.perDeviceTrainBatchSize) || params.perDeviceTrainBatchSize < 1)) {
+    throw new Error('perDeviceTrainBatchSize must be an integer >= 1');
+  }
+  if (params.gradientAccumulationSteps !== undefined && (!Number.isInteger(params.gradientAccumulationSteps) || params.gradientAccumulationSteps < 1)) {
+    throw new Error('gradientAccumulationSteps must be an integer >= 1');
+  }
+  if (params.maxSeqLength !== undefined && (!Number.isInteger(params.maxSeqLength) || params.maxSeqLength < 1)) {
+    throw new Error('maxSeqLength must be an integer >= 1');
+  }
+}
+
+async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
+  if (qlora) validateQLoraParams(qlora);
+
+  // Auto-cleanup GPU before starting new training
+  await clearGpuMemory();
+
+  const settings = await getSettings();
+  const datasets = await getDatasets();
+  const ds = datasets.find((x) => x.id === datasetId);
+  if (!ds) throw new Error('dataset not found');
+
+  let selectedBaseModel = baseModel || settings.baseModel;
+  let selectedModelId = modelId || null;
+
+  if (modelId) {
+    const model = await getModelById(modelId);
+    if (!model) throw new Error('model not found');
+    if (model.status !== 'ready') throw new Error('model is not ready');
+    selectedBaseModel = model.path;
+  }
+
+  const jobId = uid('job');
+  const outputDir = path.join(CONFIG.trainingOutputsDir, jobId);
+  const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
+
+  const job = {
+    id: jobId,
+    type: 'fine-tune',
+    name: name || jobId,
+    status: 'queued',
+    createdAt: nowIso(),
+    startedAt: null,
+    finishedAt: null,
+    datasetId,
+    datasetPath: ds.processedPath,
+    modelId: selectedModelId,
+    baseModel: selectedBaseModel,
+    qlora: qlora || {},
+    outputDir,
+    logFile,
+    pid: null,
+    error: null,
+  };
+
+  await upsertJob(job);
+  emitEvent('job_updated', job);
+  logger.info(`Starting fine-tune job: ${job.name}`, { jobId, datasetId, baseModel });
+
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+
+  const script = buildTrainPython(job, settings);
+  const outFd = fs.openSync(logFile, 'a');
+
+  const child = spawn(CONFIG.pythonBin, ['-u', '-c', script], {
+    cwd: CONFIG.workspace,
+    detached: true,
+    stdio: ['ignore', outFd, outFd],
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+
+  child.unref();
+
+  const runningJob = await upsertJob({
+    ...job,
+    status: 'running',
+    startedAt: nowIso(),
+    pid: child.pid,
+  });
+  emitEvent('job_updated', runningJob);
+
+  child.on('exit', async (code) => {
+    const jobs = await getJobs();
+    const current = jobs.find((j) => j.id === jobId);
+    if (!current) return;
+
+    const next = await upsertJob({
+      ...current,
+      status: code === 0 ? 'completed' : 'failed',
+      finishedAt: nowIso(),
+      error: code === 0 ? null : `trainer exited with code ${code}`,
+    });
+
+    emitEvent('job_updated', next);
+    if (code === 0) {
+      logger.info(`Job completed: ${jobId}`);
+    } else {
+      logger.error(`Job failed: ${jobId}`, { code, error: next.error });
+    }
+
+    if (code === 0) {
+      try {
+        await registerLoraFromJob(jobId);
+      } catch (err) {
+        emitEvent('lora_register_failed', {
+          jobId,
+          error: String(err.message || err),
+        });
+      }
+    }
+  });
+
+  child.on('error', async (err) => {
+    const jobs = await getJobs();
+    const current = jobs.find((j) => j.id === jobId);
+    if (!current) return;
+
+    const next = await upsertJob({
+      ...current,
+      status: 'failed',
+      finishedAt: nowIso(),
+      error: String(err.message || err),
+    });
+
+    emitEvent('job_updated', next);
+  });
+
+  return { ok: true, jobId, logFile, outputDir };
+}
+
+async function stopJob(jobId) {
+  const jobs = await getJobs();
+  const job = jobs.find((j) => j.id === jobId);
+  if (!job) throw new Error('job not found');
+  if (!job.pid || !isPidRunning(job.pid)) {
+    // If state says running but PID is not, update state
+    if (job.status === 'running') {
+      await upsertJob({ ...job, status: 'failed', finishedAt: nowIso(), error: 'Process not found' });
+    }
+    throw new Error('job is not running');
+  }
+
+  await killProcessGroup(job.pid);
+
+  const next = await upsertJob({
+    ...job,
+    status: 'stopped',
+    finishedAt: nowIso(),
+  });
+
+  emitEvent('job_updated', next);
+  return { ok: true };
+}
+
+async function getJobById(id) {
+  const jobs = await getJobs();
+  const job = jobs.find((x) => x.id === id);
+  if (!job) throw new Error('job not found');
+  return job;
+}
+
+async function getJobLogs(id, tail = 200) {
+  const job = await getJobById(id);
+  const text = await readText(job.logFile, '');
+  const lines = text.split('\n');
+
+  return {
+    id: job.id,
+    logFile: job.logFile,
+    content: lines.slice(-tail).join('\n'),
+  };
+}
+
+module.exports = {
+  startFineTuneJob,
+  stopJob,
+  getJobById,
+  getJobLogs,
+};
+
+
+path: /services/loras.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
+const { CONFIG } = require('../config');
+const { uid, nowIso } = require('../utils/ids');
+const {
+  getJobs,
+  getLoraByJobId,
+  addLora,
+  getLoraById,
+  getModelById,
+  upsertLora,
+  addModel,
+  upsertModel,
+} = require('./state');
+const { isPidRunning } = require('../utils/proc');
+const { emitEvent } = require('./events');
+const logger = require('../utils/logger');
+
+async function registerLoraFromJob(jobId, customName = null) {
+  const existing = await getLoraByJobId(jobId);
+  if (existing) return existing;
+
+  const jobs = await getJobs();
+  const job = jobs.find((x) => x.id === jobId);
+  if (!job) throw new Error('job not found');
+  if (job.status !== 'completed') throw new Error('job is not completed');
+
+  let baseModelName = job.baseModel;
+  let baseModelId = job.modelId || null;
+
+  if (baseModelId) {
+    const model = await getModelById(baseModelId);
+    if (model) baseModelName = model.name;
+  }
+
+  const item = await addLora({
+    id: uid('lora'),
+    name: (customName || job.name || job.id).trim(),
+    jobId: job.id,
+    baseModelId,
+    baseModelName,
+    baseModelRef: job.baseModel,
+    adapterPath: job.outputDir,
+    mergedPath: null,
+    packagePath: null,
+    createdAt: nowIso(),
+    status: 'ready',
+    mergeStatus: 'not_built',
+    packageStatus: 'not_built',
+    error: null,
+  });
+
+  emitEvent('lora_created', item);
+  logger.info(`LoRA registered from job: ${item.name}`, { loraId: item.id, jobId });
+  return item;
+}
+
+async function buildMergedLora(loraId) {
+  const item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+  if (item.mergeStatus === 'building' && item.mergePid && isPidRunning(item.mergePid)) {
+    return item;
+  }
+
+  const mergedPath = path.join(CONFIG.mergedModelsDir, `${item.id}-merged`);
+  fs.mkdirSync(CONFIG.mergedModelsDir, { recursive: true });
+
+  const next0 = await upsertLora({
+    ...item,
+    mergeStatus: 'building',
+    mergeProgress: 0,
+    mergedPath,
+    mergePid: null,
+    error: null,
+  });
+  emitEvent('lora_updated', next0);
+
+  const py = `
+import os
+import sys
+import json
+
+def report(p):
+    print(f"__PROGRESS__:{p}", flush=True)
+
+adapter_path = ${JSON.stringify(item.adapterPath)}
+output_dir = ${JSON.stringify(mergedPath)}
+
+try:
+    os.makedirs(output_dir, exist_ok=True)
+    report(10)
+
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    report(15)
+
+    from peft import AutoPeftModelForCausalLM
+    from transformers import AutoTokenizer
+    report(20)
+
+    model = AutoPeftModelForCausalLM.from_pretrained(
+        adapter_path,
+        torch_dtype="auto",
+        device_map=device,
+    )
+    report(50)
+
+    merged = model.merge_and_unload()
+    report(70)
+
+    merged.save_pretrained(output_dir, safe_serialization=True)
+    report(90)
+
+    try:
+        # Fix for Mistral tokenizer regex warning if applicable
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path, fix_mistral_regex=True)
+    except TypeError:
+        # For older versions of transformers that don't support fix_mistral_regex
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+
+    tokenizer.save_pretrained(output_dir)
+    report(100)
+    print(f"__RESULT__:{output_dir}")
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+`.trim();
+
+  const child = require('child_process').spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+    cwd: CONFIG.workspace,
+    detached: true,
+    stdio: 'pipe',
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+
+  const building = await upsertLora({
+    ...next0,
+    mergePid: child.pid,
+  });
+  emitEvent('lora_updated', building);
+
+  let stderr = '';
+  child.stderr.on('data', (data) => {
+    stderr += data.toString();
+  });
+
+  child.stdout.on('data', async (data) => {
+    const lines = data.toString().split('\n');
+    for (const line of lines) {
+      if (line.startsWith('__PROGRESS__:')) {
+        const p = parseInt(line.split(':')[1], 10);
+        const cur = await getLoraById(loraId);
+        if (cur) {
+          const next = await upsertLora({ ...cur, mergeProgress: p });
+          emitEvent('lora_updated', next);
+        }
+      }
+    }
+  });
+
+  child.on('exit', async (code) => {
+    const current = await getLoraById(loraId);
+    if (!current) return;
+
+    const isOk = code === 0;
+
+    const next = await upsertLora({
+      ...current,
+      mergeStatus: isOk ? 'ready' : 'failed',
+      mergeProgress: isOk ? 100 : current.mergeProgress,
+      mergePid: null,
+      mergedPath: isOk ? mergedPath : current.mergedPath,
+      error: isOk ? null : (stderr.trim() || `exit code ${code}`),
+    });
+    emitEvent('lora_updated', next);
+
+    if (isOk) {
+      logger.info(`LoRA merge completed: ${loraId}`, { mergedPath });
+
+      // Add to global model library
+      try {
+        const modelId = uid('model');
+        await addModel({
+          id: modelId,
+          name: `Merged: ${current.name}`,
+          repoId: `local/${current.id}`,
+          createdAt: nowIso(),
+          status: 'ready',
+          path: mergedPath,
+          error: null,
+          fromLoraId: loraId,
+        });
+        logger.info(`Merged model added to library`, { modelId, loraId });
+      } catch (err) {
+        logger.error(`Failed to add merged model to library`, { error: err.message });
+      }
+    } else {
+      logger.error(`LoRA merge failed: ${loraId}`, { error: next.error });
+    }
+  });
+
+  return building;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureMergedLora(loraId) {
+  let item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+
+  if (item.mergeStatus === 'ready' && item.mergedPath && fs.existsSync(item.mergedPath)) {
+    return item;
+  }
+
+  if (item.mergeStatus !== 'building' || !item.mergePid || !isPidRunning(item.mergePid)) {
+    await buildMergedLora(loraId);
+  }
+
+  // Wait for it to complete
+  while (true) {
+    await sleep(2000);
+    item = await getLoraById(loraId);
+    if (item.mergeStatus !== 'building') break;
+  }
+
+  if (item.mergeStatus === 'ready') return item;
+  throw new Error(item.error || 'LoRA merge failed');
+}
+
+async function packageMergedLora(loraId) {
+  let item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+
+  if (item.mergeStatus !== 'ready') {
+    item = await ensureMergedLora(loraId);
+  }
+
+  if (item.packageStatus === 'building' && item.packagePid && isPidRunning(item.packagePid)) {
+    return item;
+  }
+
+  const archivePath = path.join(CONFIG.packagesDir, `${item.id}.tar.gz`);
+  fs.mkdirSync(CONFIG.packagesDir, { recursive: true });
+
+  const next0 = await upsertLora({
+    ...item,
+    packageStatus: 'building',
+    packagePath: archivePath,
+    packagePid: null,
+    error: null,
+  });
+  emitEvent('lora_updated', next0);
+
+  const child = require('child_process').spawn(
+    'tar',
+    [
+      '-czf',
+      archivePath,
+      '-C',
+      path.dirname(item.mergedPath),
+      path.basename(item.mergedPath),
+    ],
+    {
+      cwd: CONFIG.workspace,
+      stdio: 'pipe',
+    },
+  );
+
+  const building = await upsertLora({
+    ...next0,
+    packagePid: child.pid,
+  });
+  emitEvent('lora_updated', building);
+
+  let stderr = '';
+  child.stderr.on('data', (data) => {
+    stderr += data.toString();
+  });
+
+  child.on('exit', async (code) => {
+    const current = await getLoraById(loraId);
+    const next = await upsertLora({
+      ...current,
+      packageStatus: code === 0 ? 'ready' : 'failed',
+      packagePid: null,
+      packagePath: code === 0 ? archivePath : current.packagePath,
+      error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
+    });
+    emitEvent('lora_updated', next);
+  });
+
+  return building;
+}
+
+module.exports = {
+  registerLoraFromJob,
+  buildMergedLora,
+  ensureMergedLora,
+  packageMergedLora,
+};
+
+
+path: /services/models.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+const { CONFIG } = require('../config');
+const { uid, nowIso } = require('../utils/ids');
+const { addModel, getModels, getModelById, removeModel, upsertModel } = require('./state');
+const { emitEvent } = require('./events');
+const { readText } = require('../utils/fs');
+const logger = require('../utils/logger');
+
+function safeSlug(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+async function downloadModel({ repoId, name }) {
+  if (!repoId) throw new Error('repoId is required');
+
+  const existing = (await getModels()).find((x) => x.repoId === repoId && x.status !== 'deleted');
+  if (existing) return existing;
+
+  const modelId = uid('model');
+  const slug = safeSlug(name || repoId.split('/').pop() || modelId);
+  const modelPath = path.join(CONFIG.modelsDir, `${slug}-${modelId}`);
+  const logFile = path.join(CONFIG.logsDir, `${modelId}.log`);
+
+  const item = await addModel({
+    id: modelId,
+    name: name || repoId.split('/').pop() || modelId,
+    repoId,
+    createdAt: nowIso(),
+    status: 'downloading',
+    path: modelPath,
+    logFile,
+    pid: null,
+    error: null,
+  });
+
+  emitEvent('model_updated', item);
+
+  fs.mkdirSync(CONFIG.modelsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+
+  const py = `
+import os
+from huggingface_hub import snapshot_download
+
+repo_id = ${JSON.stringify(repoId)}
+local_dir = ${JSON.stringify(modelPath)}
+os.makedirs(local_dir, exist_ok=True)
+
+snapshot_download(
+    repo_id=repo_id,
+    local_dir=local_dir,
+    local_dir_use_symlinks=False,
+    resume_download=True,
+)
+print(local_dir)
+`.trim();
+
+  const outFd = fs.openSync(logFile, 'a');
+  const child = spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+    cwd: CONFIG.workspace,
+    detached: true,
+    stdio: ['ignore', outFd, outFd],
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+
+  child.unref();
+
+  const running = await upsertModel({
+    ...item,
+    pid: child.pid,
+  });
+  emitEvent('model_updated', running);
+
+  child.on('exit', async (code) => {
+    const next = await upsertModel({
+      ...running,
+      status: code === 0 ? 'ready' : 'failed',
+      error: code === 0 ? null : `download exited with code ${code}`,
+      pid: null,
+    });
+    emitEvent('model_updated', next);
+    if (code === 0) {
+      logger.info(`Model downloaded successfully: ${next.name}`, { modelId: next.id });
+    } else {
+      logger.error(`Model download failed: ${next.name}`, { modelId: next.id, error: next.error });
+    }
+  });
+
+  child.on('error', async (err) => {
+    const next = await upsertModel({
+      ...running,
+      status: 'failed',
+      error: String(err.message || err),
+      pid: null,
+    });
+    emitEvent('model_updated', next);
+  });
+
+  return running;
+}
+
+async function deleteModel(modelId) {
+  const item = await getModelById(modelId);
+  if (!item) throw new Error('model not found');
+
+  if (item.path && fs.existsSync(item.path)) {
+    fs.rmSync(item.path, { recursive: true, force: true });
+  }
+
+  await removeModel(modelId);
+  emitEvent('model_deleted', { id: modelId });
+  logger.info(`Model deleted: ${item.name}`, { modelId });
+
+  return { ok: true };
+}
+
+async function getModelLogs(id, tail = 200) {
+  const item = await getModelById(id);
+  if (!item) throw new Error('model not found');
+
+  const text = await readText(item.logFile, '');
+  const lines = text.split('\n');
+  return {
+    id: item.id,
+    logFile: item.logFile,
+    content: lines.slice(-tail).join('\n'),
+  };
+}
+
+module.exports = {
+  downloadModel,
+  deleteModel,
+  getModelLogs,
+};
+
+
+path: /services/runtime.js
+----------------------------------------
+const fs = require('fs');
+const fsp = require('fs/promises');
+const { spawn } = require('child_process');
+const { CONFIG } = require('../config');
+const { nowIso } = require('../utils/ids');
+const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
+const { getRuntime, saveRuntime, getSettings } = require('./state');
+const { emitEvent } = require('./events');
+const logger = require('../utils/logger');
+const { clearGpuMemory } = require('../utils/gpu');
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function startVllmRuntime({
+  model,
+  port,
+  maxModelLen,
+  gpuMemoryUtilization,
+  tensorParallelSize,
+  baseModel = null,
+  activeModelId = null,
+  activeModelName = null,
+  activeLoraId = null,
+  activeLoraName = null,
+}) {
+  if (!fs.existsSync(CONFIG.vllmBin)) {
+    throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
+  }
+
+  // Auto-cleanup GPU before starting new runtime
+  await clearGpuMemory();
+
+  const runtime = await getRuntime();
+  // Double check if something is still running or state is stale
+  if (runtime.vllm?.pid && isPidRunning(runtime.vllm.pid)) {
+    await stopVllmRuntime();
+  }
+
+  const args = [
+    'serve',
+    model,
+    '--host',
+    '0.0.0.0',
+    '--port',
+    String(port),
+    '--gpu-memory-utilization',
+    String(gpuMemoryUtilization),
+    '--tensor-parallel-size',
+    String(tensorParallelSize),
+    '--max-model-len',
+    String(maxModelLen),
+  ];
+
+  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+
+  const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
+  const child = spawn(CONFIG.vllmBin, args, {
+    cwd: CONFIG.workspace,
+    detached: true,
+    stdio: ['ignore', outFd, outFd],
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+
+  child.unref();
+  await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
+
+  for (let i = 0; i < 120; i += 1) {
+    const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
+    if (r.ok) break;
+
+    if (!isPidRunning(child.pid)) {
+      throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
+    }
+
+    await sleep(1000);
+  }
+
+  const settings = await getSettings();
+
+  const next = {
+    vllm: {
+      pid: child.pid,
+      model,
+      startedAt: nowIso(),
+      port,
+      logFile: CONFIG.vllmLogFile,
+      baseModel: baseModel || settings.baseModel,
+      activeModelId,
+      activeModelName,
+      activeLoraId,
+      activeLoraName,
+    },
+  };
+
+  await saveRuntime(next);
+  emitEvent('runtime_started', next.vllm);
+  logger.info(`vLLM runtime started`, { pid: child.pid, model, port });
+  return next.vllm;
+}
+
+async function stopVllmRuntime() {
+  const runtime = await getRuntime();
+  const pid = runtime.vllm?.pid;
+
+  if (pid && isPidRunning(pid)) {
+    await killProcessGroup(pid);
+    for (let i = 0; i < 20; i += 1) {
+      if (!isPidRunning(pid)) break;
+      await sleep(500);
+    }
+    if (isPidRunning(pid)) {
+      await killProcessGroup(pid, 'SIGKILL');
+    }
+  }
+
+  const settings = await getSettings();
+
+  const next = {
+    vllm: {
+      pid: null,
+      model: null,
+      startedAt: null,
+      port: CONFIG.vllmPort,
+      logFile: CONFIG.vllmLogFile,
+      baseModel: settings.baseModel,
+      activeModelId: null,
+      activeModelName: null,
+      activeLoraId: null,
+      activeLoraName: null,
+    },
+  };
+
+  await saveRuntime(next);
+  emitEvent('runtime_stopped', next.vllm);
+  logger.info(`vLLM runtime stopped`);
+  return next.vllm;
+}
+
+async function getRuntimeHealth(port) {
+  const targetPort = port || CONFIG.vllmPort;
+  const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${targetPort}/health`]);
+
+  return {
+    ok: r.ok,
+    port: targetPort,
+    raw: r.ok ? r.stdout : (r.stderr || r.stdout || null),
+  };
+}
+
+module.exports = {
+  startVllmRuntime,
+  stopVllmRuntime,
+  getRuntimeHealth,
+};
+
+
+path: /services/state.js
+----------------------------------------
+const { CONFIG } = require('../config');
+const { ensureDir, exists, readJson, writeJson } = require('../utils/fs');
+
+const locks = new Map();
+
+/**
+ * Ensures that the provided async function runs exclusively for the given key.
+ * This prevents race conditions during read-modify-write cycles.
+ */
+async function withLock(key, fn) {
+  const previous = locks.get(key) || Promise.resolve();
+  const next = (async () => {
+    try {
+      await previous;
+    } catch (err) {
+      // ignore errors from previous tasks in the queue
+    }
+    return await fn();
+  })();
+  locks.set(key, next);
+  next.finally(() => {
+    if (locks.get(key) === next) {
+      locks.delete(key);
+    }
+  });
+  return next;
+}
+
+const DEFAULT_SETTINGS = {
+  baseModel: CONFIG.defaultBaseModel,
+  qlora: {
+    loadIn4bit: true,
+    maxSeqLength: 4096,
+    perDeviceTrainBatchSize: 1,
+    gradientAccumulationSteps: 8,
+    learningRate: 2e-4,
+    numTrainEpochs: 3,
+    warmupRatio: 0.03,
+    loraR: 16,
+    loraAlpha: 16,
+    loraDropout: 0,
+    targetModules: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
+  },
+  wandb: {
+    enabled: false,
+    apiKey: '',
+    project: 'llm-lab',
+    entity: '',
+  },
+  inference: {
+    backend: 'vllm',
+    model: CONFIG.defaultBaseModel,
+    host: '0.0.0.0',
+    port: CONFIG.vllmPort,
+    gpuMemoryUtilization: 0.9,
+    tensorParallelSize: 1,
+    maxModelLen: 8192,
+  },
+};
+
+const DEFAULT_RUNTIME = {
+  vllm: {
+    pid: null,
+    model: null,
+    startedAt: null,
+    port: CONFIG.vllmPort,
+    logFile: CONFIG.vllmLogFile,
+    baseModel: CONFIG.defaultBaseModel,
+    activeModelId: null,
+    activeModelName: null,
+    activeLoraId: null,
+    activeLoraName: null,
+  },
+};
+
+async function ensureWorkspace() {
+  for (const dir of [
+    CONFIG.stateDir,
+    CONFIG.modelsDir,
+    CONFIG.datasetsDir,
+    CONFIG.rawDatasetsDir,
+    CONFIG.trainingConfigsDir,
+    CONFIG.trainingOutputsDir,
+    CONFIG.mergedModelsDir,
+    CONFIG.packagesDir,
+    CONFIG.logsDir,
+  ]) {
+    await ensureDir(dir);
+  }
+
+  if (!exists(CONFIG.settingsFile)) await writeJson(CONFIG.settingsFile, DEFAULT_SETTINGS);
+  if (!exists(CONFIG.jobsFile)) await writeJson(CONFIG.jobsFile, []);
+  if (!exists(CONFIG.datasetsFile)) await writeJson(CONFIG.datasetsFile, []);
+  if (!exists(CONFIG.modelsFile)) await writeJson(CONFIG.modelsFile, []);
+  if (!exists(CONFIG.lorasFile)) await writeJson(CONFIG.lorasFile, []);
+  if (!exists(CONFIG.runtimeFile)) await writeJson(CONFIG.runtimeFile, DEFAULT_RUNTIME);
+}
+
+async function getSettings() {
+  return (await readJson(CONFIG.settingsFile, DEFAULT_SETTINGS)) || DEFAULT_SETTINGS;
+}
+
+async function setSettings(next) {
+  return withLock(CONFIG.settingsFile, async () => {
+    const current = await getSettings();
+    const merged = {
+      ...current,
+      ...next,
+      qlora: { ...current.qlora, ...(next.qlora || {}) },
+      wandb: { ...current.wandb, ...(next.wandb || {}) },
+      inference: { ...current.inference, ...(next.inference || {}) },
+    };
+    await writeJson(CONFIG.settingsFile, merged);
+    return merged;
+  });
+}
+
+async function getJobs() {
+  return (await readJson(CONFIG.jobsFile, [])) || [];
+}
+
+async function saveJobs(jobs) {
+  await writeJson(CONFIG.jobsFile, jobs);
+}
+
+async function upsertJob(jobPatch) {
+  return withLock(CONFIG.jobsFile, async () => {
+    const jobs = await getJobs();
+    const idx = jobs.findIndex((j) => j.id === jobPatch.id);
+    let result;
+    if (idx === -1) {
+      jobs.push(jobPatch);
+      result = jobPatch;
+    } else {
+      jobs[idx] = { ...jobs[idx], ...jobPatch };
+      result = jobs[idx];
+    }
+    await saveJobs(jobs);
+    return result;
+  });
+}
+
+async function getDatasets() {
+  return (await readJson(CONFIG.datasetsFile, [])) || [];
+}
+
+async function saveDatasets(items) {
+  await writeJson(CONFIG.datasetsFile, items);
+}
+
+async function addDataset(meta) {
+  return withLock(CONFIG.datasetsFile, async () => {
+    const list = await getDatasets();
+    list.push(meta);
+    await saveDatasets(list);
+    return meta;
+  });
+}
+
+async function removeDataset(id) {
+  return withLock(CONFIG.datasetsFile, async () => {
+    const list = await getDatasets();
+    const next = list.filter((x) => x.id !== id);
+    await saveDatasets(next);
+    return next;
+  });
+}
+
+async function getModels() {
+  return (await readJson(CONFIG.modelsFile, [])) || [];
+}
+
+async function saveModels(items) {
+  await writeJson(CONFIG.modelsFile, items);
+}
+
+async function addModel(meta) {
+  return withLock(CONFIG.modelsFile, async () => {
+    const list = await getModels();
+    list.push(meta);
+    await saveModels(list);
+    return meta;
+  });
+}
+
+async function upsertModel(modelPatch) {
+  return withLock(CONFIG.modelsFile, async () => {
+    const list = await getModels();
+    const idx = list.findIndex((x) => x.id === modelPatch.id);
+    let result;
+    if (idx === -1) {
+      list.push(modelPatch);
+      result = modelPatch;
+    } else {
+      list[idx] = { ...list[idx], ...modelPatch };
+      result = list[idx];
+    }
+    await saveModels(list);
+    return result;
+  });
+}
+
+async function getModelById(id) {
+  const list = await getModels();
+  return list.find((x) => x.id === id) || null;
+}
+
+async function removeModel(id) {
+  return withLock(CONFIG.modelsFile, async () => {
+    const list = await getModels();
+    const next = list.filter((x) => x.id !== id);
+    await saveModels(next);
+    return next;
+  });
+}
+
+async function getLoras() {
+  return (await readJson(CONFIG.lorasFile, [])) || [];
+}
+
+async function saveLoras(items) {
+  await writeJson(CONFIG.lorasFile, items);
+}
+
+async function addLora(meta) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    list.push(meta);
+    await saveLoras(list);
+    return meta;
+  });
+}
+
+async function upsertLora(loraPatch) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    const idx = list.findIndex((x) => x.id === loraPatch.id);
+    let result;
+    if (idx === -1) {
+      list.push(loraPatch);
+      result = loraPatch;
+    } else {
+      list[idx] = { ...list[idx], ...loraPatch };
+      result = list[idx];
+    }
+    await saveLoras(list);
+    return result;
+  });
+}
+
+async function getLoraById(id) {
+  const list = await getLoras();
+  return list.find((x) => x.id === id) || null;
+}
+
+async function getLoraByJobId(jobId) {
+  const list = await getLoras();
+  return list.find((x) => x.jobId === jobId) || null;
+}
+
+async function renameLora(id, name) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    const idx = list.findIndex((x) => x.id === id);
+    if (idx === -1) throw new Error('lora not found');
+    list[idx] = { ...list[idx], name };
+    await saveLoras(list);
+    return list[idx];
+  });
+}
+
+async function removeLora(id) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const list = await getLoras();
+    const next = list.filter((x) => x.id !== id);
+    await saveLoras(next);
+    return next;
+  });
+}
+
+async function getRuntime() {
+  const current = (await readJson(CONFIG.runtimeFile, DEFAULT_RUNTIME)) || DEFAULT_RUNTIME;
+  return {
+    ...DEFAULT_RUNTIME,
+    ...current,
+    vllm: {
+      ...DEFAULT_RUNTIME.vllm,
+      ...(current.vllm || {}),
+    },
+  };
+}
+
+async function saveRuntime(next) {
+  return withLock(CONFIG.runtimeFile, async () => {
+    const merged = {
+      ...DEFAULT_RUNTIME,
+      ...next,
+      vllm: {
+        ...DEFAULT_RUNTIME.vllm,
+        ...((next && next.vllm) || {}),
+      },
+    };
+    await writeJson(CONFIG.runtimeFile, merged);
+    return merged;
+  });
+}
+
+async function recoverState() {
+  const { isPidRunning } = require('../utils/proc');
+  const { nowIso } = require('../utils/ids');
+
+  await withLock(CONFIG.jobsFile, async () => {
+    const jobs = await getJobs();
+    let jobsChanged = false;
+
+    for (let i = 0; i < jobs.length; i++) {
+      if (jobs[i].status === 'running' || jobs[i].status === 'queued') {
+        if (!jobs[i].pid || !isPidRunning(jobs[i].pid)) {
+          jobs[i].status = 'failed';
+          jobs[i].finishedAt = nowIso();
+          jobs[i].error = 'Process lost after restart';
+          jobsChanged = true;
+        }
+      }
+    }
+
+    if (jobsChanged) {
+      await writeJson(CONFIG.jobsFile, jobs);
+    }
+  });
+
+  await withLock(CONFIG.runtimeFile, async () => {
+    const runtime = await getRuntime();
+
+    if (runtime.vllm?.pid && !isPidRunning(runtime.vllm.pid)) {
+      const next = {
+        ...runtime,
+        vllm: {
+          ...runtime.vllm,
+          pid: null,
+          startedAt: null,
+        },
+      };
+      await writeJson(CONFIG.runtimeFile, next);
+    }
+  });
+
+  await withLock(CONFIG.lorasFile, async () => {
+    const loras = await getLoras();
+    let lorasChanged = false;
+
+    for (let i = 0; i < loras.length; i++) {
+      if (loras[i].mergeStatus === 'building') {
+        if (!loras[i].mergePid || !isPidRunning(loras[i].mergePid)) {
+          loras[i].mergeStatus = 'failed';
+          loras[i].error = 'Merge process lost after restart';
+          lorasChanged = true;
+        }
+      }
+
+      if (loras[i].packageStatus === 'building') {
+        if (!loras[i].packagePid || !isPidRunning(loras[i].packagePid)) {
+          loras[i].packageStatus = 'failed';
+          loras[i].error = 'Package process lost after restart';
+          lorasChanged = true;
+        }
+      }
+    }
+
+    if (lorasChanged) {
+      await writeJson(CONFIG.lorasFile, loras);
+    }
+  });
+}
+
+module.exports = {
+  DEFAULT_SETTINGS,
+  DEFAULT_RUNTIME,
+  ensureWorkspace,
+  getSettings,
+  setSettings,
+  getJobs,
+  saveJobs,
+  upsertJob,
+  getDatasets,
+  saveDatasets,
+  addDataset,
+  removeDataset,
+  getModels,
+  saveModels,
+  addModel,
+  upsertModel,
+  getModelById,
+  removeModel,
+  getLoras,
+  saveLoras,
+  addLora,
+  upsertLora,
+  getLoraById,
+  getLoraByJobId,
+  renameLora,
+  removeLora,
+  getRuntime,
+  saveRuntime,
+  recoverState,
+};
+
+
+path: /utils/fs.js
+----------------------------------------
+const fs = require('fs');
+const fsp = require('fs/promises');
+
+function exists(p) {
+  try {
+    fs.accessSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureDir(p) {
+  await fsp.mkdir(p, { recursive: true });
+}
+
+async function readJson(file, fallback = null) {
+  try {
+    return JSON.parse(await fsp.readFile(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+async function writeJson(file, data) {
+  await fsp.writeFile(file, JSON.stringify(data, null, 2), 'utf8');
+}
+
+async function readText(file, fallback = '') {
+  try {
+    return await fsp.readFile(file, 'utf8');
+  } catch {
+    return fallback;
+  }
+}
+
+async function removeFile(file) {
+  try {
+    await fsp.unlink(file);
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') throw err;
+  }
+}
+
+module.exports = {
+  exists,
+  ensureDir,
+  readJson,
+  writeJson,
+  readText,
+  removeFile,
+};
+
+
+path: /utils/gpu.js
+----------------------------------------
+const si = require('systeminformation');
+const logger = require('./logger');
+
+/**
+ * Forcefully kills all processes that are likely to be using GPU memory.
+ * This includes Python, vLLM, and Torch-related processes.
+ */
+async function clearGpuMemory() {
+  try {
+    logger.info('Performing automatic GPU memory cleanup...');
+    const processes = await si.processes();
+
+    // Identity processes to kill: Python, vLLM, and common ML-related names
+    const toKill = processes.list.filter(p => {
+      const name = p.name.toLowerCase();
+      const cmd = p.command.toLowerCase();
+      return (
+        name.includes('python') ||
+        name.includes('vllm') ||
+        name.includes('torch') ||
+        cmd.includes('unsloth') ||
+        cmd.includes('transformers')
+      );
+    });
+
+    let killedCount = 0;
+    for (const p of toKill) {
+      if (p.pid === process.pid) continue; // Don't kill ourselves
+
+      try {
+        process.kill(p.pid, 'SIGKILL');
+        killedCount++;
+      } catch (e) {
+        // Process might have already exited
+      }
+    }
+
+    if (killedCount > 0) {
+      logger.info(`GPU cleanup finished: killed ${killedCount} processes.`);
+      // Give the OS/Driver a moment to actually free up the VRAM
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    } else {
+      logger.info('GPU cleanup finished: no active ML processes found.');
+    }
+
+    return killedCount;
+  } catch (err) {
+    logger.error('Failed to clear GPU memory:', { error: String(err) });
+    return 0;
+  }
+}
+
+module.exports = {
+  clearGpuMemory
+};
+
+
+path: /utils/ids.js
+----------------------------------------
+const crypto = require('crypto');
+
+function uid(prefix) {
+  return `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+module.exports = {
+  uid,
+  nowIso,
+};
+
+
+path: /utils/logger.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+const { CONFIG } = require('../config');
+
+const LOG_FILE = path.join(CONFIG.workspace, 'system.log');
+
+function log(level, message, meta = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    ...meta,
+  };
+
+  const line = JSON.stringify(entry) + '\n';
+
+  // Console output for dev
+  const color = {
+    info: '\x1b[32m',
+    warn: '\x1b[33m',
+    error: '\x1b[31m',
+    debug: '\x1b[34m',
+  }[level] || '';
+  const reset = '\x1b[0m';
+  console.log(`${new Date().toISOString()} ${color}${level.toUpperCase()}${reset}: ${message}`, Object.keys(meta).length ? meta : '');
+
+  try {
+    fs.appendFileSync(LOG_FILE, line, 'utf8');
+  } catch (err) {
+    console.error('Failed to write to log file:', err);
+  }
+}
+
+module.exports = {
+  info: (msg, meta) => log('info', msg, meta),
+  warn: (msg, meta) => log('warn', msg, meta),
+  error: (msg, meta) => log('error', msg, meta),
+  debug: (msg, meta) => log('debug', msg, meta),
+  LOG_FILE,
+};
+
+
+path: /utils/proc.js
+----------------------------------------
+const { spawn, spawnSync } = require('child_process');
+
+function runText(cmd, args = [], options = {}) {
+  const res = spawnSync(cmd, args, {
+    cwd: options.cwd,
+    env: options.env ? { ...process.env, ...options.env } : process.env,
+    encoding: 'utf8',
+    stdio: options.stdio || 'pipe',
+  });
+  return {
+    ok: res.status === 0,
+    code: res.status,
+    stdout: (res.stdout || '').trim(),
+    stderr: (res.stderr || '').trim(),
+  };
+}
+
+function isPidRunning(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+async function killProcessGroup(pid, signal = 'SIGTERM') {
+  if (!pid) return;
+  try {
+    // Try to kill the process group (negative pid)
+    process.kill(-pid, signal);
+  } catch (e) {
+    // Fallback to killing just the process if group kill fails
+    try {
+      process.kill(pid, signal);
+    } catch (e2) {
+      // Ignore if process already dead
+    }
+  }
+}
+
+module.exports = {
+  runText,
+  isPidRunning,
+  killProcessGroup,
+};
+
+
+=== SUMMARY ===
+included: 26
+skipped(binary): 0
+skipped(size): 0
+skipped(ext): 0
+totalBytes(approx): 82865

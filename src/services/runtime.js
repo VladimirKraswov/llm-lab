@@ -29,11 +29,9 @@ async function startVllmRuntime({
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
   }
 
-  // Auto-cleanup GPU before starting new runtime
   await clearGpuMemory();
 
   const runtime = await getRuntime();
-  // Double check if something is still running or state is stale
   if (runtime.vllm?.pid && isPidRunning(runtime.vllm.pid)) {
     await stopVllmRuntime();
   }
@@ -66,15 +64,25 @@ async function startVllmRuntime({
   child.unref();
   await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
 
+  let started = false;
+
   for (let i = 0; i < 120; i += 1) {
     const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
-    if (r.ok) break;
+    if (r.ok) {
+      started = true;
+      break;
+    }
 
     if (!isPidRunning(child.pid)) {
       throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
     }
 
     await sleep(1000);
+  }
+
+  if (!started) {
+    await killProcessGroup(child.pid, 'SIGKILL');
+    throw new Error(`vLLM did not become healthy within timeout; check ${CONFIG.vllmLogFile}`);
   }
 
   const settings = await getSettings();

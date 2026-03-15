@@ -43,9 +43,14 @@ const DEFAULT_SETTINGS = {
   },
   wandb: {
     enabled: false,
+    mode: 'online', // online | offline | disabled
     apiKey: '',
     project: 'llm-lab',
     entity: '',
+    baseUrl: '',
+    httpProxy: '',
+    httpsProxy: '',
+    noProxy: '',
   },
   inference: {
     backend: 'vllm',
@@ -97,7 +102,23 @@ async function ensureWorkspace() {
 }
 
 async function getSettings() {
-  return (await readJson(CONFIG.settingsFile, DEFAULT_SETTINGS)) || DEFAULT_SETTINGS;
+  const current = (await readJson(CONFIG.settingsFile, DEFAULT_SETTINGS)) || DEFAULT_SETTINGS;
+  return {
+    ...DEFAULT_SETTINGS,
+    ...current,
+    qlora: {
+      ...DEFAULT_SETTINGS.qlora,
+      ...(current.qlora || {}),
+    },
+    wandb: {
+      ...DEFAULT_SETTINGS.wandb,
+      ...(current.wandb || {}),
+    },
+    inference: {
+      ...DEFAULT_SETTINGS.inference,
+      ...(current.inference || {}),
+    },
+  };
 }
 
 async function setSettings(next) {

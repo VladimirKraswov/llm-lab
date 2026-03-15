@@ -12,13 +12,17 @@ router.get('/', async (_req, res) => {
 
 router.get('/health', async (_req, res) => {
   try {
+    const runtime = await getRuntime();
     const settings = await getSettings();
-    const response = await fetch(`http://127.0.0.1:${settings.inference.port}/health`);
+    const port = runtime.vllm?.port || settings.inference.port || CONFIG.vllmPort;
+
+    const response = await fetch(`http://127.0.0.1:${port}/health`);
     const text = await response.text();
 
     res.json({
       ok: response.ok,
       raw: text,
+      port,
     });
   } catch (err) {
     res.json({
@@ -81,7 +85,6 @@ router.post('/use-job-output', async (req, res) => {
       if (model) modelName = model.name;
     }
 
-    // Check if there is a LoRA for this job and ensure it's merged
     const lora = await getLoraByJobId(jobId);
     let runtimeModelPath = job.outputDir;
     let activeLoraId = null;
@@ -124,7 +127,8 @@ router.post('/chat', async (req, res) => {
   try {
     const settings = await getSettings();
     const runtime = await getRuntime();
-    // Use model from request, or currently loaded model in runtime, or fallback to settings
+    const port = runtime.vllm?.port || settings.inference.port || CONFIG.vllmPort;
+
     const model = req.body?.model || runtime.vllm?.model || settings.inference.model;
     const messages = req.body?.messages;
     const stream = !!req.body?.stream;
@@ -133,7 +137,7 @@ router.post('/chat', async (req, res) => {
       return res.status(400).json({ error: 'messages are required' });
     }
 
-    const response = await fetch(`http://127.0.0.1:${settings.inference.port}/v1/chat/completions`, {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -147,7 +151,7 @@ router.post('/chat', async (req, res) => {
 
     if (!response.ok) {
       const text = await response.text();
-      return res.status(500).json({ error: text || 'inference failed' });
+      return res.status(500).json({ error: text || 'inference failed', port });
     }
 
     if (stream) {
@@ -167,7 +171,7 @@ router.post('/chat', async (req, res) => {
       try {
         return res.json(JSON.parse(text));
       } catch {
-        return res.status(500).json({ error: 'invalid inference response', raw: text });
+        return res.status(500).json({ error: 'invalid inference response', raw: text, port });
       }
     }
   } catch (err) {
@@ -176,9 +180,12 @@ router.post('/chat', async (req, res) => {
 });
 
 router.get('/ui', async (_req, res) => {
+  const runtime = await getRuntime();
+  const port = runtime.vllm?.port || CONFIG.vllmPort;
+
   res.json({
     openWebUI: `http://127.0.0.1:${CONFIG.openWebUiPort}`,
-    vllmApi: `http://127.0.0.1:${CONFIG.vllmPort}/v1`,
+    vllmApi: `http://127.0.0.1:${port}/v1`,
   });
 });
 
