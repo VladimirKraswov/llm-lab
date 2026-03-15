@@ -10,7 +10,21 @@ const { CONFIG } = require('../config');
 const router = express.Router();
 
 router.get('/', async (_req, res) => {
-  res.json(await getModels());
+  const models = await getModels();
+
+  // Backfill metadata for models missing it
+  const { getModelMetadata } = require('../utils/model-meta');
+  const { upsertModel } = require('../services/state');
+
+  const updatedModels = await Promise.all(models.map(async (m) => {
+    if (m.status === 'ready' && (!m.sizeHuman || !m.vramEstimate)) {
+      const meta = getModelMetadata(m.path);
+      return await upsertModel({ ...m, ...meta });
+    }
+    return m;
+  }));
+
+  res.json(updatedModels);
 });
 
 router.get('/:id', async (req, res) => {

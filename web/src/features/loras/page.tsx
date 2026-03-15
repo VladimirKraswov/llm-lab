@@ -94,9 +94,13 @@ export default function LorasPage() {
 
                       <div className="mt-1 text-sm text-slate-400">Base model: {item.baseModelName}</div>
                       <div className="mt-1 text-sm text-slate-400">Job: {item.jobId}</div>
-                      {item.sizeHuman && (
-                        <div className="mt-1 text-xs text-slate-400">Size: <span className="text-slate-300">{item.sizeHuman}</span></div>
-                      )}
+                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+                        {item.sizeHuman && (
+                          <div className="text-slate-400">
+                            Size: <span className="text-slate-200">{item.sizeHuman}</span>
+                          </div>
+                        )}
+                      </div>
                       <div className="mt-1 text-xs text-slate-500">Adapter: {item.adapterPath}</div>
                       <div className="mt-1 text-xs text-slate-500">Merged: {item.mergedPath || 'not built'}</div>
                       <div className="mt-1 text-xs text-slate-500">Package: {item.packagePath || 'not built'}</div>
