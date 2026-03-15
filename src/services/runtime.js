@@ -146,6 +146,12 @@ function resolveDtype(params, inf, detected) {
   if (inf.dtype && inf.dtype !== 'auto') {
     return inf.dtype;
   }
+
+  // Fallback for AWQ models: use half if auto is requested
+  if (detected.quantization === 'awq' && (!detected.dtype || detected.dtype === 'auto')) {
+    return 'half';
+  }
+
   return detected.dtype ?? 'auto';
 }
 
@@ -290,6 +296,8 @@ async function startVllmRuntime(params = {}) {
       logFile: CONFIG.vllmLogFile,
       modelConfigPath: modelCfg.configPath,
     };
+
+    logger.info('Effective vLLM runtime payload', { payload });
 
     const { child, configPath } = await spawnPythonJsonScript({
       pythonBin: CONFIG.pythonBin,

@@ -113,6 +113,10 @@ export default function PlaygroundPage() {
           }
         }
       }
+
+      if (!assistantText) {
+        setError('Model returned an empty response. This might be a compatibility issue with the current quantization or vLLM version.');
+      }
     } catch (err) {
       const errMsg = String((err as Error)?.message || err);
       setError(errMsg);

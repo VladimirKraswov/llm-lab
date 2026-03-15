@@ -69,6 +69,8 @@ def main():
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
+    print(f"vLLM args: {args}")
+
     # Замещаем текущий процесс процессом vLLM
     os.chdir(cwd)
     os.execvpe(vllm_bin, args, env)
