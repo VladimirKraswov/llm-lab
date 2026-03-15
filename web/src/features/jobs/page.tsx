@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/ca
 import { JobTypeBadge } from '../../components/job-type-badge';
 import { JobDetailsFineTune } from '../../components/job-details-fine-tune';
 import { JobDetailsSynthetic } from '../../components/job-details-synthetic';
+import { JobComparison } from './job-comparison';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
@@ -45,43 +46,73 @@ function fmtDate(value?: string | null) {
   }
 }
 
-function JobListCard({ job, selected, onClick }: { job: Job; selected: boolean; onClick: () => void }) {
+function JobListCard({
+  job,
+  selected,
+  onClick,
+  onSelect,
+  isSelectedForCompare,
+  compareMode
+}: {
+  job: Job;
+  selected: boolean;
+  onClick: () => void;
+  onSelect: (id: string) => void;
+  isSelectedForCompare: boolean;
+  compareMode: boolean;
+}) {
   const isSynthetic = job.type === 'synthetic-gen';
 
   return (
-    <button
-      onClick={onClick}
-      className={`w-full rounded-2xl border p-3 text-left transition ${
-        selected
-          ? isSynthetic
-            ? 'border-cyan-500 bg-cyan-500/10'
-            : 'border-purple-500 bg-purple-500/10'
-          : 'border-slate-800 bg-slate-950/30 hover:border-slate-700'
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <div className="truncate text-sm font-medium text-white">{job.name}</div>
-            <JobTypeBadge type={job.type} />
+    <div className="group relative">
+      <button
+        onClick={onClick}
+        className={`w-full rounded-2xl border p-3 text-left transition ${
+          selected
+            ? isSynthetic
+              ? 'border-cyan-500 bg-cyan-500/10'
+              : 'border-purple-500 bg-purple-500/10'
+            : 'border-slate-800 bg-slate-950/30 hover:border-slate-700'
+        } ${isSelectedForCompare ? 'ring-2 ring-blue-500' : ''}`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <div className="truncate text-sm font-medium text-white">{job.name}</div>
+              <JobTypeBadge type={job.type} />
+            </div>
+            <div className="mt-1 text-xs text-slate-500">{job.id}</div>
+
+            {isSynthetic ? (
+              <div className="mt-2 text-xs text-slate-400">
+                Step: {job.syntheticMeta?.progressStep || job.progressStep || '—'}
+              </div>
+            ) : (
+              <div className="mt-2 text-xs text-slate-400 break-all">
+                {job.baseModel || '—'}
+              </div>
+            )}
           </div>
-          <div className="mt-1 text-xs text-slate-500">{job.id}</div>
-
-          {isSynthetic ? (
-            <div className="mt-2 text-xs text-slate-400">
-              Step: {job.syntheticMeta?.progressStep || job.progressStep || '—'}
-            </div>
-          ) : (
-            <div className="mt-2 text-xs text-slate-400 break-all">
-              {job.baseModel || '—'}
-            </div>
-          )}
+          <div className="flex flex-col items-end gap-2">
+            <StatusBadge value={job.status} />
+            {compareMode && !isSynthetic && (
+              <input
+                type="checkbox"
+                checked={isSelectedForCompare}
+                onChange={(e) => {
+                  e.stopPropagation();
+                  onSelect(job.id);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500 focus:ring-offset-slate-950"
+              />
+            )}
+          </div>
         </div>
-        <StatusBadge value={job.status} />
-      </div>
 
-      <div className="mt-2 text-xs text-slate-500">{fmtDate(job.createdAt)}</div>
-    </button>
+        <div className="mt-2 text-xs text-slate-500">{fmtDate(job.createdAt)}</div>
+      </button>
+    </div>
   );
 }
 
@@ -90,6 +121,9 @@ export default function JobsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [selectedId, setSelectedId] = useState<string | null>(searchParams.get('selected'));
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedForCompare, setSelectedForCompare] = useState<string[]>([]);
+  const [showComparison, setShowComparison] = useState(false);
 
   const jobsQuery = useQuery({
     queryKey: ['jobs'],
@@ -171,13 +205,55 @@ export default function JobsPage() {
     return (lorasQuery.data || []).find((x) => x.jobId === selectedJob.id) || null;
   }, [lorasQuery.data, selectedJob]);
 
+  const toggleCompare = (id: string) => {
+    setSelectedForCompare(prev =>
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id].slice(-5)
+    );
+  };
+
+  if (showComparison) {
+    const compareJobs = jobs.filter(j => selectedForCompare.includes(j.id));
+    return (
+      <div className="space-y-6">
+        <JobComparison jobs={compareJobs} onBack={() => setShowComparison(false)} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-white">Jobs</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Обучение и создание synthetic datasets теперь показываются по-разному и с отдельной детализацией.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">Jobs</h1>
+          <p className="mt-1 text-sm text-slate-400">
+            Обучение и создание synthetic datasets теперь показываются по-разному и с отдельной детализацией.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {compareMode && (
+            <div className="text-xs text-slate-400">
+              Selected: {selectedForCompare.length} / 5
+            </div>
+          )}
+          <Button
+            onClick={() => {
+              if (compareMode && selectedForCompare.length >= 2) {
+                setShowComparison(true);
+              } else {
+                setCompareMode(!compareMode);
+                if (!compareMode) setSelectedForCompare([]);
+              }
+            }}
+            disabled={compareMode && selectedForCompare.length < 2 && selectedForCompare.length > 0}
+            className={`${compareMode ? 'bg-blue-600' : 'bg-slate-800'} transition-all`}
+          >
+            {compareMode
+              ? selectedForCompare.length >= 2
+                ? `Compare ${selectedForCompare.length} Runs`
+                : 'Cancel Compare'
+              : 'Compare Runs'}
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[340px_1fr]">
@@ -196,6 +272,9 @@ export default function JobsPage() {
                   job={job}
                   selected={selectedId === job.id}
                   onClick={() => setSelectedId(job.id)}
+                  onSelect={toggleCompare}
+                  isSelectedForCompare={selectedForCompare.includes(job.id)}
+                  compareMode={compareMode}
                 />
               ))
             )}
