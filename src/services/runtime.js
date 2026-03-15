@@ -61,22 +61,132 @@ function validateInferenceParams(params = {}) {
   }
 }
 
+function mapTorchDtypeToVllm(torchDtype) {
+  switch (String(torchDtype || '').toLowerCase()) {
+    case 'float16':
+      return 'half';
+    case 'float32':
+      return 'float';
+    case 'bfloat16':
+      return 'bfloat16';
+    default:
+      return null;
+  }
+}
+
+function resolveModelConfig(modelRef) {
+  const result = {
+    exists: false,
+    configPath: null,
+    raw: null,
+    detected: {
+      quantization: null,
+      dtype: null,
+      maxModelLen: null,
+      slidingWindow: null,
+      modelType: null,
+    },
+  };
+
+  try {
+    const normalized = String(modelRef || '').trim();
+    if (!normalized) return result;
+
+    const configPath = path.join(normalized, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      return result;
+    }
+
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const quantMethod = raw?.quantization_config?.quant_method || null;
+    const torchDtype = raw?.torch_dtype || null;
+    const maxPositionEmbeddings = Number(raw?.max_position_embeddings || 0) || null;
+    const slidingWindow = Number(raw?.sliding_window || 0) || null;
+    const modelType = raw?.model_type || null;
+
+    result.exists = true;
+    result.configPath = configPath;
+    result.raw = raw;
+    result.detected = {
+      quantization: quantMethod ? String(quantMethod).toLowerCase() : null,
+      dtype: mapTorchDtypeToVllm(torchDtype),
+      maxModelLen: maxPositionEmbeddings,
+      slidingWindow,
+      modelType,
+    };
+
+    return result;
+  } catch (err) {
+    logger.warn('Failed to read model config.json', {
+      model: modelRef,
+      error: String(err.message || err),
+    });
+    return result;
+  }
+}
+
+function hasOwn(obj, key) {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function resolveQuantization(params, inf, detected) {
+  if (hasOwn(params, 'quantization')) {
+    return params.quantization;
+  }
+  if (inf.quantization !== undefined && inf.quantization !== null && inf.quantization !== '') {
+    return inf.quantization;
+  }
+  return detected.quantization ?? null;
+}
+
+function resolveDtype(params, inf, detected) {
+  if (hasOwn(params, 'dtype') && params.dtype && params.dtype !== 'auto') {
+    return params.dtype;
+  }
+  if (inf.dtype && inf.dtype !== 'auto') {
+    return inf.dtype;
+  }
+  return detected.dtype ?? 'auto';
+}
+
+function resolveMaxModelLen(params, inf, detected) {
+  const requested = Number(params.maxModelLen ?? inf.maxModelLen ?? 8192);
+  const limit = detected.maxModelLen;
+
+  if (limit && requested > limit) {
+    logger.warn('Requested maxModelLen exceeds model limit, clamping', {
+      requested,
+      limit,
+    });
+    return limit;
+  }
+
+  return requested;
+}
+
 async function startVllmRuntime(params = {}) {
   const settings = await getSettings();
   const inf = settings.inference || {};
 
+  const requestedModel = String(params.model ?? inf.model ?? settings.baseModel ?? '').trim();
+  if (!requestedModel) {
+    throw new Error('model is required');
+  }
+
+  const modelCfg = resolveModelConfig(requestedModel);
+
   const merged = {
-    model: params.model ?? inf.model ?? settings.baseModel,
+    model: requestedModel,
     port: Number(params.port ?? inf.port ?? CONFIG.vllmPort),
-    maxModelLen: Number(params.maxModelLen ?? inf.maxModelLen ?? 8192),
+    maxModelLen: resolveMaxModelLen(params, inf, modelCfg.detected),
     gpuMemoryUtilization: Number(
       params.gpuMemoryUtilization ?? inf.gpuMemoryUtilization ?? 0.9,
     ),
     tensorParallelSize: Number(params.tensorParallelSize ?? inf.tensorParallelSize ?? 1),
     maxNumSeqs: Number(params.maxNumSeqs ?? inf.maxNumSeqs ?? 256),
     swapSpace: Number(params.swapSpace ?? inf.swapSpace ?? 4),
-    quantization: params.quantization ?? inf.quantization ?? null,
-    dtype: params.dtype ?? inf.dtype ?? 'auto',
+    quantization: resolveQuantization(params, inf, modelCfg.detected),
+    dtype: resolveDtype(params, inf, modelCfg.detected),
     trustRemoteCode: params.trustRemoteCode ?? inf.trustRemoteCode ?? true,
     enforceEager: params.enforceEager ?? inf.enforceEager ?? false,
     kvCacheDtype: params.kvCacheDtype ?? inf.kvCacheDtype ?? 'auto',
@@ -113,11 +223,6 @@ async function startVllmRuntime(params = {}) {
     swapSpace = 4,
   } = merged;
 
-  const normalizedModel = String(model || '').trim();
-  if (!normalizedModel) {
-    throw new Error('model is required');
-  }
-
   if (!fs.existsSync(CONFIG.pythonBin)) {
     throw new Error(`Python binary not found: ${CONFIG.pythonBin}`);
   }
@@ -126,8 +231,22 @@ async function startVllmRuntime(params = {}) {
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
   }
 
+  logger.info('Resolved vLLM launch settings', {
+    model,
+    modelConfigPath: modelCfg.configPath,
+    detectedQuantization: modelCfg.detected.quantization,
+    detectedDtype: modelCfg.detected.dtype,
+    detectedMaxModelLen: modelCfg.detected.maxModelLen,
+    quantization,
+    dtype,
+    maxModelLen,
+    maxNumSeqs,
+    gpuMemoryUtilization,
+    tensorParallelSize,
+  });
+
   logger.info('Starting vLLM runtime', {
-    model: normalizedModel,
+    model,
     activeModelName,
     activeLoraName,
     loraPath,
@@ -151,7 +270,7 @@ async function startVllmRuntime(params = {}) {
     const scriptPath = path.join(__dirname, '..', 'python', 'start_vllm.py');
     const payload = {
       vllmBin: CONFIG.vllmBin,
-      model: normalizedModel,
+      model,
       host: '0.0.0.0',
       port,
       gpuMemoryUtilization,
@@ -169,6 +288,7 @@ async function startVllmRuntime(params = {}) {
       cwd: CONFIG.workspace,
       pidFile: CONFIG.vllmPidFile,
       logFile: CONFIG.vllmLogFile,
+      modelConfigPath: modelCfg.configPath,
     };
 
     const { child, configPath } = await spawnPythonJsonScript({
@@ -204,13 +324,17 @@ async function startVllmRuntime(params = {}) {
         }
 
         if (!isPidRunning(child.pid)) {
+          const logs = await readText(CONFIG.vllmLogFile, '');
+          const lastLines = logs.split('\n').slice(-50).join('\n');
+
           logger.error('vLLM exited during startup', {
-            model: normalizedModel,
+            model,
             port,
             logFile: CONFIG.vllmLogFile,
             configPath,
+            lastLines,
           });
-          throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
+          throw new Error(`vLLM exited during startup. Last logs:\n${lastLines || 'No logs available'}`);
         }
 
         await sleep(1000);
@@ -221,7 +345,7 @@ async function startVllmRuntime(params = {}) {
         const logs = await readText(CONFIG.vllmLogFile, '');
         const lastLines = logs.split('\n').slice(-30).join('\n');
         logger.error('vLLM did not become healthy within timeout', {
-          model: normalizedModel,
+          model,
           port,
           lastLines,
           configPath,
@@ -236,7 +360,7 @@ async function startVllmRuntime(params = {}) {
     const next = {
       vllm: {
         pid: child.pid,
-        model: normalizedModel,
+        model,
         startedAt: nowIso(),
         port,
         logFile: CONFIG.vllmLogFile,
@@ -254,7 +378,7 @@ async function startVllmRuntime(params = {}) {
 
     logger.info('vLLM runtime started', {
       pid: child.pid,
-      model: normalizedModel,
+      model,
       port,
       activeModelName,
       activeLoraName,
