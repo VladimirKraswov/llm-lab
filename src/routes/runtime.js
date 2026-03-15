@@ -4,11 +4,28 @@ const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { ensureMergedLora } = require('../services/loras');
 const { CONFIG } = require('../config');
 const logger = require('../utils/logger');
+const providers = require('../services/providers');
 
 const router = express.Router();
 
 router.get('/', async (_req, res) => {
   res.json(await getRuntime());
+});
+
+router.get('/providers', async (_req, res) => {
+  try {
+    const available = await providers.getAvailableProviders();
+    const runtime = await getRuntime();
+    const settings = await getSettings();
+
+    res.json({
+      available,
+      selected: settings.inference.provider || 'auto',
+      active: runtime.vllm?.providerResolved || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.get('/health', async (_req, res) => {
@@ -163,51 +180,47 @@ router.post('/use-job-output', async (req, res) => {
 
 router.post('/chat', async (req, res) => {
   try {
-    const settings = await getSettings();
     const runtime = await getRuntime();
-    const port = runtime.vllm?.port || settings.inference.port || CONFIG.vllmPort;
+    if (!runtime.vllm?.pid) {
+      return res.status(400).json({ error: 'Runtime is not running' });
+    }
 
-    const model = req.body?.model || runtime.vllm?.model || settings.inference.model;
+    const providerId = runtime.vllm.providerResolved;
+    const provider = providers.PROVIDERS[providerId];
+    if (!provider) {
+      return res.status(500).json({ error: `Active provider ${providerId} not found` });
+    }
+
     const messages = req.body?.messages;
-    const stream = !!req.body?.stream;
-
     if (!Array.isArray(messages) || !messages.length) {
       return res.status(400).json({ error: 'messages are required' });
     }
 
     const payload = {
-      model,
+      model: req.body?.model || runtime.vllm.model,
       messages,
       temperature: req.body?.temperature ?? 0.7,
       max_tokens: req.body?.max_tokens ?? 512,
-      stream,
+      stream: !!req.body?.stream,
     };
 
-    logger.info('Forwarding chat request to vLLM', {
-      port,
-      model,
-      stream,
-      messageCount: messages.length,
-      lastMessage: messages[messages.length - 1],
+    logger.info('Routing chat request', {
+      provider: providerId,
+      model: payload.model,
+      stream: payload.stream,
     });
 
-    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const response = await provider.chat(runtime.vllm, payload);
 
     if (!response.ok) {
       const text = await response.text();
-      return res.status(500).json({ error: text || 'inference failed', port });
+      return res.status(500).json({ error: text || 'Inference failed', provider: providerId });
     }
 
-    if (stream) {
+    if (payload.stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-
-      logger.info('Starting vLLM chat stream', { port });
 
       const reader = response.body.getReader();
       while (true) {
@@ -215,32 +228,14 @@ router.post('/chat', async (req, res) => {
         if (done) break;
         res.write(value);
       }
-      logger.info('vLLM chat stream finished', { port });
       return res.end();
     } else {
       const text = await response.text();
-      logger.info('vLLM chat non-stream response received', { port, rawLength: text.length });
       try {
         const parsed = JSON.parse(text);
-
-        // Validation: completion_tokens > 0 but content is empty
-        const content = parsed.choices?.[0]?.message?.content;
-        const usage = parsed.usage;
-        if (usage && usage.completion_tokens > 0 && (!content || !content.trim())) {
-          logger.error('vLLM returned empty content but positive completion_tokens', {
-            usage,
-            choices: parsed.choices,
-          });
-          return res.status(500).json({
-            error: 'Empty response from model despite token generation. Possible quantization/dtype mismatch or vLLM incompatibility.',
-            usage,
-          });
-        }
-
         return res.json(parsed);
       } catch (e) {
-        logger.error('Failed to parse vLLM response', { error: e.message, raw: text });
-        return res.status(500).json({ error: 'invalid inference response', raw: text, port });
+        return res.status(500).json({ error: 'Invalid response from provider', raw: text });
       }
     }
   } catch (err) {

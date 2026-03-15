@@ -53,7 +53,7 @@ const DEFAULT_SETTINGS = {
     noProxy: '',
   },
   inference: {
-    backend: 'vllm',
+    provider: 'auto',
     model: CONFIG.defaultBaseModel,
     host: '0.0.0.0',
     port: CONFIG.vllmPort,
@@ -82,6 +82,14 @@ const DEFAULT_RUNTIME = {
     activeModelName: null,
     activeLoraId: null,
     activeLoraName: null,
+    providerRequested: 'auto',
+    providerResolved: null,
+    probe: {
+      ok: false,
+      status: 'idle',
+      checkedAt: null,
+      error: null,
+    },
   },
 };
 
@@ -314,18 +322,27 @@ async function getRuntime() {
     vllm: {
       ...DEFAULT_RUNTIME.vllm,
       ...(current.vllm || {}),
+      probe: {
+        ...DEFAULT_RUNTIME.vllm.probe,
+        ...(current.vllm?.probe || {}),
+      },
     },
   };
 }
 
 async function saveRuntime(next) {
   return withLock(CONFIG.runtimeFile, async () => {
+    const current = await getRuntime();
     const merged = {
-      ...DEFAULT_RUNTIME,
+      ...current,
       ...next,
       vllm: {
-        ...DEFAULT_RUNTIME.vllm,
+        ...current.vllm,
         ...((next && next.vllm) || {}),
+        probe: {
+          ...current.vllm.probe,
+          ...((next && next.vllm && next.vllm.probe) || {}),
+        },
       },
     };
     await writeJson(CONFIG.runtimeFile, merged);

@@ -43,6 +43,12 @@ export default function PlaygroundPage() {
     refetchInterval: 3000,
   });
 
+  const providersQuery = useQuery({
+    queryKey: ['runtime-providers'],
+    queryFn: api.getRuntimeProviders,
+    refetchInterval: 5000,
+  });
+
   const [input, setInput] = useState(
     'Напиши пример на Python с fibonacci, потом покажи SQL запрос и кратко объясни оба блока.'
   );
@@ -165,6 +171,23 @@ export default function PlaygroundPage() {
               {runtimeQuery.data?.vllm.model || 'No runtime model'}
             </div>
           </div>
+
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Provider (Requested / Resolved)</div>
+            <div className="mt-1 text-sm text-white capitalize">
+              {runtimeQuery.data?.vllm.providerRequested || '—'} / {runtimeQuery.data?.vllm.providerResolved || '—'}
+            </div>
+          </div>
+
+          {runtimeQuery.data?.vllm?.probe && (
+            <div className={`rounded-xl p-3 ${runtimeQuery.data.vllm.probe.ok ? 'bg-emerald-950/40 border border-emerald-900/50' : 'bg-rose-950/40 border border-rose-900/50'}`}>
+               <div className="text-xs text-slate-500">Model Probe</div>
+               <div className="mt-1 text-sm text-white">
+                 {runtimeQuery.data.vllm.probe.status === 'checking' ? 'Checking...' : (runtimeQuery.data.vllm.probe.ok ? 'Success ✅' : 'Failed ❌')}
+                 {runtimeQuery.data.vllm.probe.error && <div className="mt-1 text-[10px] text-rose-400 leading-tight">{runtimeQuery.data.vllm.probe.error}</div>}
+               </div>
+            </div>
+          )}
 
           <div>
             <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">

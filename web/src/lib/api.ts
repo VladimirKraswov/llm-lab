@@ -47,7 +47,7 @@ export type Settings = {
     targetModules: string[];
   };
   inference: {
-    backend: string;
+    provider: string;
     model: string;
     host: string;
     port: number;
@@ -170,7 +170,29 @@ export type RuntimeState = {
     activeModelName?: string | null;
     activeLoraId?: string | null;
     activeLoraName?: string | null;
+    providerRequested?: string;
+    providerResolved?: string | null;
+    probe?: {
+      ok: boolean;
+      status: string;
+      checkedAt: string | null;
+      error: string | null;
+    };
   };
+};
+
+export type ProviderItem = {
+  id: string;
+  label: string;
+  description: string;
+  available: boolean;
+  reason: string | null;
+};
+
+export type ProvidersResponse = {
+  available: ProviderItem[];
+  selected: string;
+  active: string | null;
 };
 
 export type RuntimeHealth = {
@@ -349,6 +371,7 @@ export const api = {
     }),
 
   getRuntime: () => request<RuntimeState>('/runtime'),
+  getRuntimeProviders: () => request<ProvidersResponse>('/runtime/providers'),
   getRuntimeHealth: () => request<RuntimeHealth>('/runtime/health'),
   startVllm: (payload: {
     model: string;

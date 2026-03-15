@@ -10,6 +10,7 @@ const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { readText, removeFile } = require('../utils/fs');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
+const providers = require('./providers');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -203,6 +204,7 @@ async function startVllmRuntime(params = {}) {
     activeLoraName: params.activeLoraName ?? null,
     loraPath: params.loraPath ?? null,
     loraName: params.loraName ?? null,
+    provider: params.provider ?? inf.provider ?? 'auto',
   };
 
   validateInferenceParams(merged);
@@ -210,53 +212,24 @@ async function startVllmRuntime(params = {}) {
   const {
     model,
     port,
-    maxModelLen,
-    gpuMemoryUtilization,
-    tensorParallelSize,
     baseModel = null,
     activeModelId = null,
     activeModelName = null,
     activeLoraId = null,
     activeLoraName = null,
-    loraPath = null,
-    loraName = null,
-    quantization = null,
-    dtype = 'auto',
-    trustRemoteCode = true,
-    enforceEager = false,
-    kvCacheDtype = 'auto',
-    maxNumSeqs = 256,
-    swapSpace = 4,
+    provider: requestedProviderId,
   } = merged;
 
   if (!fs.existsSync(CONFIG.pythonBin)) {
     throw new Error(`Python binary not found: ${CONFIG.pythonBin}`);
   }
 
-  if (!fs.existsSync(CONFIG.vllmBin)) {
-    throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
-  }
+  const { provider, compatibility } = await providers.resolveProvider(requestedProviderId, modelCfg.detected);
 
-  logger.info('Resolved vLLM launch settings', {
-    model,
-    modelConfigPath: modelCfg.configPath,
-    detectedQuantization: modelCfg.detected.quantization,
-    detectedDtype: modelCfg.detected.dtype,
-    detectedMaxModelLen: modelCfg.detected.maxModelLen,
-    quantization,
-    dtype,
-    maxModelLen,
-    maxNumSeqs,
-    gpuMemoryUtilization,
-    tensorParallelSize,
-  });
-
-  logger.info('Starting vLLM runtime', {
-    model,
-    activeModelName,
-    activeLoraName,
-    loraPath,
-    port,
+  logger.info('Resolved inference provider', {
+    requested: requestedProviderId,
+    resolved: provider.id,
+    compatibility,
   });
 
   await clearGpuMemory();
@@ -269,157 +242,101 @@ async function startVllmRuntime(params = {}) {
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  let outFd;
+  const pid = await provider.start({
+    ...merged,
+    modelConfigPath: modelCfg.configPath,
+  });
+
+  await fsp.writeFile(CONFIG.vllmPidFile, String(pid), 'utf8');
+
+  let healthy = false;
+  let startError = null;
+
   try {
-    outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
-
-    const scriptPath = path.join(__dirname, '..', 'python', 'start_vllm.py');
-    const payload = {
-      vllmBin: CONFIG.vllmBin,
-      model,
-      host: '0.0.0.0',
-      port,
-      gpuMemoryUtilization,
-      tensorParallelSize,
-      maxModelLen,
-      maxNumSeqs,
-      swapSpace,
-      dtype,
-      quantization,
-      trustRemoteCode,
-      enforceEager,
-      kvCacheDtype,
-      loraPath,
-      loraName,
-      cwd: CONFIG.workspace,
-      pidFile: CONFIG.vllmPidFile,
-      logFile: CONFIG.vllmLogFile,
-      modelConfigPath: modelCfg.configPath,
-    };
-
-    logger.info('Effective vLLM runtime payload', { payload });
-
-    const { child, configPath } = await spawnPythonJsonScript({
-      pythonBin: CONFIG.pythonBin,
-      scriptPath,
-      payload,
-      cwd: CONFIG.workspace,
-      detached: true,
-      stdio: ['ignore', outFd, outFd],
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-      configDir: CONFIG.trainingConfigsDir,
-      configPrefix: `vllm-${port}`,
-      logLabel: `runtime-vllm:${port}`,
-    });
-
-    child.unref();
-    await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
-
-    let started = false;
-
-    try {
-      for (let i = 0; i < 120; i += 1) {
-        const r = runText('curl', [
-          '-fsS',
-          '--max-time',
-          '2',
-          `http://127.0.0.1:${port}/health`,
-        ]);
-
-        if (r.ok) {
-          started = true;
-          break;
-        }
-
-        if (!isPidRunning(child.pid)) {
-          const logs = await readText(CONFIG.vllmLogFile, '');
-          const lastLines = logs.split('\n').slice(-50).join('\n');
-
-          logger.error('vLLM exited during startup', {
-            model,
-            port,
-            logFile: CONFIG.vllmLogFile,
-            configPath,
-            lastLines,
-          });
-          throw new Error(`vLLM exited during startup. Last logs:\n${lastLines || 'No logs available'}`);
-        }
-
-        await sleep(1000);
+    for (let i = 0; i < 120; i += 1) {
+      const h = await provider.health({ port });
+      if (h.ok) {
+        healthy = true;
+        break;
       }
 
-      if (!started) {
-        await killProcessGroup(child.pid, 'SIGKILL');
+      if (!isPidRunning(pid)) {
         const logs = await readText(CONFIG.vllmLogFile, '');
-        const lastLines = logs.split('\n').slice(-30).join('\n');
-        logger.error('vLLM did not become healthy within timeout', {
-          model,
-          port,
-          lastLines,
-          configPath,
-        });
-        throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
+        const lastLines = logs.split('\n').slice(-50).join('\n');
+        throw new Error(`Provider process exited during startup. Last logs:\n${lastLines}`);
       }
-    } catch (err) {
-      await removeFile(CONFIG.vllmPidFile).catch(() => {});
-      throw err;
+      await sleep(1000);
     }
 
-    const next = {
-      vllm: {
-        pid: child.pid,
-        model,
-        startedAt: nowIso(),
-        port,
-        logFile: CONFIG.vllmLogFile,
-        configPath,
-        baseModel: baseModel || settings.baseModel,
-        activeModelId,
-        activeModelName,
-        activeLoraId,
-        activeLoraName,
-      },
-    };
-
-    await saveRuntime(next);
-    emitEvent('runtime_started', next.vllm);
-
-    logger.info('vLLM runtime started', {
-      pid: child.pid,
-      model,
-      port,
-      activeModelName,
-      activeLoraName,
-      configPath,
-    });
-
-    return next.vllm;
-  } finally {
-    if (typeof outFd === 'number') {
-      try {
-        fs.closeSync(outFd);
-      } catch {
-        // ignore
-      }
+    if (!healthy) {
+      throw new Error(`Provider did not become healthy within timeout.`);
     }
+  } catch (err) {
+    await provider.stop({ pid });
+    await removeFile(CONFIG.vllmPidFile).catch(() => {});
+    throw err;
   }
+
+  const nextState = {
+    vllm: {
+      pid,
+      model,
+      startedAt: nowIso(),
+      port,
+      logFile: CONFIG.vllmLogFile,
+      baseModel: baseModel || settings.baseModel,
+      activeModelId,
+      activeModelName,
+      activeLoraId,
+      activeLoraName,
+      providerRequested: requestedProviderId,
+      providerResolved: provider.id,
+      probe: {
+        ok: false,
+        status: 'checking',
+        checkedAt: nowIso(),
+        error: null,
+      },
+    },
+  };
+
+  await saveRuntime(nextState);
+
+  // Probe
+  logger.info('Performing model probe...', { provider: provider.id });
+  const probeResult = await provider.probe(nextState.vllm);
+
+  const finalState = {
+    vllm: {
+      ...nextState.vllm,
+      probe: {
+        ok: probeResult.ok,
+        status: probeResult.ok ? 'success' : 'failed',
+        checkedAt: nowIso(),
+        error: probeResult.error || null,
+      },
+    },
+  };
+
+  await saveRuntime(finalState);
+  emitEvent('runtime_started', finalState.vllm);
+
+  logger.info('Runtime started successfully', {
+    provider: provider.id,
+    probe: finalState.vllm.probe,
+  });
+
+  return finalState.vllm;
 }
 
 async function stopVllmRuntime() {
   const runtime = await getRuntime();
   const pid = runtime.vllm?.pid;
+  const providerId = runtime.vllm?.providerResolved;
 
   if (pid && isPidRunning(pid)) {
-    await killProcessGroup(pid);
-
-    for (let i = 0; i < 20; i += 1) {
-      if (!isPidRunning(pid)) break;
-      await sleep(500);
-    }
-
-    if (isPidRunning(pid)) {
-      await killProcessGroup(pid, 'SIGKILL');
-    }
+    const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
+    await provider.stop(runtime.vllm);
   }
 
   await removeFile(CONFIG.vllmPidFile).catch(() => {});
@@ -438,12 +355,20 @@ async function stopVllmRuntime() {
       activeModelName: null,
       activeLoraId: null,
       activeLoraName: null,
+      providerRequested: 'auto',
+      providerResolved: null,
+      probe: {
+        ok: false,
+        status: 'idle',
+        checkedAt: null,
+        error: null,
+      },
     },
   };
 
   await saveRuntime(next);
   emitEvent('runtime_stopped', next.vllm);
-  logger.info('vLLM runtime stopped');
+  logger.info('Runtime stopped');
 
   return next.vllm;
 }

@@ -10,6 +10,7 @@ export default function SettingsPage() {
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const [baseModel, setBaseModel] = useState('');
   const [inferenceModel, setInferenceModel] = useState('');
+  const [inferenceProvider, setInferenceProvider] = useState('auto');
   const [port, setPort] = useState('8000');
   const [maxSeqLength, setMaxSeqLength] = useState('4096');
   const [maxNumSeqs, setMaxNumSeqs] = useState('256');
@@ -26,10 +27,16 @@ export default function SettingsPage() {
   const [wandbProject, setWandbProject] = useState('llm-lab');
   const [wandbEntity, setWandbEntity] = useState('');
 
+  const providersQuery = useQuery({
+    queryKey: ['runtime-providers'],
+    queryFn: api.getRuntimeProviders,
+  });
+
   useEffect(() => {
     if (settingsQuery.data) {
       setBaseModel(settingsQuery.data.baseModel);
       setInferenceModel(settingsQuery.data.inference.model);
+      setInferenceProvider(settingsQuery.data.inference.provider || 'auto');
       setPort(String(settingsQuery.data.inference.port));
       setMaxSeqLength(String(settingsQuery.data.qlora.maxSeqLength));
       setQuantization(settingsQuery.data.inference.quantization || '');
@@ -65,9 +72,30 @@ export default function SettingsPage() {
             <label className="mb-2 block text-sm text-slate-400">Base model</label>
             <Input value={baseModel} onChange={(e) => setBaseModel(e.target.value)} />
           </div>
-          <div>
-            <label className="mb-2 block text-sm text-slate-400">Inference model</label>
-            <Input value={inferenceModel} onChange={(e) => setInferenceModel(e.target.value)} />
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Inference model</label>
+              <Input value={inferenceModel} onChange={(e) => setInferenceModel(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Inference provider</label>
+              <select
+                value={inferenceProvider}
+                onChange={(e) => setInferenceProvider(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {providersQuery.data?.available.map(p => (
+                  <option key={p.id} value={p.id} disabled={!p.available}>
+                    {p.label} {!p.available ? '(Unavailable)' : ''}
+                  </option>
+                ))}
+              </select>
+              {providersQuery.data?.available.find(p => p.id === inferenceProvider)?.reason && (
+                <p className="mt-1 text-[10px] text-rose-400 leading-tight">
+                  {providersQuery.data?.available.find(p => p.id === inferenceProvider)?.reason}
+                </p>
+              )}
+            </div>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <div>
@@ -162,6 +190,7 @@ export default function SettingsPage() {
             qlora: { maxSeqLength: Number(maxSeqLength) },
             inference: {
               model: inferenceModel,
+              provider: inferenceProvider,
               port: Number(port),
               quantization: quantization || null,
               maxNumSeqs: Number(maxNumSeqs),
