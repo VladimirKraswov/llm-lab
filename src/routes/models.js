@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { getModels, getModelById, getSettings } = require('../services/state');
-const { downloadModel, deleteModel, getModelLogs } = require('../services/models');
+const { downloadModel, deleteModel, getModelLogs, quantizeModel } = require('../services/models');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { CONFIG } = require('../config');
 
@@ -32,6 +32,15 @@ router.post('/download', async (req, res) => {
   try {
     const { repoId, name } = req.body || {};
     res.json(await downloadModel({ repoId, name }));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/quantize', async (req, res) => {
+  try {
+    const { modelId, method, name } = req.body || {};
+    res.json(await quantizeModel({ modelId, method, name }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }

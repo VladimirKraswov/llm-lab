@@ -15,6 +15,7 @@ export default function ModelsPage() {
   const [repoId, setRepoId] = useState('Qwen/Qwen2.5-7B-Instruct');
   const [name, setName] = useState('Qwen 2.5 7B Instruct');
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [quantizeMethod, setQuantizeMethod] = useState('awq');
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -30,6 +31,13 @@ export default function ModelsPage() {
 
   const downloadMutation = useMutation({
     mutationFn: api.downloadModel,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['models'] });
+    },
+  });
+
+  const quantizeMutation = useMutation({
+    mutationFn: api.quantizeModel,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['models'] });
     },
@@ -123,6 +131,23 @@ export default function ModelsPage() {
                     <div className="min-w-0">
                       <div className="font-semibold text-white truncate">{item.name}</div>
                       <div className="mt-1 text-xs text-slate-400 truncate">{item.repoId}</div>
+                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+                        {item.sizeHuman && (
+                          <div className="text-slate-400">
+                            Size: <span className="text-slate-200">{item.sizeHuman}</span>
+                          </div>
+                        )}
+                        {item.quantization && (
+                          <div className="text-slate-400">
+                            Quant: <span className="text-slate-200">{item.quantization}</span>
+                          </div>
+                        )}
+                        {item.vramEstimate && (
+                          <div className="text-slate-400">
+                            VRAM: <span className="text-slate-200">~{item.vramEstimate}</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <StatusBadge value={item.status === 'ready' ? 'ready' : item.status} />
                   </div>
@@ -156,6 +181,28 @@ export default function ModelsPage() {
                       >
                         Delete
                       </Button>
+                    </div>
+                  )}
+
+                  {selectedModelId === item.id && item.status === 'ready' && !item.quantization && (
+                    <div className="mt-4 border-t border-slate-800 pt-4" onClick={(e) => e.stopPropagation()}>
+                      <div className="text-xs font-medium text-slate-400 mb-2">Quantize Model</div>
+                      <div className="flex gap-2">
+                        <select
+                          value={quantizeMethod}
+                          onChange={(e) => setQuantizeMethod(e.target.value)}
+                          className="h-8 rounded-md border border-slate-700 bg-slate-900 px-2 text-xs text-white"
+                        >
+                          <option value="awq">AWQ (4-bit)</option>
+                        </select>
+                        <Button
+                          onClick={() => quantizeMutation.mutate({ modelId: item.id, method: quantizeMethod })}
+                          disabled={quantizeMutation.isPending}
+                          className="h-8 px-3 text-xs bg-amber-700 hover:bg-amber-600"
+                        >
+                          {quantizeMutation.isPending ? 'Starting…' : 'Run Quantization'}
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </div>

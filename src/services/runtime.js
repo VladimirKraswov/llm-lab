@@ -122,8 +122,10 @@ async function startVllmRuntime({
 
   if (!started) {
     await killProcessGroup(child.pid, 'SIGKILL');
-    logger.error(`vLLM did not become healthy within timeout`, { model, port, logFile: CONFIG.vllmLogFile });
-    throw new Error(`vLLM did not become healthy within timeout; check ${CONFIG.vllmLogFile}`);
+    const logs = await readText(CONFIG.vllmLogFile, '');
+    const lastLines = logs.split('\n').slice(-10).join('\n');
+    logger.error(`vLLM did not become healthy within timeout`, { model, port, lastLines });
+    throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
   }
 
   const settings = await getSettings();

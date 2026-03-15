@@ -7,6 +7,7 @@ const { addModel, getModels, getModelById, removeModel, upsertModel } = require(
 const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const logger = require('../utils/logger');
+const { getModelMetadata } = require('../utils/model-meta');
 
 function safeSlug(value) {
   return String(value || '')
@@ -86,6 +87,12 @@ print(local_dir)
     });
     emitEvent('model_updated', next);
     if (code === 0) {
+      const meta = getModelMetadata(next.path);
+      const withMeta = await upsertModel({
+        ...next,
+        ...meta
+      });
+      emitEvent('model_updated', withMeta);
       logger.info(`Model downloaded successfully: ${next.name}`, { modelId: next.id });
     } else {
       logger.error(`Model download failed: ${next.name}`, { modelId: next.id, error: next.error });
@@ -120,6 +127,86 @@ async function deleteModel(modelId) {
   return { ok: true };
 }
 
+async function quantizeModel({ modelId, method, name }) {
+  const source = await getModelById(modelId);
+  if (!source) throw new Error('source model not found');
+  if (source.status !== 'ready') throw new Error('source model is not ready');
+
+  const newId = uid('model');
+  const slug = safeSlug(name || `${source.name}-${method}`);
+  const modelPath = path.join(CONFIG.modelsDir, `${slug}-${newId}`);
+  const logFile = path.join(CONFIG.logsDir, `${newId}.log`);
+
+  const item = await addModel({
+    id: newId,
+    name: name || `${source.name} (${method})`,
+    repoId: `local/quantized/${source.id}`,
+    createdAt: nowIso(),
+    status: 'building',
+    path: modelPath,
+    logFile,
+    pid: null,
+    error: null,
+    quantization: method,
+    sourceModelId: modelId,
+  });
+
+  emitEvent('model_updated', item);
+  fs.mkdirSync(modelPath, { recursive: true });
+
+  let py = '';
+  if (method === 'awq') {
+    py = `
+import torch
+from awq import AutoAWQForCausalLM
+from transformers import AutoTokenizer
+
+model_path = ${JSON.stringify(source.path)}
+quant_path = ${JSON.stringify(modelPath)}
+
+quant_config = { "zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "GEMM" }
+
+model = AutoAWQForCausalLM.from_pretrained(model_path)
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+model.quantize(tokenizer, quant_config=quant_config)
+model.save_quantized(quant_path)
+tokenizer.save_pretrained(quant_path)
+`.trim();
+  } else {
+    // Default to BitsAndBytes 4-bit (though usually it's used on the fly, we can "save" it if unsloth/transformers allows)
+    throw new Error(`Quantization method ${method} not implemented in this version`);
+  }
+
+  const outFd = fs.openSync(logFile, 'a');
+  const child = spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+    cwd: CONFIG.workspace,
+    detached: true,
+    stdio: ['ignore', outFd, outFd],
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+
+  child.unref();
+
+  const running = await upsertModel({ ...item, pid: child.pid });
+  emitEvent('model_updated', running);
+
+  child.on('exit', async (code) => {
+    const isOk = code === 0;
+    const meta = isOk ? getModelMetadata(modelPath) : {};
+    const next = await upsertModel({
+      ...running,
+      ...meta,
+      status: isOk ? 'ready' : 'failed',
+      error: isOk ? null : `quantization exited with code ${code}`,
+      pid: null,
+    });
+    emitEvent('model_updated', next);
+  });
+
+  return running;
+}
+
 async function getModelLogs(id, tail = 200) {
   const item = await getModelById(id);
   if (!item) throw new Error('model not found');
@@ -137,4 +224,5 @@ module.exports = {
   downloadModel,
   deleteModel,
   getModelLogs,
+  quantizeModel,
 };

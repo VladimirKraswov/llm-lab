@@ -16,6 +16,7 @@ const {
 const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
+const { getDirSize, formatSize } = require('../utils/model-meta');
 
 async function registerLoraFromJob(jobId, customName = null) {
   const existing = await getLoraByJobId(jobId);
@@ -51,9 +52,13 @@ async function registerLoraFromJob(jobId, customName = null) {
     error: null,
   });
 
-  emitEvent('lora_created', item);
-  logger.info(`LoRA registered from job: ${item.name}`, { loraId: item.id, jobId });
-  return item;
+  const size = fs.existsSync(item.adapterPath) ? getDirSize(item.adapterPath) : 0;
+  const withSize = { ...item, size, sizeHuman: formatSize(size) };
+
+  const final = await upsertLora(withSize);
+  emitEvent('lora_created', final);
+  logger.info(`LoRA registered from job: ${final.name}`, { loraId: final.id, jobId });
+  return final;
 }
 
 async function buildMergedLora(loraId) {

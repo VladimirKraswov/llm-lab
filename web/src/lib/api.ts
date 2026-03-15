@@ -79,6 +79,10 @@ export type ModelItem = {
   logFile: string;
   pid: number | null;
   error: string | null;
+  size?: number;
+  sizeHuman?: string;
+  quantization?: string | null;
+  vramEstimate?: string;
 };
 
 export type LoraItem = {
@@ -97,6 +101,8 @@ export type LoraItem = {
   mergeProgress?: number;
   packageStatus: string;
   error: string | null;
+  size?: number;
+  sizeHuman?: string;
 };
 
 export type Dataset = {
@@ -244,6 +250,11 @@ export const api = {
   deleteModel: (id: string) =>
     request<{ ok: boolean }>(`/models/${id}`, {
       method: 'DELETE',
+    }),
+  quantizeModel: (payload: { modelId: string; method: string; name?: string }) =>
+    request<ModelItem>('/models/quantize', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
 
   getLoras: () => request<LoraItem[]>('/loras'),
