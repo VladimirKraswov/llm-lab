@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebundleignore
-generated: 2026-03-15T11:02:44.647Z
+generated: 2026-03-15T11:22:26.177Z
 
 
 
@@ -417,7 +417,147 @@ if __name__ == "__main__":
 
 path: /python/quantize_awq.py
 ----------------------------------------
+import json
+import os
+import sys
 
+
+def report(p):
+    print(f"__PROGRESS__:{p}", flush=True)
+
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: quantize_awq.py <config.json>")
+
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    model_path = cfg["modelPath"]
+    output_dir = cfg["outputDir"]
+    quant_config = cfg.get("quantConfig") or {
+        "zero_point": True,
+        "q_group_size": 128,
+        "w_bit": 4,
+        "version": "GEMM",
+    }
+    trust_remote_code = bool(cfg.get("trustRemoteCode", True))
+
+    os.makedirs(output_dir, exist_ok=True)
+    report(10)
+
+    from awq import AutoAWQForCausalLM
+    from transformers import AutoTokenizer
+    report(30)
+
+    model = AutoAWQForCausalLM.from_pretrained(
+        model_path,
+        trust_remote_code=trust_remote_code,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        trust_remote_code=trust_remote_code,
+    )
+    report(55)
+
+    model.quantize(tokenizer, quant_config=quant_config)
+    report(85)
+
+    model.save_quantized(output_dir)
+    tokenizer.save_pretrained(output_dir)
+    report(100)
+
+    print(f"__RESULT__:{output_dir}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+
+path: /python/start_vllm.py
+----------------------------------------
+import json
+import os
+import sys
+import subprocess
+
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: start_vllm.py <config.json>")
+
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    vllm_bin = cfg["vllmBin"]
+    model = cfg["model"]
+    host = cfg.get("host", "0.0.0.0")
+    port = int(cfg["port"])
+    gpu_memory_utilization = cfg.get("gpuMemoryUtilization", 0.9)
+    tensor_parallel_size = int(cfg.get("tensorParallelSize", 1))
+    max_model_len = int(cfg.get("maxModelLen", 8192))
+    max_num_seqs = int(cfg.get("maxNumSeqs", 256))
+    swap_space = int(cfg.get("swapSpace", 4))
+    dtype = cfg.get("dtype", "auto")
+    quantization = cfg.get("quantization")
+    trust_remote_code = bool(cfg.get("trustRemoteCode", True))
+    enforce_eager = bool(cfg.get("enforceEager", False))
+    kv_cache_dtype = cfg.get("kvCacheDtype", "auto")
+    lora_path = cfg.get("loraPath")
+    lora_name = cfg.get("loraName")
+    cwd = cfg.get("cwd") or os.getcwd()
+
+    args = [
+        vllm_bin,
+        "serve",
+        model,
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--gpu-memory-utilization",
+        str(gpu_memory_utilization),
+        "--tensor-parallel-size",
+        str(tensor_parallel_size),
+        "--max-model-len",
+        str(max_model_len),
+        "--max-num-seqs",
+        str(max_num_seqs),
+        "--swap-space",
+        str(swap_space),
+        "--dtype",
+        str(dtype or "auto"),
+    ]
+
+    if quantization:
+        args.extend(["--quantization", str(quantization)])
+
+    if trust_remote_code:
+        args.append("--trust-remote-code")
+
+    if enforce_eager:
+        args.append("--enforce-eager")
+
+    if kv_cache_dtype and kv_cache_dtype != "auto":
+        args.extend(["--kv-cache-dtype", str(kv_cache_dtype)])
+
+    if lora_path and lora_name:
+        args.extend(["--enable-lora", "--lora-modules", f"{lora_name}={lora_path}"])
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
+    # Замещаем текущий процесс процессом vLLM
+    os.chdir(cwd)
+    os.execvpe(vllm_bin, args, env)
+
+
+if __name__ == "__main__":
+    main()
 
 
 path: /python/train.py
@@ -2001,7 +2141,6 @@ module.exports = {
 path: /services/jobs.js
 ----------------------------------------
 const fs = require('fs');
-const { spawn } = require('child_process');
 const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso, uid } = require('../utils/ids');
@@ -2012,144 +2151,7 @@ const { readText } = require('../utils/fs');
 const { registerLoraFromJob } = require('./loras');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
-
-function buildTrainPython(job, settings) {
-  const cfg = {
-    baseModel: job.baseModel,
-    datasetPath: job.datasetPath,
-    outputDir: job.outputDir,
-    qlora: { ...settings.qlora, ...(job.qlora || {}) },
-    wandb: settings.wandb || {},
-  };
-
-  return `
-import json
-import os
-import unsloth
-import torch
-
-from datasets import load_dataset
-from unsloth import FastLanguageModel
-from transformers import TrainingArguments
-from trl import SFTTrainer
-
-cfg = json.loads(${JSON.stringify(JSON.stringify(cfg))})
-
-os.makedirs(cfg["outputDir"], exist_ok=True)
-
-wandb_cfg = cfg.get("wandb", {}) or {}
-wandb_enabled = bool(wandb_cfg.get("enabled")) and wandb_cfg.get("mode", "online") != "disabled"
-
-if wandb_cfg.get("mode") == "offline":
-    os.environ["WANDB_MODE"] = "offline"
-
-if wandb_cfg.get("baseUrl"):
-    os.environ["WANDB_BASE_URL"] = wandb_cfg["baseUrl"]
-
-if wandb_enabled:
-    import wandb
-    if wandb_cfg.get("apiKey"):
-        wandb.login(key=wandb_cfg["apiKey"])
-    wandb.init(
-        project=wandb_cfg.get("project", "llm-lab"),
-        entity=wandb_cfg.get("entity"),
-        name=os.path.basename(cfg["outputDir"]),
-        config=cfg,
-        dir=cfg["outputDir"],
-        mode=wandb_cfg.get("mode", "online")
-    )
-
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name=cfg["baseModel"],
-    max_seq_length=cfg["qlora"]["maxSeqLength"],
-    load_in_4bit=cfg["qlora"]["loadIn4bit"],
-    trust_remote_code=True,
-)
-
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
-
-model = FastLanguageModel.get_peft_model(
-    model,
-    r=cfg["qlora"]["loraR"],
-    target_modules=cfg["qlora"]["targetModules"],
-    lora_alpha=cfg["qlora"]["loraAlpha"],
-    lora_dropout=cfg["qlora"]["loraDropout"],
-    bias="none",
-    use_gradient_checkpointing="unsloth",
-)
-
-if torch.cuda.is_available():
-    model = model.to("cuda")
-
-dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
-
-def format_row(row):
-    messages = row.get("messages", [])
-    if not isinstance(messages, list) or len(messages) < 2:
-        return {"text": ""}
-
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=False,
-    )
-    return {"text": text}
-
-dataset = dataset.map(format_row)
-dataset = dataset.filter(lambda x: bool(x["text"] and x["text"].strip()))
-
-if len(dataset) == 0:
-    raise ValueError("Dataset is empty after formatting/filtering")
-
-use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-
-args = TrainingArguments(
-    output_dir=cfg["outputDir"],
-    per_device_train_batch_size=cfg["qlora"]["perDeviceTrainBatchSize"],
-    gradient_accumulation_steps=cfg["qlora"]["gradientAccumulationSteps"],
-    learning_rate=cfg["qlora"]["learningRate"],
-    num_train_epochs=cfg["qlora"]["numTrainEpochs"],
-    warmup_ratio=cfg["qlora"]["warmupRatio"],
-    logging_steps=1,
-    save_strategy="epoch",
-    save_safetensors=True,
-    bf16=use_bf16,
-    fp16=not use_bf16,
-    report_to=["wandb"] if wandb_enabled else [],
-    remove_unused_columns=False,
-    group_by_length=False,
-    optim="adamw_8bit",
-)
-
-trainer = SFTTrainer(
-    model=model,
-    tokenizer=tokenizer,
-    train_dataset=dataset,
-    args=args,
-    dataset_text_field="text",
-    packing=False,
-    dataset_num_proc=1,
-)
-
-trainer.train()
-trainer.save_model(cfg["outputDir"])
-tokenizer.save_pretrained(cfg["outputDir"])
-
-# Export metrics
-with open(os.path.join(cfg["outputDir"], "metrics.json"), "w") as f:
-    json.dump(trainer.state.log_history, f, indent=2)
-
-print(json.dumps({
-    "ok": True,
-    "outputDir": cfg["outputDir"],
-    "rows": len(dataset),
-    "bf16": use_bf16,
-    "wandbEnabled": wandb_enabled,
-    "wandbMode": wandb_cfg.get("mode", "online"),
-}))
-`.trim();
-}
+const { spawnPythonJsonScript } = require('../utils/python-runner');
 
 function validateQLoraParams(params) {
   if (params.learningRate !== undefined && (typeof params.learningRate !== 'number' || params.learningRate <= 0)) {
@@ -2244,23 +2246,43 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     logFile,
     pid: null,
     error: null,
+    configPath: null,
   };
 
   await upsertJob(job);
   emitEvent('job_updated', job);
-  logger.info(`Starting fine-tune job: ${job.name}`, { jobId, datasetId, baseModel: selectedBaseModel });
+  logger.info(`Starting fine-tune job: ${job.name}`, {
+    jobId,
+    datasetId,
+    baseModel: selectedBaseModel,
+  });
 
   fs.mkdirSync(outputDir, { recursive: true });
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  const script = buildTrainPython(job, settings);
+  const trainConfig = {
+    baseModel: job.baseModel,
+    datasetPath: job.datasetPath,
+    outputDir: job.outputDir,
+    qlora: { ...settings.qlora, ...(job.qlora || {}) },
+    wandb: settings.wandb || {},
+  };
+
   const outFd = fs.openSync(logFile, 'a');
+  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'train.py');
 
-  const child = spawn(CONFIG.pythonBin, ['-u', '-c', script], {
+  const { child, configPath } = await spawnPythonJsonScript({
+    pythonBin: CONFIG.pythonBin,
+    scriptPath,
+    payload: trainConfig,
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
     env: buildTrainingEnv(settings),
+    configDir: CONFIG.trainingConfigsDir,
+    configPrefix: jobId,
+    logLabel: `fine-tune:${jobId}`,
   });
 
   child.unref();
@@ -2270,10 +2292,17 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     status: 'running',
     startedAt: nowIso(),
     pid: child.pid,
+    configPath,
   });
   emitEvent('job_updated', runningJob);
 
   child.on('exit', async (code) => {
+    logger.info('Fine-tune process exited', {
+      jobId,
+      code,
+      configPath,
+    });
+
     const jobs = await getJobs();
     const current = jobs.find((j) => j.id === jobId);
     if (!current) return;
@@ -2283,13 +2312,20 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
       status: code === 0 ? 'completed' : 'failed',
       finishedAt: nowIso(),
       error: code === 0 ? null : `trainer exited with code ${code}`,
+      pid: null,
+      configPath,
     });
 
     emitEvent('job_updated', next);
+
     if (code === 0) {
-      logger.info(`Job completed: ${jobId}`);
+      logger.info(`Job completed: ${jobId}`, { configPath });
     } else {
-      logger.error(`Job failed: ${jobId}`, { code, error: next.error });
+      logger.error(`Job failed: ${jobId}`, {
+        code,
+        error: next.error,
+        configPath,
+      });
     }
 
     if (code === 0) {
@@ -2300,11 +2336,23 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
           jobId,
           error: String(err.message || err),
         });
+
+        logger.error('LoRA auto-registration failed after fine-tune', {
+          jobId,
+          configPath,
+          error: String(err.message || err),
+        });
       }
     }
   });
 
   child.on('error', async (err) => {
+    logger.error('Fine-tune process error', {
+      jobId,
+      configPath,
+      error: String(err.message || err),
+    });
+
     const jobs = await getJobs();
     const current = jobs.find((j) => j.id === jobId);
     if (!current) return;
@@ -2314,21 +2362,35 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
       status: 'failed',
       finishedAt: nowIso(),
       error: String(err.message || err),
+      pid: null,
+      configPath,
     });
 
     emitEvent('job_updated', next);
   });
 
-  return { ok: true, jobId, logFile, outputDir };
+  return {
+    ok: true,
+    jobId,
+    logFile,
+    outputDir,
+    configPath,
+  };
 }
 
 async function stopJob(jobId) {
   const jobs = await getJobs();
   const job = jobs.find((j) => j.id === jobId);
   if (!job) throw new Error('job not found');
+
   if (!job.pid || !isPidRunning(job.pid)) {
     if (job.status === 'running') {
-      await upsertJob({ ...job, status: 'failed', finishedAt: nowIso(), error: 'Process not found' });
+      await upsertJob({
+        ...job,
+        status: 'failed',
+        finishedAt: nowIso(),
+        error: 'Process not found',
+      });
     }
     throw new Error('job is not running');
   }
@@ -2342,6 +2404,8 @@ async function stopJob(jobId) {
   });
 
   emitEvent('job_updated', next);
+  logger.info('Job stopped', { jobId });
+
   return { ok: true };
 }
 
@@ -2376,7 +2440,7 @@ path: /services/loras.js
 ----------------------------------------
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const { CONFIG } = require('../config');
 const { uid, nowIso } = require('../utils/ids');
 const {
@@ -2387,12 +2451,12 @@ const {
   getModelById,
   upsertLora,
   addModel,
-  upsertModel,
 } = require('./state');
 const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
 const { getDirSize, formatSize } = require('../utils/model-meta');
+const { spawnPythonJsonScript } = require('../utils/python-runner');
 
 async function registerLoraFromJob(jobId, customName = null) {
   const existing = await getLoraByJobId(jobId);
@@ -2426,6 +2490,7 @@ async function registerLoraFromJob(jobId, customName = null) {
     mergeStatus: 'not_built',
     packageStatus: 'not_built',
     error: null,
+    configPath: null,
   });
 
   const size = fs.existsSync(item.adapterPath) ? getDirSize(item.adapterPath) : 0;
@@ -2446,6 +2511,7 @@ async function buildMergedLora(loraId) {
 
   const mergedPath = path.join(CONFIG.mergedModelsDir, `${item.id}-merged`);
   fs.mkdirSync(CONFIG.mergedModelsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
   const next0 = await upsertLora({
     ...item,
@@ -2454,74 +2520,40 @@ async function buildMergedLora(loraId) {
     mergedPath,
     mergePid: null,
     error: null,
+    configPath: null,
   });
   emitEvent('lora_updated', next0);
 
-  const py = `
-import os
-import sys
-import json
+  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'merge_lora.py');
+  const payload = {
+    adapterPath: item.adapterPath,
+    outputDir: mergedPath,
+  };
 
-def report(p):
-    print(f"__PROGRESS__:{p}", flush=True)
-
-adapter_path = ${JSON.stringify(item.adapterPath)}
-output_dir = ${JSON.stringify(mergedPath)}
-
-try:
-    os.makedirs(output_dir, exist_ok=True)
-    report(10)
-
-    import torch
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    report(15)
-
-    from peft import AutoPeftModelForCausalLM
-    from transformers import AutoTokenizer
-    report(20)
-
-    model = AutoPeftModelForCausalLM.from_pretrained(
-        adapter_path,
-        torch_dtype="auto",
-        device_map=device,
-    )
-    report(50)
-
-    merged = model.merge_and_unload()
-    report(70)
-
-    merged.save_pretrained(output_dir, safe_serialization=True)
-    report(90)
-
-    try:
-        # Fix for Mistral tokenizer regex warning if applicable
-        tokenizer = AutoTokenizer.from_pretrained(adapter_path, fix_mistral_regex=True)
-    except TypeError:
-        # For older versions of transformers that don't support fix_mistral_regex
-        tokenizer = AutoTokenizer.from_pretrained(adapter_path)
-
-    tokenizer.save_pretrained(output_dir)
-    report(100)
-    print(f"__RESULT__:{output_dir}")
-except Exception as e:
-    print(str(e), file=sys.stderr)
-    sys.exit(1)
-`.trim();
-
-  const child = require('child_process').spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+  const { child, configPath } = await spawnPythonJsonScript({
+    pythonBin: CONFIG.pythonBin,
+    scriptPath,
+    payload,
     cwd: CONFIG.workspace,
     detached: true,
     stdio: 'pipe',
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    configDir: CONFIG.trainingConfigsDir,
+    configPrefix: `merge-${loraId}`,
+    logLabel: `merge-lora:${loraId}`,
   });
+
+  child.unref();
 
   const building = await upsertLora({
     ...next0,
     mergePid: child.pid,
+    configPath,
   });
   emitEvent('lora_updated', building);
 
   let stderr = '';
+
   child.stderr.on('data', (data) => {
     stderr += data.toString();
   });
@@ -2541,6 +2573,12 @@ except Exception as e:
   });
 
   child.on('exit', async (code) => {
+    logger.info('LoRA merge process exited', {
+      loraId,
+      code,
+      configPath,
+    });
+
     const current = await getLoraById(loraId);
     if (!current) return;
 
@@ -2553,13 +2591,13 @@ except Exception as e:
       mergePid: null,
       mergedPath: isOk ? mergedPath : current.mergedPath,
       error: isOk ? null : (stderr.trim() || `exit code ${code}`),
+      configPath,
     });
     emitEvent('lora_updated', next);
 
     if (isOk) {
-      logger.info(`LoRA merge completed: ${loraId}`, { mergedPath });
+      logger.info(`LoRA merge completed: ${loraId}`, { mergedPath, configPath });
 
-      // Add to global model library
       try {
         const modelId = uid('model');
         await addModel({
@@ -2571,14 +2609,42 @@ except Exception as e:
           path: mergedPath,
           error: null,
           fromLoraId: loraId,
+          configPath,
         });
-        logger.info(`Merged model added to library`, { modelId, loraId });
+        logger.info(`Merged model added to library`, { modelId, loraId, configPath });
       } catch (err) {
-        logger.error(`Failed to add merged model to library`, { error: err.message });
+        logger.error(`Failed to add merged model to library`, {
+          error: err.message,
+          loraId,
+          configPath,
+        });
       }
     } else {
-      logger.error(`LoRA merge failed: ${loraId}`, { error: next.error });
+      logger.error(`LoRA merge failed: ${loraId}`, {
+        error: next.error,
+        configPath,
+      });
     }
+  });
+
+  child.on('error', async (err) => {
+    logger.error('LoRA merge process error', {
+      loraId,
+      configPath,
+      error: String(err.message || err),
+    });
+
+    const current = await getLoraById(loraId);
+    if (!current) return;
+
+    const next = await upsertLora({
+      ...current,
+      mergeStatus: 'failed',
+      mergePid: null,
+      error: String(err.message || err),
+      configPath,
+    });
+    emitEvent('lora_updated', next);
   });
 
   return building;
@@ -2600,7 +2666,6 @@ async function ensureMergedLora(loraId) {
     await buildMergedLora(loraId);
   }
 
-  // Wait for it to complete
   while (true) {
     await sleep(2000);
     item = await getLoraById(loraId);
@@ -2635,7 +2700,7 @@ async function packageMergedLora(loraId) {
   });
   emitEvent('lora_updated', next0);
 
-  const child = require('child_process').spawn(
+  const child = spawn(
     'tar',
     [
       '-czf',
@@ -2662,6 +2727,12 @@ async function packageMergedLora(loraId) {
   });
 
   child.on('exit', async (code) => {
+    logger.info('LoRA package process exited', {
+      loraId,
+      code,
+      archivePath,
+    });
+
     const current = await getLoraById(loraId);
     const next = await upsertLora({
       ...current,
@@ -2669,6 +2740,38 @@ async function packageMergedLora(loraId) {
       packagePid: null,
       packagePath: code === 0 ? archivePath : current.packagePath,
       error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
+    });
+    emitEvent('lora_updated', next);
+
+    if (code === 0) {
+      logger.info('LoRA package completed', {
+        loraId,
+        archivePath,
+      });
+    } else {
+      logger.error('LoRA package failed', {
+        loraId,
+        archivePath,
+        error: next.error,
+      });
+    }
+  });
+
+  child.on('error', async (err) => {
+    logger.error('LoRA package process error', {
+      loraId,
+      archivePath,
+      error: String(err.message || err),
+    });
+
+    const current = await getLoraById(loraId);
+    if (!current) return;
+
+    const next = await upsertLora({
+      ...current,
+      packageStatus: 'failed',
+      packagePid: null,
+      error: String(err.message || err),
     });
     emitEvent('lora_updated', next);
   });
@@ -2688,7 +2791,6 @@ path: /services/models.js
 ----------------------------------------
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const { CONFIG } = require('../config');
 const { uid, nowIso } = require('../utils/ids');
 const { addModel, getModels, getModelById, removeModel, upsertModel } = require('./state');
@@ -2696,6 +2798,7 @@ const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const logger = require('../utils/logger');
 const { getModelMetadata } = require('../utils/model-meta');
+const { spawnPythonJsonScript } = require('../utils/python-runner');
 
 function safeSlug(value) {
   return String(value || '')
@@ -2726,36 +2829,33 @@ async function downloadModel({ repoId, name }) {
     logFile,
     pid: null,
     error: null,
+    configPath: null,
   });
 
   emitEvent('model_updated', item);
 
   fs.mkdirSync(CONFIG.modelsDir, { recursive: true });
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  const py = `
-import os
-from huggingface_hub import snapshot_download
-
-repo_id = ${JSON.stringify(repoId)}
-local_dir = ${JSON.stringify(modelPath)}
-os.makedirs(local_dir, exist_ok=True)
-
-snapshot_download(
-    repo_id=repo_id,
-    local_dir=local_dir,
-    local_dir_use_symlinks=False,
-    resume_download=True,
-)
-print(local_dir)
-`.trim();
+  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'download_model.py');
+  const payload = {
+    repoId,
+    localDir: modelPath,
+  };
 
   const outFd = fs.openSync(logFile, 'a');
-  const child = spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+  const { child, configPath } = await spawnPythonJsonScript({
+    pythonBin: CONFIG.pythonBin,
+    scriptPath,
+    payload,
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    configDir: CONFIG.trainingConfigsDir,
+    configPrefix: modelId,
+    logLabel: `download-model:${modelId}`,
   });
 
   child.unref();
@@ -2763,36 +2863,56 @@ print(local_dir)
   const running = await upsertModel({
     ...item,
     pid: child.pid,
+    configPath,
   });
   emitEvent('model_updated', running);
 
   child.on('exit', async (code) => {
+    logger.info('Model download process exited', {
+      modelId,
+      code,
+      configPath,
+    });
+
     const next = await upsertModel({
       ...running,
       status: code === 0 ? 'ready' : 'failed',
       error: code === 0 ? null : `download exited with code ${code}`,
       pid: null,
+      configPath,
     });
     emitEvent('model_updated', next);
+
     if (code === 0) {
       const meta = getModelMetadata(next.path);
       const withMeta = await upsertModel({
         ...next,
-        ...meta
+        ...meta,
       });
       emitEvent('model_updated', withMeta);
       logger.info(`Model downloaded successfully: ${next.name}`, { modelId: next.id });
     } else {
-      logger.error(`Model download failed: ${next.name}`, { modelId: next.id, error: next.error });
+      logger.error(`Model download failed: ${next.name}`, {
+        modelId: next.id,
+        error: next.error,
+        configPath,
+      });
     }
   });
 
   child.on('error', async (err) => {
+    logger.error('Model download process error', {
+      modelId,
+      configPath,
+      error: String(err.message || err),
+    });
+
     const next = await upsertModel({
       ...running,
       status: 'failed',
       error: String(err.message || err),
       pid: null,
+      configPath,
     });
     emitEvent('model_updated', next);
   });
@@ -2837,49 +2957,69 @@ async function quantizeModel({ modelId, method, name }) {
     error: null,
     quantization: method,
     sourceModelId: modelId,
+    configPath: null,
   });
 
   emitEvent('model_updated', item);
+
   fs.mkdirSync(modelPath, { recursive: true });
+  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  let py = '';
+  let scriptFile = null;
+  let payload = null;
+
   if (method === 'awq') {
-    py = `
-import torch
-from awq import AutoAWQForCausalLM
-from transformers import AutoTokenizer
-
-model_path = ${JSON.stringify(source.path)}
-quant_path = ${JSON.stringify(modelPath)}
-
-quant_config = { "zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "GEMM" }
-
-model = AutoAWQForCausalLM.from_pretrained(model_path)
-tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-
-model.quantize(tokenizer, quant_config=quant_config)
-model.save_quantized(quant_path)
-tokenizer.save_pretrained(quant_path)
-`.trim();
+    scriptFile = 'quantize_awq.py';
+    payload = {
+      modelPath: source.path,
+      outputDir: modelPath,
+      quantConfig: {
+        zero_point: true,
+        q_group_size: 128,
+        w_bit: 4,
+        version: 'GEMM',
+      },
+      trustRemoteCode: true,
+    };
   } else {
-    // Default to BitsAndBytes 4-bit (though usually it's used on the fly, we can "save" it if unsloth/transformers allows)
     throw new Error(`Quantization method ${method} not implemented in this version`);
   }
 
+  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', scriptFile);
   const outFd = fs.openSync(logFile, 'a');
-  const child = spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+
+  const { child, configPath } = await spawnPythonJsonScript({
+    pythonBin: CONFIG.pythonBin,
+    scriptPath,
+    payload,
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    configDir: CONFIG.trainingConfigsDir,
+    configPrefix: newId,
+    logLabel: `quantize-model:${newId}`,
   });
 
   child.unref();
 
-  const running = await upsertModel({ ...item, pid: child.pid });
+  const running = await upsertModel({
+    ...item,
+    pid: child.pid,
+    configPath,
+  });
   emitEvent('model_updated', running);
 
   child.on('exit', async (code) => {
+    logger.info('Model quantization process exited', {
+      modelId: newId,
+      sourceModelId: modelId,
+      code,
+      method,
+      configPath,
+    });
+
     const isOk = code === 0;
     const meta = isOk ? getModelMetadata(modelPath) : {};
     const next = await upsertModel({
@@ -2888,6 +3028,43 @@ tokenizer.save_pretrained(quant_path)
       status: isOk ? 'ready' : 'failed',
       error: isOk ? null : `quantization exited with code ${code}`,
       pid: null,
+      configPath,
+    });
+    emitEvent('model_updated', next);
+
+    if (isOk) {
+      logger.info('Model quantization completed', {
+        modelId: newId,
+        sourceModelId: modelId,
+        method,
+        configPath,
+      });
+    } else {
+      logger.error('Model quantization failed', {
+        modelId: newId,
+        sourceModelId: modelId,
+        method,
+        error: next.error,
+        configPath,
+      });
+    }
+  });
+
+  child.on('error', async (err) => {
+    logger.error('Model quantization process error', {
+      modelId: newId,
+      sourceModelId: modelId,
+      method,
+      configPath,
+      error: String(err.message || err),
+    });
+
+    const next = await upsertModel({
+      ...running,
+      status: 'failed',
+      error: String(err.message || err),
+      pid: null,
+      configPath,
     });
     emitEvent('model_updated', next);
   });
@@ -2920,7 +3097,7 @@ path: /services/runtime.js
 ----------------------------------------
 const fs = require('fs');
 const fsp = require('fs/promises');
-const { spawn } = require('child_process');
+const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso } = require('../utils/ids');
 const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
@@ -2929,6 +3106,7 @@ const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { readText, removeFile } = require('../utils/fs');
+const { spawnPythonJsonScript } = require('../utils/python-runner');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -3037,6 +3215,10 @@ async function startVllmRuntime(params = {}) {
     throw new Error('model is required');
   }
 
+  if (!fs.existsSync(CONFIG.pythonBin)) {
+    throw new Error(`Python binary not found: ${CONFIG.pythonBin}`);
+  }
+
   if (!fs.existsSync(CONFIG.vllmBin)) {
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
   }
@@ -3056,58 +3238,47 @@ async function startVllmRuntime(params = {}) {
     await stopVllmRuntime();
   }
 
-  const args = [
-    'serve',
-    normalizedModel,
-    '--host',
-    '0.0.0.0',
-    '--port',
-    String(port),
-    '--gpu-memory-utilization',
-    String(gpuMemoryUtilization),
-    '--tensor-parallel-size',
-    String(tensorParallelSize),
-    '--max-model-len',
-    String(maxModelLen),
-    '--max-num-seqs',
-    String(maxNumSeqs),
-    '--swap-space',
-    String(swapSpace),
-    '--dtype',
-    String(dtype || 'auto'),
-  ];
-
-  if (quantization) {
-    args.push('--quantization', String(quantization));
-  }
-
-  if (trustRemoteCode) {
-    args.push('--trust-remote-code');
-  }
-
-  if (enforceEager) {
-    args.push('--enforce-eager');
-  }
-
-  if (kvCacheDtype && kvCacheDtype !== 'auto') {
-    args.push('--kv-cache-dtype', String(kvCacheDtype));
-  }
-
-  if (loraPath && loraName) {
-    args.push('--enable-lora', '--lora-modules', `${loraName}=${loraPath}`);
-  }
-
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
   let outFd;
   try {
     outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
 
-    const child = spawn(CONFIG.vllmBin, args, {
+    const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'start_vllm.py');
+    const payload = {
+      vllmBin: CONFIG.vllmBin,
+      model: normalizedModel,
+      host: '0.0.0.0',
+      port,
+      gpuMemoryUtilization,
+      tensorParallelSize,
+      maxModelLen,
+      maxNumSeqs,
+      swapSpace,
+      dtype,
+      quantization,
+      trustRemoteCode,
+      enforceEager,
+      kvCacheDtype,
+      loraPath,
+      loraName,
+      cwd: CONFIG.workspace,
+      pidFile: CONFIG.vllmPidFile,
+      logFile: CONFIG.vllmLogFile,
+    };
+
+    const { child, configPath } = await spawnPythonJsonScript({
+      pythonBin: CONFIG.pythonBin,
+      scriptPath,
+      payload,
       cwd: CONFIG.workspace,
       detached: true,
       stdio: ['ignore', outFd, outFd],
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      configDir: CONFIG.trainingConfigsDir,
+      configPrefix: `vllm-${port}`,
+      logLabel: `runtime-vllm:${port}`,
     });
 
     child.unref();
@@ -3134,6 +3305,7 @@ async function startVllmRuntime(params = {}) {
             model: normalizedModel,
             port,
             logFile: CONFIG.vllmLogFile,
+            configPath,
           });
           throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
         }
@@ -3149,6 +3321,7 @@ async function startVllmRuntime(params = {}) {
           model: normalizedModel,
           port,
           lastLines,
+          configPath,
         });
         throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
       }
@@ -3164,6 +3337,7 @@ async function startVllmRuntime(params = {}) {
         startedAt: nowIso(),
         port,
         logFile: CONFIG.vllmLogFile,
+        configPath,
         baseModel: baseModel || settings.baseModel,
         activeModelId,
         activeModelName,
@@ -3181,6 +3355,7 @@ async function startVllmRuntime(params = {}) {
       port,
       activeModelName,
       activeLoraName,
+      configPath,
     });
 
     return next.vllm;
@@ -3222,6 +3397,7 @@ async function stopVllmRuntime() {
       startedAt: null,
       port: CONFIG.vllmPort,
       logFile: CONFIG.vllmLogFile,
+      configPath: null,
       baseModel: settings.baseModel,
       activeModelId: null,
       activeModelName: null,
@@ -3700,6 +3876,128 @@ module.exports = {
 };
 
 
+path: /src/utils/python-runner.js
+----------------------------------------
+const path = require('path');
+const os = require('os');
+const fsp = require('fs/promises');
+const { spawn } = require('child_process');
+const { uid } = require('./ids');
+const logger = require('./logger');
+
+function maskSecrets(value) {
+  if (Array.isArray(value)) {
+    return value.map(maskSecrets);
+  }
+
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, v] of Object.entries(value)) {
+      const k = key.toLowerCase();
+      if (
+        k.includes('apikey') ||
+        k.includes('api_key') ||
+        k.includes('token') ||
+        k.includes('secret') ||
+        k.includes('password')
+      ) {
+        out[key] = v ? '***' : v;
+      } else {
+        out[key] = maskSecrets(v);
+      }
+    }
+    return out;
+  }
+
+  return value;
+}
+
+async function createTempJsonConfig(payload, options = {}) {
+  const dir = options.dir || path.join(os.tmpdir(), 'llm-lab-json');
+  const prefix = options.prefix || 'job';
+
+  await fsp.mkdir(dir, { recursive: true });
+
+  const filePath = path.join(dir, `${prefix}-${uid('cfg')}.json`);
+  await fsp.writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
+
+  return filePath;
+}
+
+function attachCleanup(child, filePath) {
+  const cleanup = async () => {
+    try {
+      await fsp.unlink(filePath);
+    } catch {
+      // ignore
+    }
+  };
+
+  child.once('exit', cleanup);
+  child.once('error', cleanup);
+}
+
+async function spawnPythonJsonScript({
+  pythonBin,
+  scriptPath,
+  payload,
+  cwd,
+  env,
+  detached = false,
+  stdio = 'pipe',
+  configDir,
+  configPrefix,
+  logPayload = true,
+  logLabel = null,
+}) {
+  const configPath = await createTempJsonConfig(payload, {
+    dir: configDir,
+    prefix: configPrefix,
+  });
+
+  if (logPayload) {
+    logger.info('Prepared Python JSON config', {
+      label: logLabel || path.basename(scriptPath),
+      scriptPath,
+      configPath,
+      payload: maskSecrets(payload),
+    });
+  } else {
+    logger.info('Prepared Python JSON config', {
+      label: logLabel || path.basename(scriptPath),
+      scriptPath,
+      configPath,
+    });
+  }
+
+  const child = spawn(pythonBin, ['-u', scriptPath, configPath], {
+    cwd,
+    env,
+    detached,
+    stdio,
+  });
+
+  logger.info('Starting Python script', {
+    label: logLabel || path.basename(scriptPath),
+    scriptPath,
+    configPath,
+    detached,
+  });
+
+  attachCleanup(child, configPath);
+
+  return {
+    child,
+    configPath,
+  };
+}
+
+module.exports = {
+  createTempJsonConfig,
+  spawnPythonJsonScript,
+};
+
+
 path: /utils/fs.js
 ----------------------------------------
 const fs = require('fs');
@@ -4017,8 +4315,8 @@ module.exports = {
 
 
 === SUMMARY ===
-included: 31
+included: 33
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 105655
+totalBytes(approx): 111449
