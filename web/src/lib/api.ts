@@ -57,6 +57,7 @@ export type Settings = {
   };
   wandb?: {
     enabled: boolean;
+    mode: 'online' | 'offline' | 'disabled';
     apiKey: string;
     project: string;
     entity: string;

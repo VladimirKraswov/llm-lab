@@ -14,6 +14,7 @@ export default function SettingsPage() {
   const [maxSeqLength, setMaxSeqLength] = useState('4096');
 
   const [wandbEnabled, setWandbEnabled] = useState(false);
+  const [wandbMode, setWandbMode] = useState<'online' | 'offline' | 'disabled'>('online');
   const [wandbApiKey, setWandbApiKey] = useState('');
   const [wandbProject, setWandbProject] = useState('llm-lab');
   const [wandbEntity, setWandbEntity] = useState('');
@@ -28,6 +29,7 @@ export default function SettingsPage() {
       const w = (settingsQuery.data as any).wandb;
       if (w) {
         setWandbEnabled(!!w.enabled);
+        setWandbMode(w.mode || 'online');
         setWandbApiKey(w.apiKey || '');
         setWandbProject(w.project || 'llm-lab');
         setWandbEntity(w.entity || '');
@@ -69,6 +71,7 @@ export default function SettingsPage() {
             inference: { model: inferenceModel, port: Number(port) },
             wandb: {
               enabled: wandbEnabled,
+              mode: wandbMode,
               apiKey: wandbApiKey,
               project: wandbProject,
               entity: wandbEntity,
@@ -97,6 +100,19 @@ export default function SettingsPage() {
             <label htmlFor="wandb-enabled" className="text-sm font-medium text-white cursor-pointer">
               Enable WandB Logging
             </label>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm text-slate-400">W&B Mode</label>
+            <select
+              value={wandbMode}
+              onChange={(e) => setWandbMode(e.target.value as any)}
+              className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="online">Online (sync to wandb.ai)</option>
+              <option value="offline">Offline (local logs only)</option>
+              <option value="disabled">Disabled</option>
+            </select>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
@@ -133,6 +149,7 @@ export default function SettingsPage() {
               onClick={() => mutation.mutate({
                 wandb: {
                   enabled: wandbEnabled,
+                  mode: wandbMode,
                   apiKey: wandbApiKey,
                   project: wandbProject,
                   entity: wandbEntity,

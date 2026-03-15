@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { api } from '../../lib/api';
+import { api, apiBase } from '../../lib/api';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
@@ -205,6 +205,36 @@ export default function JobsPage() {
                   <div className="rounded-xl bg-slate-950/40 p-3 md:col-span-2">
                     <div className="text-xs text-slate-500">Output dir</div>
                     <div className="mt-1 break-all text-sm text-white">{jobQuery.data.outputDir}</div>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
+                  <div className="text-sm font-medium text-white">Artifacts</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <a
+                      href={`${apiBase}/jobs/${jobQuery.data.id}/artifacts/metrics`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+                    >
+                      Download Metrics
+                    </a>
+                    <a
+                      href={`${apiBase}/jobs/${jobQuery.data.id}/artifacts/logs`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+                    >
+                      Download Logs
+                    </a>
+                    <a
+                      href={`${apiBase}/jobs/${jobQuery.data.id}/artifacts/wandb`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+                    >
+                      Download W&B Run (.tar.gz)
+                    </a>
                   </div>
                 </div>
 

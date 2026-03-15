@@ -52,7 +52,9 @@ if wandb_enabled:
         project=wandb_cfg.get("project", "llm-lab"),
         entity=wandb_cfg.get("entity"),
         name=os.path.basename(cfg["outputDir"]),
-        config=cfg
+        config=cfg,
+        dir=cfg["outputDir"],
+        mode=wandb_cfg.get("mode", "online")
     )
 
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -131,6 +133,10 @@ trainer = SFTTrainer(
 trainer.train()
 trainer.save_model(cfg["outputDir"])
 tokenizer.save_pretrained(cfg["outputDir"])
+
+# Export metrics
+with open(os.path.join(cfg["outputDir"], "metrics.json"), "w") as f:
+    json.dump(trainer.state.log_history, f, indent=2)
 
 print(json.dumps({
     "ok": True,
