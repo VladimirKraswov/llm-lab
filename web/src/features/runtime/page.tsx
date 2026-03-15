@@ -22,6 +22,8 @@ export default function RuntimePage() {
   const [maxModelLen, setMaxModelLen] = useState('8192');
   const [gpuMemoryUtilization, setGpuMemoryUtilization] = useState('0.9');
   const [tensorParallelSize, setTensorParallelSize] = useState('1');
+  const [maxNumSeqs, setMaxNumSeqs] = useState('256');
+  const [swapSpace, setSwapSpace] = useState('4');
   const [quantization, setQuantization] = useState<string>('');
   const [dtype, setDtype] = useState('auto');
   const [trustRemoteCode, setTrustRemoteCode] = useState(true);
@@ -36,6 +38,8 @@ export default function RuntimePage() {
       setGpuMemoryUtilization(String(settingsQuery.data.inference.gpuMemoryUtilization));
       setTensorParallelSize(String(settingsQuery.data.inference.tensorParallelSize));
       setQuantization(settingsQuery.data.inference.quantization || '');
+      setMaxNumSeqs(String(settingsQuery.data.inference.maxNumSeqs || '256'));
+      setSwapSpace(String(settingsQuery.data.inference.swapSpace || '4'));
       setDtype(settingsQuery.data.inference.dtype || 'auto');
       setTrustRemoteCode(!!settingsQuery.data.inference.trustRemoteCode);
       setEnforceEager(!!settingsQuery.data.inference.enforceEager);
@@ -132,6 +136,17 @@ export default function RuntimePage() {
               </div>
             </div>
 
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Max parallel seqs</label>
+              <Input value={maxNumSeqs} onChange={(e) => setMaxNumSeqs(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Swap space (GB)</label>
+              <Input value={swapSpace} onChange={(e) => setSwapSpace(e.target.value)} />
+            </div>
+          </div>
+
             <div className="grid gap-4 md:grid-cols-2">
               <div className="flex items-center gap-3">
                 <input
@@ -180,6 +195,8 @@ export default function RuntimePage() {
                     gpuMemoryUtilization: Number(gpuMemoryUtilization),
                     tensorParallelSize: Number(tensorParallelSize),
                     quantization: quantization || null,
+                    maxNumSeqs: Number(maxNumSeqs),
+                    swapSpace: Number(swapSpace),
                     dtype,
                     trustRemoteCode,
                     enforceEager,

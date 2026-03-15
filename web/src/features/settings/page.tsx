@@ -12,6 +12,8 @@ export default function SettingsPage() {
   const [inferenceModel, setInferenceModel] = useState('');
   const [port, setPort] = useState('8000');
   const [maxSeqLength, setMaxSeqLength] = useState('4096');
+  const [maxNumSeqs, setMaxNumSeqs] = useState('256');
+  const [swapSpace, setSwapSpace] = useState('4');
   const [quantization, setQuantization] = useState<string>('');
   const [dtype, setDtype] = useState('auto');
   const [trustRemoteCode, setTrustRemoteCode] = useState(true);
@@ -31,6 +33,8 @@ export default function SettingsPage() {
       setPort(String(settingsQuery.data.inference.port));
       setMaxSeqLength(String(settingsQuery.data.qlora.maxSeqLength));
       setQuantization(settingsQuery.data.inference.quantization || '');
+      setMaxNumSeqs(String(settingsQuery.data.inference.maxNumSeqs || '256'));
+      setSwapSpace(String(settingsQuery.data.inference.swapSpace || '4'));
       setDtype(settingsQuery.data.inference.dtype || 'auto');
       setTrustRemoteCode(!!settingsQuery.data.inference.trustRemoteCode);
       setEnforceEager(!!settingsQuery.data.inference.enforceEager);
@@ -107,6 +111,16 @@ export default function SettingsPage() {
             </div>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Max parallel seqs</label>
+              <Input value={maxNumSeqs} onChange={(e) => setMaxNumSeqs(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Swap space (GB)</label>
+              <Input value={swapSpace} onChange={(e) => setSwapSpace(e.target.value)} />
+            </div>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
             <div className="flex items-center gap-3">
               <input
                 id="trust-remote-code"
@@ -150,6 +164,8 @@ export default function SettingsPage() {
               model: inferenceModel,
               port: Number(port),
               quantization: quantization || null,
+              maxNumSeqs: Number(maxNumSeqs),
+              swapSpace: Number(swapSpace),
               dtype,
               trustRemoteCode,
               enforceEager,

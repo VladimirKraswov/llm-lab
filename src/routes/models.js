@@ -68,6 +68,8 @@ router.post('/:id/activate', async (req, res) => {
       trustRemoteCode: inf.trustRemoteCode,
       enforceEager: inf.enforceEager,
       kvCacheDtype: inf.kvCacheDtype,
+      maxNumSeqs: inf.maxNumSeqs,
+      swapSpace: inf.swapSpace,
       baseModel: item.name,
       activeModelId: item.id,
       activeModelName: item.name,

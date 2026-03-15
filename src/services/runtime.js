@@ -13,8 +13,28 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function startVllmRuntime({
-  model,
+function validateInferenceParams(params) {
+  if (params.gpuMemoryUtilization !== undefined && (params.gpuMemoryUtilization < 0 || params.gpuMemoryUtilization > 1)) {
+    throw new Error('gpuMemoryUtilization must be between 0 and 1');
+  }
+  if (params.maxModelLen !== undefined && (!Number.isInteger(params.maxModelLen) || params.maxModelLen < 1)) {
+    throw new Error('maxModelLen must be a positive integer');
+  }
+  if (params.maxNumSeqs !== undefined && (!Number.isInteger(params.maxNumSeqs) || params.maxNumSeqs < 1)) {
+    throw new Error('maxNumSeqs must be a positive integer');
+  }
+  if (params.swapSpace !== undefined && (!Number.isInteger(params.swapSpace) || params.swapSpace < 0)) {
+    throw new Error('swapSpace must be a non-negative integer');
+  }
+  if (params.tensorParallelSize !== undefined && (!Number.isInteger(params.tensorParallelSize) || params.tensorParallelSize < 1)) {
+    throw new Error('tensorParallelSize must be a positive integer');
+  }
+}
+
+async function startVllmRuntime(params) {
+  validateInferenceParams(params);
+  const {
+    model,
   port,
   maxModelLen,
   gpuMemoryUtilization,
@@ -31,6 +51,8 @@ async function startVllmRuntime({
   trustRemoteCode = true,
   enforceEager = false,
   kvCacheDtype = 'auto',
+  maxNumSeqs = 256,
+  swapSpace = 4,
 }) {
   if (!fs.existsSync(CONFIG.vllmBin)) {
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
@@ -64,6 +86,10 @@ async function startVllmRuntime({
     String(tensorParallelSize),
     '--max-model-len',
     String(maxModelLen),
+    '--max-num-seqs',
+    String(maxNumSeqs),
+    '--swap-space',
+    String(swapSpace),
     '--dtype',
     String(dtype || 'auto'),
   ];
@@ -123,7 +149,7 @@ async function startVllmRuntime({
   if (!started) {
     await killProcessGroup(child.pid, 'SIGKILL');
     const logs = await readText(CONFIG.vllmLogFile, '');
-    const lastLines = logs.split('\n').slice(-10).join('\n');
+    const lastLines = logs.split('\n').slice(-30).join('\n');
     logger.error(`vLLM did not become healthy within timeout`, { model, port, lastLines });
     throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
   }
