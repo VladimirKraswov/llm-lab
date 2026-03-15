@@ -60,6 +60,22 @@ router.post('/vllm/stop', async (_req, res) => {
   res.json({ ok: true, runtime: await stopVllmRuntime() });
 });
 
+router.get('/logs', async (req, res) => {
+  try {
+    const { readText } = require('../utils/fs');
+    const tail = Math.max(20, Math.min(2000, Number(req.query.tail || 200)));
+    const text = await readText(CONFIG.vllmLogFile, '');
+    const lines = text.split('\n');
+
+    res.json({
+      logFile: CONFIG.vllmLogFile,
+      content: lines.slice(-tail).join('\n'),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 router.post('/use-job-output', async (req, res) => {
   try {
     const { jobId, port, maxModelLen, gpuMemoryUtilization, tensorParallelSize } = req.body || {};
@@ -98,6 +114,9 @@ router.post('/use-job-output', async (req, res) => {
       loraPath = lora.adapterPath;
       loraName = lora.name;
     }
+
+    const logger = require('../utils/logger');
+    logger.info(`Using job output in runtime`, { jobId, activeLoraName });
 
     const runtime = await startVllmRuntime({
       model: runtimeModelPath,

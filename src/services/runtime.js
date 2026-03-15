@@ -90,6 +90,7 @@ async function startVllmRuntime({
     }
 
     if (!isPidRunning(child.pid)) {
+      logger.error(`vLLM exited during startup`, { model, port, logFile: CONFIG.vllmLogFile });
       throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
     }
 
@@ -98,6 +99,7 @@ async function startVllmRuntime({
 
   if (!started) {
     await killProcessGroup(child.pid, 'SIGKILL');
+    logger.error(`vLLM did not become healthy within timeout`, { model, port, logFile: CONFIG.vllmLogFile });
     throw new Error(`vLLM did not become healthy within timeout; check ${CONFIG.vllmLogFile}`);
   }
 

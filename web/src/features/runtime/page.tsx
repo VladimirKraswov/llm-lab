@@ -15,6 +15,7 @@ export default function RuntimePage() {
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const runtimeQuery = useQuery({ queryKey: ['runtime'], queryFn: api.getRuntime, refetchInterval: 5000 });
   const healthQuery = useQuery({ queryKey: ['runtime-health'], queryFn: api.getRuntimeHealth, refetchInterval: 5000 });
+  const logsQuery = useQuery({ queryKey: ['runtime-logs'], queryFn: () => api.getRuntimeLogs(400), refetchInterval: 3000 });
 
   const [model, setModel] = useState('');
   const [port, setPort] = useState('8000');
@@ -169,8 +170,14 @@ export default function RuntimePage() {
               <span className="text-slate-400">Started</span>
               <span className="text-white">{fmtDate(runtimeQuery.data?.vllm.startedAt)}</span>
             </div>
-            <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 text-xs text-slate-300">
+            <div className="mt-2 text-xs font-medium text-slate-400">Health output</div>
+            <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 text-[10px] leading-tight text-slate-300">
               {healthQuery.data?.raw || 'No health output'}
+            </pre>
+
+            <div className="mt-2 text-xs font-medium text-slate-400">vLLM process logs</div>
+            <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 text-[10px] leading-tight text-slate-300">
+              {logsQuery.data?.content || 'No logs yet'}
             </pre>
 
             {healthQuery.data?.ok && (

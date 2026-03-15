@@ -341,6 +341,8 @@ export const api = {
     request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/runtime/vllm/stop', {
       method: 'POST',
     }),
+  getRuntimeLogs: (tail = 200) =>
+    request<{ logFile: string; content: string }>(`/runtime/logs?tail=${tail}`),
 
   getLogs: (params: { level?: string; q?: string; limit?: number }) => {
     const search = new URLSearchParams();
