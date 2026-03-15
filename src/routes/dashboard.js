@@ -19,6 +19,7 @@ router.get('/summary', async (_req, res) => {
     health: {
       ok: true,
       python: exists(CONFIG.pythonBin),
+      transformersPython: exists(CONFIG.transformersPythonBin),
       vllmBin: exists(CONFIG.vllmBin),
       time: new Date().toISOString(),
     },

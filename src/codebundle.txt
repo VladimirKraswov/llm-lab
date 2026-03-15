@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebundleignore
-generated: 2026-03-15T11:22:26.177Z
+generated: 2026-03-15T16:30:43.089Z
 
 
 
@@ -478,6 +478,156 @@ if __name__ == "__main__":
         sys.exit(1)
 
 
+path: /python/start_transformers.py
+----------------------------------------
+import json
+import sys
+import os
+import time
+import torch
+import traceback
+from flask import Flask, request, jsonify, Response
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: start_transformers.py <config.json>")
+        sys.exit(1)
+
+    with open(sys.argv[1], "r") as f:
+        cfg = json.load(f)
+
+    model_id = cfg["model"]
+    port = cfg.get("port", 8000)
+    dtype = cfg.get("dtype", "auto")
+    trust_remote_code = cfg.get("trustRemoteCode", True)
+    lora_path = cfg.get("loraPath")
+
+    print(f"Loading Transformers model: {model_id}")
+    print(f"DType: {dtype}, Trust Remote Code: {trust_remote_code}")
+
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        torch_dtype = torch.float16 if dtype == "half" else "auto"
+        if dtype == "bfloat16":
+            torch_dtype = torch.bfloat16
+        elif dtype == "float32" or dtype == "float":
+            torch_dtype = torch.float32
+
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust_remote_code)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            device_map="auto",
+            torch_dtype=torch_dtype,
+            trust_remote_code=trust_remote_code
+        )
+
+        if lora_path:
+            print(f"Loading LoRA adapter from {lora_path}")
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(model, lora_path)
+
+        print("Model loaded successfully.")
+    except Exception as e:
+        print("FATAL ERROR: Failed to load model")
+        traceback.print_exc()
+        sys.exit(1) # Fail fast
+
+    app = Flask(__name__)
+
+    @app.route("/health")
+    def health():
+        return jsonify({"status": "ok", "model": model_id})
+
+    @app.route("/v1/chat/completions", methods=["POST"])
+    def chat():
+        data = request.json
+        messages = data.get("messages", [])
+        temperature = float(data.get("temperature", 0.7))
+        max_tokens = int(data.get("max_tokens", 512))
+        stream = bool(data.get("stream", False))
+
+        # Basic prompt construction (simple chat template)
+        prompt = ""
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                prompt += f"System: {content}\n"
+            elif role == "user":
+                prompt += f"User: {content}\n"
+            elif role == "assistant":
+                prompt += f"Assistant: {content}\n"
+        prompt += "Assistant: "
+
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+        if stream:
+            def generate():
+                # Extremely simplified streaming for Transformers
+                # In production, use TextIteratorStreamer
+                from transformers import TextIteratorStreamer
+                from threading import Thread
+
+                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+                generation_kwargs = dict(
+                    inputs,
+                    streamer=streamer,
+                    max_new_tokens=max_tokens,
+                    do_sample=temperature > 0,
+                    temperature=temperature if temperature > 0 else 1.0,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+                thread = Thread(target=model.generate, kwargs=generation_kwargs)
+                thread.start()
+
+                for new_text in streamer:
+                    if not new_text: continue
+                    chunk = {
+                        "choices": [{"delta": {"content": new_text}, "index": 0, "finish_reason": None}]
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+
+                yield "data: [DONE]\n\n"
+
+            return Response(generate(), mimetype="text/event-stream")
+        else:
+            with torch.no_grad():
+                output_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    do_sample=temperature > 0,
+                    temperature=temperature if temperature > 0 else 1.0,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+
+            input_len = inputs.input_ids.shape[1]
+            generated_ids = output_ids[0][input_len:]
+            content = tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+            return jsonify({
+                "choices": [{
+                    "message": {"role": "assistant", "content": content},
+                    "index": 0,
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": input_len,
+                    "completion_tokens": len(generated_ids),
+                    "total_tokens": input_len + len(generated_ids)
+                }
+            })
+
+    print(f"Starting Transformers server on port {port}")
+    app.run(host="0.0.0.0", port=port, threaded=True)
+
+if __name__ == "__main__":
+    main()
+
+
 path: /python/start_vllm.py
 ----------------------------------------
 import json
@@ -550,6 +700,8 @@ def main():
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+
+    print(f"vLLM args: {args}")
 
     # Замещаем текущий процесс процессом vLLM
     os.chdir(cwd)
@@ -1432,8 +1584,9 @@ path: /routes/runtime.js
 const express = require('express');
 const { getSettings, getRuntime, getJobs, getModelById, getLoraByJobId } = require('../services/state');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
-const { ensureMergedLora } = require('../services/loras');
 const { CONFIG } = require('../config');
+const logger = require('../utils/logger');
+const providers = require('../services/providers');
 
 const router = express.Router();
 
@@ -1441,18 +1594,35 @@ router.get('/', async (_req, res) => {
   res.json(await getRuntime());
 });
 
+router.get('/providers', async (_req, res) => {
+  try {
+    const available = await providers.getAvailableProviders();
+    const runtime = await getRuntime();
+    const settings = await getSettings();
+
+    res.json({
+      available,
+      selected: settings.inference.provider || 'auto',
+      active: runtime.vllm?.providerResolved || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/health', async (_req, res) => {
   try {
     const runtime = await getRuntime();
     const settings = await getSettings();
     const port = runtime.vllm?.port || settings.inference.port || CONFIG.vllmPort;
+    const providerId = runtime.vllm?.providerResolved || 'vllm';
+    const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
 
-    const response = await fetch(`http://127.0.0.1:${port}/health`);
-    const text = await response.text();
+    const h = await provider.health({ port });
 
     res.json({
-      ok: response.ok,
-      raw: text,
+      ok: h.ok,
+      raw: h.status,
       port,
     });
   } catch (err) {
@@ -1486,6 +1656,7 @@ router.post('/vllm/start', async (req, res) => {
       activeModelName: inf.model,
       activeLoraId: null,
       activeLoraName: null,
+      provider: inf.provider,
     });
 
     res.json({ ok: true, runtime });
@@ -1553,7 +1724,6 @@ router.post('/use-job-output', async (req, res) => {
       loraName = lora.name;
     }
 
-    const logger = require('../utils/logger');
     logger.info(`Using job output in runtime`, { jobId, activeLoraName });
 
     const runtime = await startVllmRuntime({
@@ -1576,6 +1746,7 @@ router.post('/use-job-output', async (req, res) => {
       activeLoraName,
       loraPath,
       loraName,
+      provider: inf.provider,
     });
 
     res.json({
@@ -1585,7 +1756,6 @@ router.post('/use-job-output', async (req, res) => {
     });
   } catch (err) {
     const errorMsg = String(err.message || err);
-    const logger = require('../utils/logger');
     logger.error(`Failed to use job output in runtime`, { error: errorMsg });
     res.status(500).json({ error: errorMsg });
   }
@@ -1593,36 +1763,44 @@ router.post('/use-job-output', async (req, res) => {
 
 router.post('/chat', async (req, res) => {
   try {
-    const settings = await getSettings();
     const runtime = await getRuntime();
-    const port = runtime.vllm?.port || settings.inference.port || CONFIG.vllmPort;
+    if (!runtime.vllm?.pid) {
+      return res.status(400).json({ error: 'Runtime is not running' });
+    }
 
-    const model = req.body?.model || runtime.vllm?.model || settings.inference.model;
+    const providerId = runtime.vllm.providerResolved;
+    const provider = providers.PROVIDERS[providerId];
+    if (!provider) {
+      return res.status(500).json({ error: `Active provider ${providerId} not found` });
+    }
+
     const messages = req.body?.messages;
-    const stream = !!req.body?.stream;
-
     if (!Array.isArray(messages) || !messages.length) {
       return res.status(400).json({ error: 'messages are required' });
     }
 
-    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: req.body?.temperature ?? 0.7,
-        max_tokens: req.body?.max_tokens ?? 512,
-        stream,
-      }),
+    const payload = {
+      model: req.body?.model || runtime.vllm.model,
+      messages,
+      temperature: req.body?.temperature ?? 0.7,
+      max_tokens: req.body?.max_tokens ?? 512,
+      stream: !!req.body?.stream,
+    };
+
+    logger.info('Routing chat request', {
+      provider: providerId,
+      model: payload.model,
+      stream: payload.stream,
     });
+
+    const response = await provider.chat(runtime.vllm, payload);
 
     if (!response.ok) {
       const text = await response.text();
-      return res.status(500).json({ error: text || 'inference failed', port });
+      return res.status(500).json({ error: text || 'Inference failed', provider: providerId });
     }
 
-    if (stream) {
+    if (payload.stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -1637,9 +1815,10 @@ router.post('/chat', async (req, res) => {
     } else {
       const text = await response.text();
       try {
-        return res.json(JSON.parse(text));
-      } catch {
-        return res.status(500).json({ error: 'invalid inference response', raw: text, port });
+        const parsed = JSON.parse(text);
+        return res.json(parsed);
+      } catch (e) {
+        return res.status(500).json({ error: 'Invalid response from provider', raw: text });
       }
     }
   } catch (err) {
@@ -2270,7 +2449,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
   };
 
   const outFd = fs.openSync(logFile, 'a');
-  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'train.py');
+  const scriptPath = path.join(__dirname, '..', 'python', 'train.py');
 
   const { child, configPath } = await spawnPythonJsonScript({
     pythonBin: CONFIG.pythonBin,
@@ -2524,7 +2703,7 @@ async function buildMergedLora(loraId) {
   });
   emitEvent('lora_updated', next0);
 
-  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'merge_lora.py');
+  const scriptPath = path.join(__dirname, '..', 'python', 'merge_lora.py');
   const payload = {
     adapterPath: item.adapterPath,
     outputDir: mergedPath,
@@ -2838,7 +3017,7 @@ async function downloadModel({ repoId, name }) {
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'download_model.py');
+  const scriptPath = path.join(__dirname, '..', 'python', 'download_model.py');
   const payload = {
     repoId,
     localDir: modelPath,
@@ -2986,7 +3165,7 @@ async function quantizeModel({ modelId, method, name }) {
     throw new Error(`Quantization method ${method} not implemented in this version`);
   }
 
-  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', scriptFile);
+  const scriptPath = path.join(__dirname, '..', 'python', scriptFile);
   const outFd = fs.openSync(logFile, 'a');
 
   const { child, configPath } = await spawnPythonJsonScript({
@@ -3093,6 +3272,440 @@ module.exports = {
 };
 
 
+path: /services/providers/index.js
+----------------------------------------
+const logger = require('../../utils/logger');
+const vllm = require('./vllm');
+const transformers = require('./transformers');
+
+const PROVIDERS = {
+  vllm,
+  transformers,
+};
+
+async function getAvailableProviders() {
+  const result = [
+    {
+      id: 'auto',
+      label: 'Auto',
+      description: 'Automatically select the best provider for the model',
+      available: true
+    }
+  ];
+
+  for (const p of Object.values(PROVIDERS)) {
+    const availability = await p.isAvailable();
+    result.push({
+      id: p.id,
+      label: p.label,
+      description: p.description,
+      available: availability.available,
+      reason: availability.reason || null,
+    });
+  }
+
+  return result;
+}
+
+async function resolveProvider(requestedId, modelInfo) {
+  const available = await getAvailableProviders();
+
+  let targetId = requestedId;
+  if (!targetId || targetId === 'auto') {
+    // Auto-selection logic
+    if (modelInfo.modelType === 'mixtral' && modelInfo.quantization === 'awq') {
+      const trans = available.find(p => p.id === 'transformers');
+      if (trans && trans.available) {
+        targetId = 'transformers';
+      } else {
+        targetId = 'vllm';
+      }
+    } else {
+      targetId = 'vllm';
+    }
+  }
+
+  const provider = PROVIDERS[targetId];
+  if (!provider) {
+    throw new Error(`Provider ${targetId} not found`);
+  }
+
+  const availability = await provider.isAvailable();
+  if (!availability.available) {
+    // If auto selected a provider that is not available, we have a problem.
+    // In resolveProvider, we should probably fail if manual choice is unavailable,
+    // but if auto choice is unavailable, maybe fallback?
+    // But the requirement says: "если transformers unavailable, не пытаться его стартовать молча"
+
+    if (requestedId && requestedId !== 'auto') {
+        throw new Error(`Provider ${targetId} is not available: ${availability.reason}`);
+    } else {
+        // Auto-selection fallback
+        if (targetId === 'transformers') {
+            logger.warn('Preferred provider transformers unavailable, falling back to vllm', { reason: availability.reason });
+            const vllmProv = PROVIDERS['vllm'];
+            const vllmAvail = await vllmProv.isAvailable();
+            if (!vllmAvail.available) {
+                throw new Error(`No available providers. vLLM: ${vllmAvail.reason}, Transformers: ${availability.reason}`);
+            }
+            targetId = 'vllm';
+        } else {
+            throw new Error(`Provider ${targetId} is not available: ${availability.reason}`);
+        }
+    }
+  }
+
+  const resolvedProvider = PROVIDERS[targetId];
+  const compatibility = await resolvedProvider.resolveCompatibility(modelInfo);
+
+  return {
+    provider: resolvedProvider,
+    compatibility,
+  };
+}
+
+module.exports = {
+  PROVIDERS,
+  getAvailableProviders,
+  resolveProvider,
+};
+
+
+path: /services/providers/transformers.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+const { CONFIG } = require('../../config');
+const logger = require('../../utils/logger');
+const { runText, isPidRunning, killProcessGroup } = require('../../utils/proc');
+const { spawnPythonJsonScript } = require('../../utils/python-runner');
+
+class TransformersProvider {
+  constructor() {
+    this.id = 'transformers';
+    this.label = 'Transformers';
+    this.description = 'Fallback inference using HuggingFace Transformers (Slower, but compatible with more models)';
+  }
+
+  async isAvailable() {
+    const checkScript = `
+import importlib.util
+import sys
+
+def get_version(name):
+    try:
+        module = importlib.import_module(name)
+        return getattr(module, "__version__", "unknown")
+    except ImportError:
+        return None
+
+packages = ["transformers", "torch", "flask", "peft"]
+missing = [p for p in packages if get_version(p) is None]
+
+if missing:
+    print(f"missing:{','.join(missing)}")
+    sys.exit(0)
+
+a_ver = get_version("awq")
+if a_ver:
+    from packaging import version
+    if version.parse(a_ver) < version.parse("0.1.8"):
+        print(f"autoawq_old:{a_ver}")
+    else:
+        print("ok")
+else:
+    print("ok")
+`;
+    try {
+      const r = runText(CONFIG.pythonBin, ['-c', checkScript]);
+      const out = (r.stdout || '').trim();
+
+      if (out.startsWith('missing:')) {
+        const pkgs = out.split(':')[1];
+        return { available: false, reason: `Missing required Python packages: ${pkgs}` };
+      }
+      if (out.startsWith('autoawq_old')) {
+        const ver = out.split(':')[1];
+        return { available: false, reason: `autoawq >= 0.1.8 is required for AWQ models (found ${ver})` };
+      }
+      if (out === 'ok') {
+        return { available: true };
+      }
+      return { available: false, reason: `Unexpected dependency check output: ${out}` };
+    } catch (err) {
+      return { available: false, reason: `Dependency check failed: ${err.message}` };
+    }
+  }
+
+  async getAvailabilityDetails() {
+    return this.isAvailable();
+  }
+
+  async resolveCompatibility(modelInfo) {
+    if (modelInfo.modelType === 'mixtral' && modelInfo.quantization === 'awq') {
+      return { compatible: true, risk: 'low', preferred: true };
+    }
+    return { compatible: true, risk: 'medium', warning: 'Transformers provider is generally slower than vLLM.' };
+  }
+
+  async start(config) {
+    const scriptPath = path.join(__dirname, '..', '..', 'python', 'start_transformers.py');
+
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(`Transformers provider script not found at ${scriptPath}`);
+    }
+
+    const payload = {
+      model: config.model,
+      port: config.port,
+      dtype: config.dtype,
+      trustRemoteCode: config.trustRemoteCode,
+      loraPath: config.loraPath,
+    };
+
+    const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
+    const { child } = await spawnPythonJsonScript({
+      pythonBin: CONFIG.pythonBin,
+      scriptPath,
+      payload,
+      cwd: CONFIG.workspace,
+      detached: true,
+      stdio: ['ignore', outFd, outFd],
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      configDir: CONFIG.trainingConfigsDir,
+      configPrefix: `transformers-${config.port}`,
+      logLabel: `runtime-transformers:${config.port}`,
+    });
+
+    child.unref();
+    return child.pid;
+  }
+
+  async stop(runtimeState) {
+    const pid = runtimeState.pid;
+    if (pid && isPidRunning(pid)) {
+      await killProcessGroup(pid);
+      for (let i = 0; i < 20; i++) {
+        if (!isPidRunning(pid)) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+      if (isPidRunning(pid)) {
+        await killProcessGroup(pid, 'SIGKILL');
+      }
+    }
+  }
+
+  async health(runtimeState) {
+    const port = runtimeState.port;
+    const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
+    return { ok: r.ok, status: r.stdout || r.stderr };
+  }
+
+  async probe(runtimeState) {
+    const { port, model } = runtimeState;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'test' }],
+          max_tokens: 5,
+        }),
+      });
+
+      if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || '';
+      if (!content.trim()) {
+        return { ok: false, error: 'Empty response from model' };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
+
+  async chat(runtimeState, payload) {
+    const port = runtimeState.port;
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return response;
+  }
+}
+
+module.exports = new TransformersProvider();
+
+
+path: /services/providers/vllm.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+const { CONFIG } = require('../../config');
+const logger = require('../../utils/logger');
+const { runText, isPidRunning, killProcessGroup } = require('../../utils/proc');
+const { spawnPythonJsonScript } = require('../../utils/python-runner');
+
+class VllmProvider {
+  constructor() {
+    this.id = 'vllm';
+    this.label = 'vLLM';
+    this.description = 'High-throughput serving with vLLM (Recommended for most models)';
+  }
+
+  async isAvailable() {
+    if (!fs.existsSync(CONFIG.vllmBin)) {
+      return { available: false, reason: `vLLM binary not found at ${CONFIG.vllmBin}` };
+    }
+    return { available: true };
+  }
+
+  async getAvailabilityDetails() {
+    return this.isAvailable();
+  }
+
+  async resolveCompatibility(modelInfo) {
+    // Mixtral AWQ is risky in vLLM according to the task
+    if (modelInfo.modelType === 'mixtral' && modelInfo.quantization === 'awq') {
+      return {
+        compatible: true,
+        risk: 'high',
+        warning: 'Mixtral-AWQ might return empty responses in some vLLM versions. Transformers provider is preferred for this model.'
+      };
+    }
+    return { compatible: true, risk: 'low' };
+  }
+
+  async start(config) {
+    const {
+      model,
+      port,
+      maxModelLen,
+      gpuMemoryUtilization,
+      tensorParallelSize,
+      maxNumSeqs,
+      swapSpace,
+      dtype,
+      quantization,
+      trustRemoteCode,
+      enforceEager,
+      kvCacheDtype,
+      loraPath,
+      loraName,
+      modelConfigPath
+    } = config;
+
+    const scriptPath = path.join(__dirname, '..', '..', 'python', 'start_vllm.py');
+    const payload = {
+      vllmBin: CONFIG.vllmBin,
+      model,
+      host: '0.0.0.0',
+      port,
+      gpuMemoryUtilization,
+      tensorParallelSize,
+      maxModelLen,
+      maxNumSeqs,
+      swapSpace,
+      dtype,
+      quantization,
+      trustRemoteCode,
+      enforceEager,
+      kvCacheDtype,
+      loraPath,
+      loraName,
+      cwd: CONFIG.workspace,
+      pidFile: CONFIG.vllmPidFile,
+      logFile: CONFIG.vllmLogFile,
+      modelConfigPath,
+    };
+
+    const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
+    const { child } = await spawnPythonJsonScript({
+      pythonBin: CONFIG.pythonBin,
+      scriptPath,
+      payload,
+      cwd: CONFIG.workspace,
+      detached: true,
+      stdio: ['ignore', outFd, outFd],
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      configDir: CONFIG.trainingConfigsDir,
+      configPrefix: `vllm-${port}`,
+      logLabel: `runtime-vllm:${port}`,
+    });
+
+    child.unref();
+    return child.pid;
+  }
+
+  async stop(runtimeState) {
+    const pid = runtimeState.pid;
+    if (pid && isPidRunning(pid)) {
+      await killProcessGroup(pid);
+      // Wait a bit
+      for (let i = 0; i < 20; i++) {
+        if (!isPidRunning(pid)) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+      if (isPidRunning(pid)) {
+        await killProcessGroup(pid, 'SIGKILL');
+      }
+    }
+  }
+
+  async health(runtimeState) {
+    const port = runtimeState.port;
+    const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
+    return { ok: r.ok, status: r.stdout || r.stderr };
+  }
+
+  async probe(runtimeState) {
+    const { port, model } = runtimeState;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'test' }],
+          max_tokens: 5,
+        }),
+      });
+
+      if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || '';
+      const tokens = data.usage?.completion_tokens || 0;
+
+      if (tokens > 0 && !content.trim()) {
+        return { ok: false, error: 'Empty response despite token generation (vLLM compatibility issue)' };
+      }
+      if (!content.trim()) {
+        return { ok: false, error: 'Empty response from model' };
+      }
+
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
+
+  async chat(runtimeState, payload) {
+    const port = runtimeState.port;
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return response;
+  }
+}
+
+module.exports = new VllmProvider();
+
+
 path: /services/runtime.js
 ----------------------------------------
 const fs = require('fs');
@@ -3100,13 +3713,13 @@ const fsp = require('fs/promises');
 const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso } = require('../utils/ids');
-const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
+const { isPidRunning } = require('../utils/proc');
 const { getRuntime, saveRuntime, getSettings } = require('./state');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { readText, removeFile } = require('../utils/fs');
-const { spawnPythonJsonScript } = require('../utils/python-runner');
+const providers = require('./providers');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -3158,22 +3771,138 @@ function validateInferenceParams(params = {}) {
   }
 }
 
+function mapTorchDtypeToVllm(torchDtype) {
+  switch (String(torchDtype || '').toLowerCase()) {
+    case 'float16':
+      return 'half';
+    case 'float32':
+      return 'float';
+    case 'bfloat16':
+      return 'bfloat16';
+    default:
+      return null;
+  }
+}
+
+function resolveModelConfig(modelRef) {
+  const result = {
+    exists: false,
+    configPath: null,
+    raw: null,
+    detected: {
+      quantization: null,
+      dtype: null,
+      maxModelLen: null,
+      slidingWindow: null,
+      modelType: null,
+    },
+  };
+
+  try {
+    const normalized = String(modelRef || '').trim();
+    if (!normalized) return result;
+
+    const configPath = path.join(normalized, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      return result;
+    }
+
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const quantMethod = raw?.quantization_config?.quant_method || null;
+    const torchDtype = raw?.torch_dtype || null;
+    const maxPositionEmbeddings = Number(raw?.max_position_embeddings || 0) || null;
+    const slidingWindow = Number(raw?.sliding_window || 0) || null;
+    const modelType = raw?.model_type || null;
+
+    result.exists = true;
+    result.configPath = configPath;
+    result.raw = raw;
+    result.detected = {
+      quantization: quantMethod ? String(quantMethod).toLowerCase() : null,
+      dtype: mapTorchDtypeToVllm(torchDtype),
+      maxModelLen: maxPositionEmbeddings,
+      slidingWindow,
+      modelType,
+    };
+
+    return result;
+  } catch (err) {
+    logger.warn('Failed to read model config.json', {
+      model: modelRef,
+      error: String(err.message || err),
+    });
+    return result;
+  }
+}
+
+function hasOwn(obj, key) {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function resolveQuantization(params, inf, detected) {
+  if (hasOwn(params, 'quantization')) {
+    return params.quantization;
+  }
+  if (inf.quantization !== undefined && inf.quantization !== null && inf.quantization !== '') {
+    return inf.quantization;
+  }
+  return detected.quantization ?? null;
+}
+
+function resolveDtype(params, inf, detected) {
+  if (hasOwn(params, 'dtype') && params.dtype && params.dtype !== 'auto') {
+    return params.dtype;
+  }
+  if (inf.dtype && inf.dtype !== 'auto') {
+    return inf.dtype;
+  }
+
+  // Fallback for AWQ models: use half if auto is requested
+  if (detected.quantization === 'awq' && (!detected.dtype || detected.dtype === 'auto')) {
+    return 'half';
+  }
+
+  return detected.dtype ?? 'auto';
+}
+
+function resolveMaxModelLen(params, inf, detected) {
+  const requested = Number(params.maxModelLen ?? inf.maxModelLen ?? 8192);
+  const limit = detected.maxModelLen;
+
+  if (limit && requested > limit) {
+    logger.warn('Requested maxModelLen exceeds model limit, clamping', {
+      requested,
+      limit,
+    });
+    return limit;
+  }
+
+  return requested;
+}
+
 async function startVllmRuntime(params = {}) {
   const settings = await getSettings();
   const inf = settings.inference || {};
 
+  const requestedModel = String(params.model ?? inf.model ?? settings.baseModel ?? '').trim();
+  if (!requestedModel) {
+    throw new Error('model is required');
+  }
+
+  const modelCfg = resolveModelConfig(requestedModel);
+
   const merged = {
-    model: params.model ?? inf.model ?? settings.baseModel,
+    model: requestedModel,
     port: Number(params.port ?? inf.port ?? CONFIG.vllmPort),
-    maxModelLen: Number(params.maxModelLen ?? inf.maxModelLen ?? 8192),
+    maxModelLen: resolveMaxModelLen(params, inf, modelCfg.detected),
     gpuMemoryUtilization: Number(
       params.gpuMemoryUtilization ?? inf.gpuMemoryUtilization ?? 0.9,
     ),
     tensorParallelSize: Number(params.tensorParallelSize ?? inf.tensorParallelSize ?? 1),
     maxNumSeqs: Number(params.maxNumSeqs ?? inf.maxNumSeqs ?? 256),
     swapSpace: Number(params.swapSpace ?? inf.swapSpace ?? 4),
-    quantization: params.quantization ?? inf.quantization ?? null,
-    dtype: params.dtype ?? inf.dtype ?? 'auto',
+    quantization: resolveQuantization(params, inf, modelCfg.detected),
+    dtype: resolveDtype(params, inf, modelCfg.detected),
     trustRemoteCode: params.trustRemoteCode ?? inf.trustRemoteCode ?? true,
     enforceEager: params.enforceEager ?? inf.enforceEager ?? false,
     kvCacheDtype: params.kvCacheDtype ?? inf.kvCacheDtype ?? 'auto',
@@ -3184,6 +3913,7 @@ async function startVllmRuntime(params = {}) {
     activeLoraName: params.activeLoraName ?? null,
     loraPath: params.loraPath ?? null,
     loraName: params.loraName ?? null,
+    provider: params.provider ?? inf.provider ?? 'auto',
   };
 
   validateInferenceParams(merged);
@@ -3191,44 +3921,24 @@ async function startVllmRuntime(params = {}) {
   const {
     model,
     port,
-    maxModelLen,
-    gpuMemoryUtilization,
-    tensorParallelSize,
     baseModel = null,
     activeModelId = null,
     activeModelName = null,
     activeLoraId = null,
     activeLoraName = null,
-    loraPath = null,
-    loraName = null,
-    quantization = null,
-    dtype = 'auto',
-    trustRemoteCode = true,
-    enforceEager = false,
-    kvCacheDtype = 'auto',
-    maxNumSeqs = 256,
-    swapSpace = 4,
+    provider: requestedProviderId,
   } = merged;
-
-  const normalizedModel = String(model || '').trim();
-  if (!normalizedModel) {
-    throw new Error('model is required');
-  }
 
   if (!fs.existsSync(CONFIG.pythonBin)) {
     throw new Error(`Python binary not found: ${CONFIG.pythonBin}`);
   }
 
-  if (!fs.existsSync(CONFIG.vllmBin)) {
-    throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
-  }
+  const { provider, compatibility } = await providers.resolveProvider(requestedProviderId, modelCfg.detected);
 
-  logger.info('Starting vLLM runtime', {
-    model: normalizedModel,
-    activeModelName,
-    activeLoraName,
-    loraPath,
-    port,
+  logger.info('Resolved inference provider', {
+    requested: requestedProviderId,
+    resolved: provider.id,
+    compatibility,
   });
 
   await clearGpuMemory();
@@ -3241,150 +3951,102 @@ async function startVllmRuntime(params = {}) {
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  let outFd;
+  const pid = await provider.start({
+    ...merged,
+    modelConfigPath: modelCfg.configPath,
+  });
+
+  await fsp.writeFile(CONFIG.vllmPidFile, String(pid), 'utf8');
+
+  let healthy = false;
+
   try {
-    outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
-
-    const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'start_vllm.py');
-    const payload = {
-      vllmBin: CONFIG.vllmBin,
-      model: normalizedModel,
-      host: '0.0.0.0',
-      port,
-      gpuMemoryUtilization,
-      tensorParallelSize,
-      maxModelLen,
-      maxNumSeqs,
-      swapSpace,
-      dtype,
-      quantization,
-      trustRemoteCode,
-      enforceEager,
-      kvCacheDtype,
-      loraPath,
-      loraName,
-      cwd: CONFIG.workspace,
-      pidFile: CONFIG.vllmPidFile,
-      logFile: CONFIG.vllmLogFile,
-    };
-
-    const { child, configPath } = await spawnPythonJsonScript({
-      pythonBin: CONFIG.pythonBin,
-      scriptPath,
-      payload,
-      cwd: CONFIG.workspace,
-      detached: true,
-      stdio: ['ignore', outFd, outFd],
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-      configDir: CONFIG.trainingConfigsDir,
-      configPrefix: `vllm-${port}`,
-      logLabel: `runtime-vllm:${port}`,
-    });
-
-    child.unref();
-    await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
-
-    let started = false;
-
-    try {
-      for (let i = 0; i < 120; i += 1) {
-        const r = runText('curl', [
-          '-fsS',
-          '--max-time',
-          '2',
-          `http://127.0.0.1:${port}/health`,
-        ]);
-
-        if (r.ok) {
-          started = true;
-          break;
-        }
-
-        if (!isPidRunning(child.pid)) {
-          logger.error('vLLM exited during startup', {
-            model: normalizedModel,
-            port,
-            logFile: CONFIG.vllmLogFile,
-            configPath,
-          });
-          throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
-        }
-
-        await sleep(1000);
+    for (let i = 0; i < 120; i += 1) {
+      const h = await provider.health({ port });
+      if (h.ok) {
+        healthy = true;
+        break;
       }
 
-      if (!started) {
-        await killProcessGroup(child.pid, 'SIGKILL');
+      if (!isPidRunning(pid)) {
         const logs = await readText(CONFIG.vllmLogFile, '');
-        const lastLines = logs.split('\n').slice(-30).join('\n');
-        logger.error('vLLM did not become healthy within timeout', {
-          model: normalizedModel,
-          port,
-          lastLines,
-          configPath,
-        });
-        throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
+        const lastLines = logs.split('\n').slice(-50).join('\n');
+        throw new Error(`Provider process exited during startup. Last logs:\n${lastLines}`);
       }
-    } catch (err) {
-      await removeFile(CONFIG.vllmPidFile).catch(() => {});
-      throw err;
+      await sleep(1000);
     }
 
-    const next = {
-      vllm: {
-        pid: child.pid,
-        model: normalizedModel,
-        startedAt: nowIso(),
-        port,
-        logFile: CONFIG.vllmLogFile,
-        configPath,
-        baseModel: baseModel || settings.baseModel,
-        activeModelId,
-        activeModelName,
-        activeLoraId,
-        activeLoraName,
-      },
-    };
-
-    await saveRuntime(next);
-    emitEvent('runtime_started', next.vllm);
-
-    logger.info('vLLM runtime started', {
-      pid: child.pid,
-      model: normalizedModel,
-      port,
-      activeModelName,
-      activeLoraName,
-      configPath,
-    });
-
-    return next.vllm;
-  } finally {
-    if (typeof outFd === 'number') {
-      try {
-        fs.closeSync(outFd);
-      } catch {
-        // ignore
-      }
+    if (!healthy) {
+      throw new Error(`Provider did not become healthy within timeout.`);
     }
+  } catch (err) {
+    await provider.stop({ pid });
+    await removeFile(CONFIG.vllmPidFile).catch(() => {});
+    throw err;
   }
+
+  const nextState = {
+    vllm: {
+      pid,
+      model,
+      startedAt: nowIso(),
+      port,
+      logFile: CONFIG.vllmLogFile,
+      baseModel: baseModel || settings.baseModel,
+      activeModelId,
+      activeModelName,
+      activeLoraId,
+      activeLoraName,
+      providerRequested: requestedProviderId,
+      providerResolved: provider.id,
+      compatibilityRisk: compatibility.risk,
+      compatibilityWarning: compatibility.warning || null,
+      probe: {
+        ok: false,
+        status: 'checking',
+        checkedAt: nowIso(),
+        error: null,
+      },
+    },
+  };
+
+  await saveRuntime(nextState);
+
+  // Probe
+  logger.info('Performing model probe...', { provider: provider.id });
+  const probeResult = await provider.probe(nextState.vllm);
+
+  const finalState = {
+    vllm: {
+      ...nextState.vllm,
+      probe: {
+        ok: probeResult.ok,
+        status: probeResult.ok ? 'success' : 'failed',
+        checkedAt: nowIso(),
+        error: probeResult.error || null,
+      },
+    },
+  };
+
+  await saveRuntime(finalState);
+  emitEvent('runtime_started', finalState.vllm);
+
+  logger.info('Runtime started successfully', {
+    provider: provider.id,
+    probe: finalState.vllm.probe,
+  });
+
+  return finalState.vllm;
 }
 
 async function stopVllmRuntime() {
   const runtime = await getRuntime();
   const pid = runtime.vllm?.pid;
+  const providerId = runtime.vllm?.providerResolved;
 
   if (pid && isPidRunning(pid)) {
-    await killProcessGroup(pid);
-
-    for (let i = 0; i < 20; i += 1) {
-      if (!isPidRunning(pid)) break;
-      await sleep(500);
-    }
-
-    if (isPidRunning(pid)) {
-      await killProcessGroup(pid, 'SIGKILL');
-    }
+    const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
+    await provider.stop(runtime.vllm);
   }
 
   await removeFile(CONFIG.vllmPidFile).catch(() => {});
@@ -3403,12 +4065,22 @@ async function stopVllmRuntime() {
       activeModelName: null,
       activeLoraId: null,
       activeLoraName: null,
+      providerRequested: 'auto',
+      providerResolved: null,
+      compatibilityRisk: null,
+      compatibilityWarning: null,
+      probe: {
+        ok: false,
+        status: 'idle',
+        checkedAt: null,
+        error: null,
+      },
     },
   };
 
   await saveRuntime(next);
   emitEvent('runtime_stopped', next.vllm);
-  logger.info('vLLM runtime stopped');
+  logger.info('Runtime stopped');
 
   return next.vllm;
 }
@@ -3416,19 +4088,23 @@ async function stopVllmRuntime() {
 async function getRuntimeHealth(port) {
   const runtime = await getRuntime();
   const targetPort = port || runtime.vllm?.port || CONFIG.vllmPort;
+  const providerId = runtime.vllm?.providerResolved || 'vllm';
+  const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
 
-  const r = runText('curl', [
-    '-fsS',
-    '--max-time',
-    '2',
-    `http://127.0.0.1:${targetPort}/health`,
-  ]);
-
-  return {
-    ok: r.ok,
-    port: targetPort,
-    raw: r.ok ? r.stdout : (r.stderr || r.stdout || null),
-  };
+  try {
+    const h = await provider.health({ port: targetPort });
+    return {
+      ok: h.ok,
+      port: targetPort,
+      raw: h.status,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      port: targetPort,
+      raw: String(err.message || err),
+    };
+  }
 }
 
 module.exports = {
@@ -3495,7 +4171,7 @@ const DEFAULT_SETTINGS = {
     noProxy: '',
   },
   inference: {
-    backend: 'vllm',
+    provider: 'auto',
     model: CONFIG.defaultBaseModel,
     host: '0.0.0.0',
     port: CONFIG.vllmPort,
@@ -3524,6 +4200,16 @@ const DEFAULT_RUNTIME = {
     activeModelName: null,
     activeLoraId: null,
     activeLoraName: null,
+    providerRequested: 'auto',
+    providerResolved: null,
+    compatibilityRisk: null,
+    compatibilityWarning: null,
+    probe: {
+      ok: false,
+      status: 'idle',
+      checkedAt: null,
+      error: null,
+    },
   },
 };
 
@@ -3756,18 +4442,27 @@ async function getRuntime() {
     vllm: {
       ...DEFAULT_RUNTIME.vllm,
       ...(current.vllm || {}),
+      probe: {
+        ...DEFAULT_RUNTIME.vllm.probe,
+        ...(current.vllm?.probe || {}),
+      },
     },
   };
 }
 
 async function saveRuntime(next) {
   return withLock(CONFIG.runtimeFile, async () => {
+    const current = await getRuntime();
     const merged = {
-      ...DEFAULT_RUNTIME,
+      ...current,
       ...next,
       vllm: {
-        ...DEFAULT_RUNTIME.vllm,
+        ...current.vllm,
         ...((next && next.vllm) || {}),
+        probe: {
+          ...current.vllm.probe,
+          ...((next && next.vllm && next.vllm.probe) || {}),
+        },
       },
     };
     await writeJson(CONFIG.runtimeFile, merged);
@@ -3873,128 +4568,6 @@ module.exports = {
   getRuntime,
   saveRuntime,
   recoverState,
-};
-
-
-path: /src/utils/python-runner.js
-----------------------------------------
-const path = require('path');
-const os = require('os');
-const fsp = require('fs/promises');
-const { spawn } = require('child_process');
-const { uid } = require('./ids');
-const logger = require('./logger');
-
-function maskSecrets(value) {
-  if (Array.isArray(value)) {
-    return value.map(maskSecrets);
-  }
-
-  if (value && typeof value === 'object') {
-    const out = {};
-    for (const [key, v] of Object.entries(value)) {
-      const k = key.toLowerCase();
-      if (
-        k.includes('apikey') ||
-        k.includes('api_key') ||
-        k.includes('token') ||
-        k.includes('secret') ||
-        k.includes('password')
-      ) {
-        out[key] = v ? '***' : v;
-      } else {
-        out[key] = maskSecrets(v);
-      }
-    }
-    return out;
-  }
-
-  return value;
-}
-
-async function createTempJsonConfig(payload, options = {}) {
-  const dir = options.dir || path.join(os.tmpdir(), 'llm-lab-json');
-  const prefix = options.prefix || 'job';
-
-  await fsp.mkdir(dir, { recursive: true });
-
-  const filePath = path.join(dir, `${prefix}-${uid('cfg')}.json`);
-  await fsp.writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
-
-  return filePath;
-}
-
-function attachCleanup(child, filePath) {
-  const cleanup = async () => {
-    try {
-      await fsp.unlink(filePath);
-    } catch {
-      // ignore
-    }
-  };
-
-  child.once('exit', cleanup);
-  child.once('error', cleanup);
-}
-
-async function spawnPythonJsonScript({
-  pythonBin,
-  scriptPath,
-  payload,
-  cwd,
-  env,
-  detached = false,
-  stdio = 'pipe',
-  configDir,
-  configPrefix,
-  logPayload = true,
-  logLabel = null,
-}) {
-  const configPath = await createTempJsonConfig(payload, {
-    dir: configDir,
-    prefix: configPrefix,
-  });
-
-  if (logPayload) {
-    logger.info('Prepared Python JSON config', {
-      label: logLabel || path.basename(scriptPath),
-      scriptPath,
-      configPath,
-      payload: maskSecrets(payload),
-    });
-  } else {
-    logger.info('Prepared Python JSON config', {
-      label: logLabel || path.basename(scriptPath),
-      scriptPath,
-      configPath,
-    });
-  }
-
-  const child = spawn(pythonBin, ['-u', scriptPath, configPath], {
-    cwd,
-    env,
-    detached,
-    stdio,
-  });
-
-  logger.info('Starting Python script', {
-    label: logLabel || path.basename(scriptPath),
-    scriptPath,
-    configPath,
-    detached,
-  });
-
-  attachCleanup(child, configPath);
-
-  return {
-    child,
-    configPath,
-  };
-}
-
-module.exports = {
-  createTempJsonConfig,
-  spawnPythonJsonScript,
 };
 
 
@@ -4314,9 +4887,131 @@ module.exports = {
 };
 
 
+path: /utils/python-runner.js
+----------------------------------------
+const path = require('path');
+const os = require('os');
+const fsp = require('fs/promises');
+const { spawn } = require('child_process');
+const { uid } = require('./ids');
+const logger = require('./logger');
+
+function maskSecrets(value) {
+  if (Array.isArray(value)) {
+    return value.map(maskSecrets);
+  }
+
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, v] of Object.entries(value)) {
+      const k = key.toLowerCase();
+      if (
+        k.includes('apikey') ||
+        k.includes('api_key') ||
+        k.includes('token') ||
+        k.includes('secret') ||
+        k.includes('password')
+      ) {
+        out[key] = v ? '***' : v;
+      } else {
+        out[key] = maskSecrets(v);
+      }
+    }
+    return out;
+  }
+
+  return value;
+}
+
+async function createTempJsonConfig(payload, options = {}) {
+  const dir = options.dir || path.join(os.tmpdir(), 'llm-lab-json');
+  const prefix = options.prefix || 'job';
+
+  await fsp.mkdir(dir, { recursive: true });
+
+  const filePath = path.join(dir, `${prefix}-${uid('cfg')}.json`);
+  await fsp.writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
+
+  return filePath;
+}
+
+function attachCleanup(child, filePath) {
+  const cleanup = async () => {
+    try {
+      await fsp.unlink(filePath);
+    } catch {
+      // ignore
+    }
+  };
+
+  child.once('exit', cleanup);
+  child.once('error', cleanup);
+}
+
+async function spawnPythonJsonScript({
+  pythonBin,
+  scriptPath,
+  payload,
+  cwd,
+  env,
+  detached = false,
+  stdio = 'pipe',
+  configDir,
+  configPrefix,
+  logPayload = true,
+  logLabel = null,
+}) {
+  const configPath = await createTempJsonConfig(payload, {
+    dir: configDir,
+    prefix: configPrefix,
+  });
+
+  if (logPayload) {
+    logger.info('Prepared Python JSON config', {
+      label: logLabel || path.basename(scriptPath),
+      scriptPath,
+      configPath,
+      payload: maskSecrets(payload),
+    });
+  } else {
+    logger.info('Prepared Python JSON config', {
+      label: logLabel || path.basename(scriptPath),
+      scriptPath,
+      configPath,
+    });
+  }
+
+  const child = spawn(pythonBin, ['-u', scriptPath, configPath], {
+    cwd,
+    env,
+    detached,
+    stdio,
+  });
+
+  logger.info('Starting Python script', {
+    label: logLabel || path.basename(scriptPath),
+    scriptPath,
+    configPath,
+    detached,
+  });
+
+  attachCleanup(child, configPath);
+
+  return {
+    child,
+    configPath,
+  };
+}
+
+module.exports = {
+  createTempJsonConfig,
+  spawnPythonJsonScript,
+};
+
+
 === SUMMARY ===
-included: 33
+included: 37
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 111449
+totalBytes(approx): 132266

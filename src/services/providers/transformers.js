@@ -13,50 +13,79 @@ class TransformersProvider {
   }
 
   async isAvailable() {
-    const checkScript = `
-import importlib.util
-import sys
+    if (!fs.existsSync(CONFIG.transformersPythonBin)) {
+      return {
+        available: false,
+        reason: `Transformers Python not found at ${CONFIG.transformersPythonBin}`,
+      };
+    }
 
-def get_version(name):
+    const checkScript = `
+import importlib
+import sys
+from importlib.metadata import version, PackageNotFoundError
+
+def has_module(name):
     try:
-        module = importlib.import_module(name)
-        return getattr(module, "__version__", "unknown")
-    except ImportError:
+        importlib.import_module(name)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def pkg_version(name):
+    try:
+        return version(name)
+    except PackageNotFoundError:
         return None
 
-packages = ["transformers", "torch", "flask", "peft"]
-missing = [p for p in packages if get_version(p) is None]
+required = ["transformers", "torch", "flask", "peft"]
+missing = []
+
+for name in required:
+    ok, err = has_module(name)
+    if not ok:
+        missing.append(f"{name} ({err})")
 
 if missing:
-    print(f"missing:{','.join(missing)}")
+    print("missing:" + " | ".join(missing))
     sys.exit(0)
 
-a_ver = get_version("awq")
-if a_ver:
-    from packaging import version
-    if version.parse(a_ver) < version.parse("0.1.8"):
-        print(f"autoawq_old:{a_ver}")
-    else:
-        print("ok")
+awq_ver = pkg_version("autoawq")
+if awq_ver:
+    try:
+        importlib.import_module("awq")
+    except Exception as e:
+        print("awq_import_error:" + str(e))
+        sys.exit(0)
+    print("ok:autoawq=" + awq_ver)
 else:
-    print("ok")
+    print("ok:no-autoawq")
 `;
+
     try {
-      const r = runText(CONFIG.pythonBin, ['-c', checkScript]);
+      const r = runText(CONFIG.transformersPythonBin, ['-c', checkScript]);
       const out = (r.stdout || '').trim();
+      const err = (r.stderr || '').trim();
 
       if (out.startsWith('missing:')) {
-        const pkgs = out.split(':')[1];
-        return { available: false, reason: `Missing required Python packages: ${pkgs}` };
+        return { available: false, reason: out.slice('missing:'.length) };
       }
-      if (out.startsWith('autoawq_old')) {
-        const ver = out.split(':')[1];
-        return { available: false, reason: `autoawq >= 0.1.8 is required for AWQ models (found ${ver})` };
+
+      if (out.startsWith('awq_import_error:')) {
+        return {
+          available: true,
+          reason: `AWQ support is broken in transformers env: ${out.slice('awq_import_error:'.length)}`,
+        };
       }
-      if (out === 'ok') {
+
+      if (out.startsWith('ok:')) {
         return { available: true };
       }
-      return { available: false, reason: `Unexpected dependency check output: ${out}` };
+
+      return {
+        available: false,
+        reason: `Unexpected dependency check output: ${out || err || 'empty output'}`,
+      };
     } catch (err) {
       return { available: false, reason: `Dependency check failed: ${err.message}` };
     }
@@ -70,7 +99,11 @@ else:
     if (modelInfo.modelType === 'mixtral' && modelInfo.quantization === 'awq') {
       return { compatible: true, risk: 'low', preferred: true };
     }
-    return { compatible: true, risk: 'medium', warning: 'Transformers provider is generally slower than vLLM.' };
+    return {
+      compatible: true,
+      risk: 'medium',
+      warning: 'Transformers provider is generally slower than vLLM.',
+    };
   }
 
   async start(config) {
@@ -78,6 +111,10 @@ else:
 
     if (!fs.existsSync(scriptPath)) {
       throw new Error(`Transformers provider script not found at ${scriptPath}`);
+    }
+
+    if (!fs.existsSync(CONFIG.transformersPythonBin)) {
+      throw new Error(`Transformers Python not found: ${CONFIG.transformersPythonBin}`);
     }
 
     const payload = {
@@ -90,7 +127,7 @@ else:
 
     const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
     const { child } = await spawnPythonJsonScript({
-      pythonBin: CONFIG.pythonBin,
+      pythonBin: CONFIG.transformersPythonBin,
       scriptPath,
       payload,
       cwd: CONFIG.workspace,
@@ -112,7 +149,7 @@ else:
       await killProcessGroup(pid);
       for (let i = 0; i < 20; i++) {
         if (!isPidRunning(pid)) break;
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 500));
       }
       if (isPidRunning(pid)) {
         await killProcessGroup(pid, 'SIGKILL');

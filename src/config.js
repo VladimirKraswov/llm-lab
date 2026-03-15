@@ -22,7 +22,13 @@ const CONFIG = {
   host: process.env.SVC_HOST || '0.0.0.0',
   port: toNumber(process.env.SVC_PORT, 8787),
   workspace: process.env.WORKSPACE || '/opt/deepseek-workspace',
+
   mlEnv: process.env.ML_ENV || '/opt/deepseek-workspace/environments/ml_env',
+  transformersEnv:
+    process.env.TRANSFORMERS_ENV ||
+    process.env.ML_ENV ||
+    '/opt/deepseek-workspace/environments/transformers_env',
+
   openWebUiPort: toNumber(process.env.OPENWEBUI_PORT, 3000),
   vllmPort: toNumber(process.env.VLLM_PORT, 8000),
   defaultBaseModel: process.env.DEFAULT_BASE_MODEL || 'Qwen/Qwen2.5-7B-Instruct',
@@ -49,7 +55,10 @@ CONFIG.lorasFile = path.join(CONFIG.stateDir, 'loras.json');
 
 CONFIG.vllmPidFile = path.join(CONFIG.logsDir, 'vllm.pid');
 CONFIG.vllmLogFile = path.join(CONFIG.logsDir, 'vllm.log');
+
 CONFIG.pythonBin = path.join(CONFIG.mlEnv, 'bin', 'python');
 CONFIG.vllmBin = path.join(CONFIG.mlEnv, 'bin', 'vllm');
+
+CONFIG.transformersPythonBin = path.join(CONFIG.transformersEnv, 'bin', 'python');
 
 module.exports = { CONFIG };
