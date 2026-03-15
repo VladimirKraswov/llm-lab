@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const { CONFIG } = require('../../config');
-const logger = require('../../utils/logger');
 const { runText, isPidRunning, killProcessGroup } = require('../../utils/proc');
 const { spawnPythonJsonScript } = require('../../utils/python-runner');
 
@@ -10,6 +9,12 @@ class VllmProvider {
     this.id = 'vllm';
     this.label = 'vLLM';
     this.description = 'High-throughput serving with vLLM (Recommended for most models)';
+    this.capabilities = {
+      experimental: false,
+      supportsStreaming: true,
+      supportsLora: true,
+      supportsAwq: true,
+    };
   }
 
   async isAvailable() {
@@ -24,12 +29,12 @@ class VllmProvider {
   }
 
   async resolveCompatibility(modelInfo) {
-    // Mixtral AWQ is risky in vLLM according to the task
     if (modelInfo.modelType === 'mixtral' && modelInfo.quantization === 'awq') {
       return {
         compatible: true,
         risk: 'high',
-        warning: 'Mixtral-AWQ might return empty responses in some vLLM versions. Transformers provider is preferred for this model.'
+        warning:
+          'Mixtral-AWQ might return empty responses in some vLLM versions.',
       };
     }
     return { compatible: true, risk: 'low' };
@@ -51,7 +56,7 @@ class VllmProvider {
       kvCacheDtype,
       loraPath,
       loraName,
-      modelConfigPath
+      modelConfigPath,
     } = config;
 
     const scriptPath = path.join(__dirname, '..', '..', 'python', 'start_vllm.py');
@@ -100,10 +105,9 @@ class VllmProvider {
     const pid = runtimeState.pid;
     if (pid && isPidRunning(pid)) {
       await killProcessGroup(pid);
-      // Wait a bit
       for (let i = 0; i < 20; i++) {
         if (!isPidRunning(pid)) break;
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 500));
       }
       if (isPidRunning(pid)) {
         await killProcessGroup(pid, 'SIGKILL');
@@ -136,7 +140,7 @@ class VllmProvider {
       const tokens = data.usage?.completion_tokens || 0;
 
       if (tokens > 0 && !content.trim()) {
-        return { ok: false, error: 'Empty response despite token generation (vLLM compatibility issue)' };
+        return { ok: false, error: 'Empty response despite token generation' };
       }
       if (!content.trim()) {
         return { ok: false, error: 'Empty response from model' };
@@ -150,12 +154,11 @@ class VllmProvider {
 
   async chat(runtimeState, payload) {
     const port = runtimeState.port;
-    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    return response;
   }
 }
 

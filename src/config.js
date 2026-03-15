@@ -52,6 +52,7 @@ CONFIG.datasetsFile = path.join(CONFIG.stateDir, 'datasets.json');
 CONFIG.runtimeFile = path.join(CONFIG.stateDir, 'runtime.json');
 CONFIG.modelsFile = path.join(CONFIG.stateDir, 'models.json');
 CONFIG.lorasFile = path.join(CONFIG.stateDir, 'loras.json');
+CONFIG.managedProcessesFile = path.join(CONFIG.stateDir, 'managed-processes.json');
 
 CONFIG.vllmPidFile = path.join(CONFIG.logsDir, 'vllm.pid');
 CONFIG.vllmLogFile = path.join(CONFIG.logsDir, 'vllm.log');

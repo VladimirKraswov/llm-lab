@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const { CONFIG } = require('../../config');
-const logger = require('../../utils/logger');
 const { runText, isPidRunning, killProcessGroup } = require('../../utils/proc');
 const { spawnPythonJsonScript } = require('../../utils/python-runner');
 
@@ -9,7 +8,13 @@ class TransformersProvider {
   constructor() {
     this.id = 'transformers';
     this.label = 'Transformers';
-    this.description = 'Fallback inference using HuggingFace Transformers (Slower, but compatible with more models)';
+    this.description = 'Experimental fallback inference using HuggingFace Transformers';
+    this.capabilities = {
+      experimental: true,
+      supportsStreaming: false,
+      supportsLora: true,
+      supportsAwq: true,
+    };
   }
 
   async isAvailable() {
@@ -23,69 +28,26 @@ class TransformersProvider {
     const checkScript = `
 import importlib
 import sys
-from importlib.metadata import version, PackageNotFoundError
-
-def has_module(name):
-    try:
-        importlib.import_module(name)
-        return True, None
-    except Exception as e:
-        return False, str(e)
-
-def pkg_version(name):
-    try:
-        return version(name)
-    except PackageNotFoundError:
-        return None
-
 required = ["transformers", "torch", "flask", "peft"]
 missing = []
-
 for name in required:
-    ok, err = has_module(name)
-    if not ok:
-        missing.append(f"{name} ({err})")
-
+    try:
+        importlib.import_module(name)
+    except Exception as e:
+        missing.append(f"{name} ({e})")
 if missing:
     print("missing:" + " | ".join(missing))
-    sys.exit(0)
-
-awq_ver = pkg_version("autoawq")
-if awq_ver:
-    try:
-        importlib.import_module("awq")
-    except Exception as e:
-        print("awq_import_error:" + str(e))
-        sys.exit(0)
-    print("ok:autoawq=" + awq_ver)
 else:
-    print("ok:no-autoawq")
+    print("ok")
 `;
 
     try {
       const r = runText(CONFIG.transformersPythonBin, ['-c', checkScript]);
       const out = (r.stdout || '').trim();
-      const err = (r.stderr || '').trim();
-
       if (out.startsWith('missing:')) {
         return { available: false, reason: out.slice('missing:'.length) };
       }
-
-      if (out.startsWith('awq_import_error:')) {
-        return {
-          available: true,
-          reason: `AWQ support is broken in transformers env: ${out.slice('awq_import_error:'.length)}`,
-        };
-      }
-
-      if (out.startsWith('ok:')) {
-        return { available: true };
-      }
-
-      return {
-        available: false,
-        reason: `Unexpected dependency check output: ${out || err || 'empty output'}`,
-      };
+      return { available: true };
     } catch (err) {
       return { available: false, reason: `Dependency check failed: ${err.message}` };
     }
@@ -96,13 +58,18 @@ else:
   }
 
   async resolveCompatibility(modelInfo) {
-    if (modelInfo.modelType === 'mixtral' && modelInfo.quantization === 'awq') {
-      return { compatible: true, risk: 'low', preferred: true };
+    if (modelInfo.quantization === 'awq') {
+      return {
+        compatible: true,
+        risk: 'high',
+        warning: 'Transformers AWQ path is experimental and may fail because of AutoAWQ/Triton compatibility.',
+      };
     }
+
     return {
       compatible: true,
       risk: 'medium',
-      warning: 'Transformers provider is generally slower than vLLM.',
+      warning: 'Transformers provider is experimental and intended as fallback/debug path.',
     };
   }
 
@@ -111,10 +78,6 @@ else:
 
     if (!fs.existsSync(scriptPath)) {
       throw new Error(`Transformers provider script not found at ${scriptPath}`);
-    }
-
-    if (!fs.existsSync(CONFIG.transformersPythonBin)) {
-      throw new Error(`Transformers Python not found: ${CONFIG.transformersPythonBin}`);
     }
 
     const payload = {
@@ -173,10 +136,15 @@ else:
           model,
           messages: [{ role: 'user', content: 'test' }],
           max_tokens: 5,
+          stream: false,
         }),
       });
 
-      if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        return { ok: false, error: text || `HTTP ${response.status}` };
+      }
+
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
       if (!content.trim()) {
@@ -190,12 +158,11 @@ else:
 
   async chat(runtimeState, payload) {
     const port = runtimeState.port;
-    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, stream: false }),
     });
-    return response;
   }
 }
 

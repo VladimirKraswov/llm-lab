@@ -3,19 +3,15 @@ const { ensureDir, exists, readJson, writeJson } = require('../utils/fs');
 
 const locks = new Map();
 
-/**
- * Ensures that the provided async function runs exclusively for the given key.
- * This prevents race conditions during read-modify-write cycles.
- */
 async function withLock(key, fn) {
   const previous = locks.get(key) || Promise.resolve();
   const next = (async () => {
     try {
       await previous;
-    } catch (err) {
-      // ignore errors from previous tasks in the queue
+    } catch {
+      // ignore previous errors
     }
-    return await fn();
+    return fn();
   })();
   locks.set(key, next);
   next.finally(() => {
@@ -43,7 +39,7 @@ const DEFAULT_SETTINGS = {
   },
   wandb: {
     enabled: false,
-    mode: 'online', // online | offline | disabled
+    mode: 'online',
     apiKey: '',
     project: 'llm-lab',
     entity: '',
@@ -70,30 +66,61 @@ const DEFAULT_SETTINGS = {
   },
 };
 
-const DEFAULT_RUNTIME = {
-  vllm: {
-    pid: null,
-    model: null,
-    startedAt: null,
-    port: CONFIG.vllmPort,
-    logFile: CONFIG.vllmLogFile,
-    baseModel: CONFIG.defaultBaseModel,
-    activeModelId: null,
-    activeModelName: null,
-    activeLoraId: null,
-    activeLoraName: null,
-    providerRequested: 'auto',
-    providerResolved: null,
-    compatibilityRisk: null,
-    compatibilityWarning: null,
-    probe: {
-      ok: false,
-      status: 'idle',
-      checkedAt: null,
-      error: null,
-    },
+const DEFAULT_INFERENCE_RUNTIME = {
+  pid: null,
+  model: null,
+  startedAt: null,
+  port: CONFIG.vllmPort,
+  logFile: CONFIG.vllmLogFile,
+  baseModel: CONFIG.defaultBaseModel,
+  activeModelId: null,
+  activeModelName: null,
+  activeLoraId: null,
+  activeLoraName: null,
+  providerRequested: 'auto',
+  providerResolved: null,
+  compatibilityRisk: null,
+  compatibilityWarning: null,
+  capabilities: {
+    experimental: false,
+    supportsStreaming: true,
+    supportsLora: true,
+    supportsAwq: true,
+  },
+  probe: {
+    ok: false,
+    status: 'idle',
+    checkedAt: null,
+    error: null,
   },
 };
+
+const DEFAULT_RUNTIME = {
+  inference: DEFAULT_INFERENCE_RUNTIME,
+  vllm: DEFAULT_INFERENCE_RUNTIME,
+};
+
+function normalizeRuntime(current) {
+  const source = current?.inference || current?.vllm || DEFAULT_INFERENCE_RUNTIME;
+
+  const inference = {
+    ...DEFAULT_INFERENCE_RUNTIME,
+    ...source,
+    capabilities: {
+      ...DEFAULT_INFERENCE_RUNTIME.capabilities,
+      ...(source.capabilities || {}),
+    },
+    probe: {
+      ...DEFAULT_INFERENCE_RUNTIME.probe,
+      ...(source.probe || {}),
+    },
+  };
+
+  return {
+    inference,
+    vllm: inference,
+  };
+}
 
 async function ensureWorkspace() {
   for (const dir of [
@@ -116,6 +143,7 @@ async function ensureWorkspace() {
   if (!exists(CONFIG.modelsFile)) await writeJson(CONFIG.modelsFile, []);
   if (!exists(CONFIG.lorasFile)) await writeJson(CONFIG.lorasFile, []);
   if (!exists(CONFIG.runtimeFile)) await writeJson(CONFIG.runtimeFile, DEFAULT_RUNTIME);
+  if (!exists(CONFIG.managedProcessesFile)) await writeJson(CONFIG.managedProcessesFile, []);
 }
 
 async function getSettings() {
@@ -318,35 +346,28 @@ async function removeLora(id) {
 
 async function getRuntime() {
   const current = (await readJson(CONFIG.runtimeFile, DEFAULT_RUNTIME)) || DEFAULT_RUNTIME;
-  return {
-    ...DEFAULT_RUNTIME,
-    ...current,
-    vllm: {
-      ...DEFAULT_RUNTIME.vllm,
-      ...(current.vllm || {}),
-      probe: {
-        ...DEFAULT_RUNTIME.vllm.probe,
-        ...(current.vllm?.probe || {}),
-      },
-    },
-  };
+  return normalizeRuntime(current);
 }
 
 async function saveRuntime(next) {
   return withLock(CONFIG.runtimeFile, async () => {
     const current = await getRuntime();
-    const merged = {
-      ...current,
-      ...next,
-      vllm: {
-        ...current.vllm,
-        ...((next && next.vllm) || {}),
+    const incoming = normalizeRuntime(next || {});
+    const merged = normalizeRuntime({
+      inference: {
+        ...current.inference,
+        ...incoming.inference,
+        capabilities: {
+          ...current.inference.capabilities,
+          ...incoming.inference.capabilities,
+        },
         probe: {
-          ...current.vllm.probe,
-          ...((next && next.vllm && next.vllm.probe) || {}),
+          ...current.inference.probe,
+          ...incoming.inference.probe,
         },
       },
-    };
+    });
+
     await writeJson(CONFIG.runtimeFile, merged);
     return merged;
   });
@@ -355,6 +376,9 @@ async function saveRuntime(next) {
 async function recoverState() {
   const { isPidRunning } = require('../utils/proc');
   const { nowIso } = require('../utils/ids');
+  const { pruneDeadManagedProcesses } = require('../utils/managed-processes');
+
+  await pruneDeadManagedProcesses();
 
   await withLock(CONFIG.jobsFile, async () => {
     const jobs = await getJobs();
@@ -379,15 +403,14 @@ async function recoverState() {
   await withLock(CONFIG.runtimeFile, async () => {
     const runtime = await getRuntime();
 
-    if (runtime.vllm?.pid && !isPidRunning(runtime.vllm.pid)) {
-      const next = {
-        ...runtime,
-        vllm: {
-          ...runtime.vllm,
+    if (runtime.inference?.pid && !isPidRunning(runtime.inference.pid)) {
+      const next = normalizeRuntime({
+        inference: {
+          ...runtime.inference,
           pid: null,
           startedAt: null,
         },
-      };
+      });
       await writeJson(CONFIG.runtimeFile, next);
     }
   });

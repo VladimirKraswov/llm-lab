@@ -17,6 +17,10 @@ const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
 const { getDirSize, formatSize } = require('../utils/model-meta');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
+const {
+  registerManagedProcess,
+  unregisterManagedProcess,
+} = require('../utils/managed-processes');
 
 async function registerLoraFromJob(jobId, customName = null) {
   const existing = await getLoraByJobId(jobId);
@@ -105,6 +109,17 @@ async function buildMergedLora(loraId) {
 
   child.unref();
 
+  await registerManagedProcess({
+    pid: child.pid,
+    type: 'lora-merge',
+    label: `merge-lora:${loraId}`,
+    meta: {
+      loraId,
+      mergedPath,
+      adapterPath: item.adapterPath,
+    },
+  });
+
   const building = await upsertLora({
     ...next0,
     mergePid: child.pid,
@@ -133,6 +148,8 @@ async function buildMergedLora(loraId) {
   });
 
   child.on('exit', async (code) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.info('LoRA merge process exited', {
       loraId,
       code,
@@ -188,6 +205,8 @@ async function buildMergedLora(loraId) {
   });
 
   child.on('error', async (err) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.error('LoRA merge process error', {
       loraId,
       configPath,
@@ -275,6 +294,17 @@ async function packageMergedLora(loraId) {
     },
   );
 
+  await registerManagedProcess({
+    pid: child.pid,
+    type: 'lora-package',
+    label: `package-lora:${loraId}`,
+    meta: {
+      loraId,
+      mergedPath: item.mergedPath,
+      archivePath,
+    },
+  });
+
   const building = await upsertLora({
     ...next0,
     packagePid: child.pid,
@@ -287,6 +317,8 @@ async function packageMergedLora(loraId) {
   });
 
   child.on('exit', async (code) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.info('LoRA package process exited', {
       loraId,
       code,
@@ -318,6 +350,8 @@ async function packageMergedLora(loraId) {
   });
 
   child.on('error', async (err) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.error('LoRA package process error', {
       loraId,
       archivePath,

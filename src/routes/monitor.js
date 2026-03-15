@@ -1,6 +1,11 @@
 const express = require('express');
 const si = require('systeminformation');
 const { clearGpuMemory } = require('../utils/gpu');
+const {
+  listManagedProcesses,
+  pruneDeadManagedProcesses,
+  killManagedProcesses,
+} = require('../utils/managed-processes');
 
 const router = express.Router();
 
@@ -92,6 +97,30 @@ router.post('/clear-gpu', async (req, res) => {
   try {
     const killedCount = await clearGpuMemory();
     res.json({ ok: true, killedCount });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/managed-processes', async (_req, res) => {
+  try {
+    await pruneDeadManagedProcesses();
+    const items = await listManagedProcesses();
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/managed-processes/cleanup', async (req, res) => {
+  try {
+    const types = Array.isArray(req.body?.types) ? req.body.types : null;
+    const result = await killManagedProcesses({
+      types,
+      excludePid: process.pid,
+      signal: 'SIGKILL',
+    });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }

@@ -8,6 +8,10 @@ const { readText } = require('../utils/fs');
 const logger = require('../utils/logger');
 const { getModelMetadata } = require('../utils/model-meta');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
+const {
+  registerManagedProcess,
+  unregisterManagedProcess,
+} = require('../utils/managed-processes');
 
 function safeSlug(value) {
   return String(value || '')
@@ -69,6 +73,18 @@ async function downloadModel({ repoId, name }) {
 
   child.unref();
 
+  await registerManagedProcess({
+    pid: child.pid,
+    type: 'model-download',
+    label: `download-model:${modelId}`,
+    meta: {
+      modelId,
+      repoId,
+      modelPath,
+      logFile,
+    },
+  });
+
   const running = await upsertModel({
     ...item,
     pid: child.pid,
@@ -77,6 +93,8 @@ async function downloadModel({ repoId, name }) {
   emitEvent('model_updated', running);
 
   child.on('exit', async (code) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.info('Model download process exited', {
       modelId,
       code,
@@ -110,6 +128,8 @@ async function downloadModel({ repoId, name }) {
   });
 
   child.on('error', async (err) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.error('Model download process error', {
       modelId,
       configPath,
@@ -213,6 +233,19 @@ async function quantizeModel({ modelId, method, name }) {
 
   child.unref();
 
+  await registerManagedProcess({
+    pid: child.pid,
+    type: 'model-quantize',
+    label: `quantize-model:${newId}`,
+    meta: {
+      modelId: newId,
+      sourceModelId: modelId,
+      method,
+      modelPath,
+      logFile,
+    },
+  });
+
   const running = await upsertModel({
     ...item,
     pid: child.pid,
@@ -221,6 +254,8 @@ async function quantizeModel({ modelId, method, name }) {
   emitEvent('model_updated', running);
 
   child.on('exit', async (code) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.info('Model quantization process exited', {
       modelId: newId,
       sourceModelId: modelId,
@@ -260,6 +295,8 @@ async function quantizeModel({ modelId, method, name }) {
   });
 
   child.on('error', async (err) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.error('Model quantization process error', {
       modelId: newId,
       sourceModelId: modelId,

@@ -10,6 +10,10 @@ const { registerLoraFromJob } = require('./loras');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
+const {
+  registerManagedProcess,
+  unregisterManagedProcess,
+} = require('../utils/managed-processes');
 
 function validateQLoraParams(params) {
   if (params.learningRate !== undefined && (typeof params.learningRate !== 'number' || params.learningRate <= 0)) {
@@ -66,7 +70,7 @@ function buildTrainingEnv(settings) {
 async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
   if (qlora) validateQLoraParams(qlora);
 
-  await clearGpuMemory();
+  await clearGpuMemory({ types: ['runtime', 'fine-tune'] });
 
   const settings = await getSettings();
   const datasets = await getDatasets();
@@ -145,6 +149,19 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 
   child.unref();
 
+  await registerManagedProcess({
+    pid: child.pid,
+    type: 'fine-tune',
+    label: `fine-tune:${jobId}`,
+    meta: {
+      jobId,
+      datasetId,
+      outputDir,
+      logFile,
+      baseModel: selectedBaseModel,
+    },
+  });
+
   const runningJob = await upsertJob({
     ...job,
     status: 'running',
@@ -155,6 +172,8 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
   emitEvent('job_updated', runningJob);
 
   child.on('exit', async (code) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.info('Fine-tune process exited', {
       jobId,
       code,
@@ -205,6 +224,8 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
   });
 
   child.on('error', async (err) => {
+    await unregisterManagedProcess(child.pid);
+
     logger.error('Fine-tune process error', {
       jobId,
       configPath,
@@ -254,11 +275,13 @@ async function stopJob(jobId) {
   }
 
   await killProcessGroup(job.pid);
+  await unregisterManagedProcess(job.pid);
 
   const next = await upsertJob({
     ...job,
     status: 'stopped',
     finishedAt: nowIso(),
+    pid: null,
   });
 
   emitEvent('job_updated', next);

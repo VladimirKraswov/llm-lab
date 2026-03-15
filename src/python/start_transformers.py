@@ -1,74 +1,47 @@
 import json
 import sys
-import os
-import time
 import torch
 import traceback
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: start_transformers.py <config.json>")
-        sys.exit(1)
+app = Flask(__name__)
 
-    with open(sys.argv[1], "r") as f:
-        cfg = json.load(f)
+MODEL = None
+TOKENIZER = None
+MODEL_ID = None
 
-    model_id = cfg["model"]
-    port = cfg.get("port", 8000)
-    dtype = cfg.get("dtype", "auto")
-    trust_remote_code = cfg.get("trustRemoteCode", True)
-    lora_path = cfg.get("loraPath")
 
-    print(f"Loading Transformers model: {model_id}")
-    print(f"DType: {dtype}, Trust Remote Code: {trust_remote_code}")
+def resolve_torch_dtype(dtype_value: str):
+    dtype = str(dtype_value or "auto").lower()
+    if dtype == "half" or dtype == "float16":
+        return torch.float16
+    if dtype == "bfloat16":
+        return torch.bfloat16
+    if dtype == "float32" or dtype == "float":
+        return torch.float32
+    return "auto"
+
+
+def get_model_device(model):
+    try:
+        return model.device
+    except Exception:
+        pass
 
     try:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        return next(model.parameters()).device
+    except Exception:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        torch_dtype = torch.float16 if dtype == "half" else "auto"
-        if dtype == "bfloat16":
-            torch_dtype = torch.bfloat16
-        elif dtype == "float32" or dtype == "float":
-            torch_dtype = torch.float32
 
-        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust_remote_code)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            device_map="auto",
-            torch_dtype=torch_dtype,
-            trust_remote_code=trust_remote_code
+def build_prompt(messages, tokenizer):
+    try:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
         )
-
-        if lora_path:
-            print(f"Loading LoRA adapter from {lora_path}")
-            from peft import PeftModel
-            model = PeftModel.from_pretrained(model, lora_path)
-
-        print("Model loaded successfully.")
-    except Exception as e:
-        print("FATAL ERROR: Failed to load model")
-        traceback.print_exc()
-        sys.exit(1) # Fail fast
-
-    app = Flask(__name__)
-
-    @app.route("/health")
-    def health():
-        return jsonify({"status": "ok", "model": model_id})
-
-    @app.route("/v1/chat/completions", methods=["POST"])
-    def chat():
-        data = request.json
-        messages = data.get("messages", [])
-        temperature = float(data.get("temperature", 0.7))
-        max_tokens = int(data.get("max_tokens", 512))
-        stream = bool(data.get("stream", False))
-
-        # Basic prompt construction (simple chat template)
+    except Exception:
         prompt = ""
         for msg in messages:
             role = msg.get("role", "user")
@@ -80,67 +53,138 @@ def main():
             elif role == "assistant":
                 prompt += f"Assistant: {content}\n"
         prompt += "Assistant: "
+        return prompt
 
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
-        if stream:
-            def generate():
-                # Extremely simplified streaming for Transformers
-                # In production, use TextIteratorStreamer
-                from transformers import TextIteratorStreamer
-                from threading import Thread
+def load_model(cfg):
+    global MODEL, TOKENIZER, MODEL_ID
 
-                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-                generation_kwargs = dict(
-                    inputs,
-                    streamer=streamer,
-                    max_new_tokens=max_tokens,
-                    do_sample=temperature > 0,
-                    temperature=temperature if temperature > 0 else 1.0,
-                    pad_token_id=tokenizer.pad_token_id,
-                )
-                thread = Thread(target=model.generate, kwargs=generation_kwargs)
-                thread.start()
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
-                for new_text in streamer:
-                    if not new_text: continue
-                    chunk = {
-                        "choices": [{"delta": {"content": new_text}, "index": 0, "finish_reason": None}]
-                    }
-                    yield f"data: {json.dumps(chunk)}\n\n"
+    MODEL_ID = cfg["model"]
+    dtype = cfg.get("dtype", "auto")
+    trust_remote_code = cfg.get("trustRemoteCode", True)
+    lora_path = cfg.get("loraPath")
 
-                yield "data: [DONE]\n\n"
+    print(f"Loading Transformers model: {MODEL_ID}")
+    print(f"DType: {dtype}, Trust Remote Code: {trust_remote_code}")
 
-            return Response(generate(), mimetype="text/event-stream")
-        else:
-            with torch.no_grad():
-                output_ids = model.generate(
-                    **inputs,
-                    max_new_tokens=max_tokens,
-                    do_sample=temperature > 0,
-                    temperature=temperature if temperature > 0 else 1.0,
-                    pad_token_id=tokenizer.pad_token_id,
-                )
+    torch_dtype = resolve_torch_dtype(dtype)
 
-            input_len = inputs.input_ids.shape[1]
-            generated_ids = output_ids[0][input_len:]
-            content = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    TOKENIZER = AutoTokenizer.from_pretrained(
+        MODEL_ID,
+        trust_remote_code=trust_remote_code,
+    )
+    if TOKENIZER.pad_token is None:
+        TOKENIZER.pad_token = TOKENIZER.eos_token
 
+    MODEL = AutoModelForCausalLM.from_pretrained(
+        MODEL_ID,
+        device_map="auto",
+        torch_dtype=torch_dtype,
+        trust_remote_code=trust_remote_code,
+    )
+
+    if lora_path:
+        print(f"Loading LoRA adapter from {lora_path}")
+        from peft import PeftModel
+        MODEL = PeftModel.from_pretrained(MODEL, lora_path)
+
+    print("Model loaded successfully.")
+
+
+@app.route("/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "model": MODEL_ID,
+        "provider": "transformers",
+        "streaming": False,
+        "experimental": True,
+    })
+
+
+@app.route("/v1/chat/completions", methods=["POST"])
+def chat():
+    global MODEL, TOKENIZER, MODEL_ID
+
+    try:
+        if MODEL is None or TOKENIZER is None:
+            return jsonify({"error": "Model is not loaded"}), 500
+
+        data = request.json or {}
+        messages = data.get("messages", [])
+        if not isinstance(messages, list) or not messages:
+            return jsonify({"error": "messages are required"}), 400
+
+        if bool(data.get("stream", False)):
             return jsonify({
-                "choices": [{
-                    "message": {"role": "assistant", "content": content},
-                    "index": 0,
-                    "finish_reason": "stop"
-                }],
-                "usage": {
-                    "prompt_tokens": input_len,
-                    "completion_tokens": len(generated_ids),
-                    "total_tokens": input_len + len(generated_ids)
-                }
-            })
+                "error": "Streaming is not supported by the experimental transformers provider"
+            }), 400
+
+        temperature = float(data.get("temperature", 0.7))
+        max_tokens = int(data.get("max_tokens", 512))
+
+        text = build_prompt(messages, TOKENIZER)
+
+        model_inputs = TOKENIZER([text], return_tensors="pt")
+        target_device = get_model_device(MODEL)
+        model_inputs = {k: v.to(target_device) for k, v in model_inputs.items()}
+
+        with torch.no_grad():
+            output_ids = MODEL.generate(
+                **model_inputs,
+                max_new_tokens=max_tokens,
+                do_sample=temperature > 0,
+                temperature=temperature if temperature > 0 else 1.0,
+                pad_token_id=TOKENIZER.pad_token_id,
+                eos_token_id=TOKENIZER.eos_token_id,
+            )
+
+        input_len = model_inputs["input_ids"].shape[1]
+        generated_ids = output_ids[0][input_len:]
+        content = TOKENIZER.decode(generated_ids, skip_special_tokens=True)
+
+        return jsonify({
+            "id": "chatcmpl-transformers",
+            "object": "chat.completion",
+            "model": MODEL_ID,
+            "choices": [{
+                "message": {"role": "assistant", "content": content},
+                "index": 0,
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": int(input_len),
+                "completion_tokens": int(len(generated_ids)),
+                "total_tokens": int(input_len + len(generated_ids))
+            }
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: start_transformers.py <config.json>")
+        sys.exit(1)
+
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    port = int(cfg.get("port", 8000))
+
+    try:
+        load_model(cfg)
+    except Exception:
+        print("FATAL ERROR: Failed to load model")
+        traceback.print_exc()
+        sys.exit(1)
 
     print(f"Starting Transformers server on port {port}")
     app.run(host="0.0.0.0", port=port, threaded=True)
+
 
 if __name__ == "__main__":
     main()

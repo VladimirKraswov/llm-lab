@@ -1,55 +1,53 @@
-const si = require('systeminformation');
 const logger = require('./logger');
+const { killManagedProcesses, pruneDeadManagedProcesses } = require('./managed-processes');
+
+const DEFAULT_GPU_PROCESS_TYPES = [
+  'runtime',
+  'fine-tune',
+  'model-download',
+  'model-quantize',
+  'lora-merge',
+  'lora-package',
+];
 
 /**
- * Forcefully kills all processes that are likely to be using GPU memory.
- * This includes Python, vLLM, and Torch-related processes.
+ * Clears GPU memory by killing only managed service processes.
+ * This avoids killing unrelated Python/ML workloads on the machine.
  */
-async function clearGpuMemory() {
-  try {
-    logger.info('Performing automatic GPU memory cleanup...');
-    const processes = await si.processes();
+async function clearGpuMemory(options = {}) {
+  const types = Array.isArray(options.types) && options.types.length
+    ? options.types
+    : DEFAULT_GPU_PROCESS_TYPES;
 
-    // Identity processes to kill: Python, vLLM, and common ML-related names
-    const toKill = processes.list.filter(p => {
-      const name = p.name.toLowerCase();
-      const cmd = p.command.toLowerCase();
-      return (
-        name.includes('python') ||
-        name.includes('vllm') ||
-        name.includes('torch') ||
-        cmd.includes('unsloth') ||
-        cmd.includes('transformers')
-      );
+  try {
+    logger.info('Performing managed GPU memory cleanup...', { types });
+
+    await pruneDeadManagedProcesses();
+
+    const result = await killManagedProcesses({
+      types,
+      excludePid: process.pid,
+      signal: 'SIGKILL',
     });
 
-    let killedCount = 0;
-    for (const p of toKill) {
-      if (p.pid === process.pid) continue; // Don't kill ourselves
-
-      try {
-        process.kill(p.pid, 'SIGKILL');
-        killedCount++;
-      } catch (e) {
-        // Process might have already exited
-      }
-    }
-
-    if (killedCount > 0) {
-      logger.info(`GPU cleanup finished: killed ${killedCount} processes.`);
-      // Give the OS/Driver a moment to actually free up the VRAM
-      await new Promise(resolve => setTimeout(resolve, 2000));
+    if (result.killedCount > 0) {
+      logger.info(`GPU cleanup finished: killed ${result.killedCount} managed process(es).`, {
+        types,
+        failed: result.failed,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     } else {
-      logger.info('GPU cleanup finished: no active ML processes found.');
+      logger.info('GPU cleanup finished: no managed processes found.', { types });
     }
 
-    return killedCount;
+    return result.killedCount;
   } catch (err) {
-    logger.error('Failed to clear GPU memory:', { error: String(err) });
+    logger.error('Failed to clear GPU memory', { error: String(err) });
     return 0;
   }
 }
 
 module.exports = {
-  clearGpuMemory
+  clearGpuMemory,
+  DEFAULT_GPU_PROCESS_TYPES,
 };

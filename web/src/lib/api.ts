@@ -80,7 +80,7 @@ export type ModelItem = {
   name: string;
   repoId: string;
   createdAt: string;
-  status: 'downloading' | 'ready' | 'failed';
+  status: 'downloading' | 'ready' | 'failed' | 'building';
   path: string;
   logFile: string;
   pid: number | null;
@@ -158,29 +158,42 @@ export type Job = {
   error: string | null;
 };
 
+export type RuntimeProbe = {
+  ok: boolean;
+  status: string;
+  checkedAt: string | null;
+  error: string | null;
+};
+
+export type RuntimeCapabilities = {
+  experimental: boolean;
+  supportsStreaming: boolean;
+  supportsLora: boolean;
+  supportsAwq: boolean;
+};
+
+export type InferenceRuntime = {
+  pid: number | null;
+  model: string | null;
+  startedAt: string | null;
+  port: number;
+  logFile?: string;
+  baseModel?: string | null;
+  activeModelId?: string | null;
+  activeModelName?: string | null;
+  activeLoraId?: string | null;
+  activeLoraName?: string | null;
+  providerRequested?: string;
+  providerResolved?: string | null;
+  compatibilityRisk?: 'low' | 'medium' | 'high' | null;
+  compatibilityWarning?: string | null;
+  capabilities?: RuntimeCapabilities;
+  probe?: RuntimeProbe;
+};
+
 export type RuntimeState = {
-  vllm: {
-    pid: number | null;
-    model: string | null;
-    startedAt: string | null;
-    port: number;
-    logFile?: string;
-    baseModel?: string | null;
-    activeModelId?: string | null;
-    activeModelName?: string | null;
-    activeLoraId?: string | null;
-    activeLoraName?: string | null;
-    providerRequested?: string;
-    providerResolved?: string | null;
-    compatibilityRisk?: 'low' | 'medium' | 'high' | null;
-    compatibilityWarning?: string | null;
-    probe?: {
-      ok: boolean;
-      status: string;
-      checkedAt: string | null;
-      error: string | null;
-    };
-  };
+  inference: InferenceRuntime;
+  vllm?: InferenceRuntime;
 };
 
 export type ProviderItem = {
@@ -215,6 +228,7 @@ export type DashboardSummary = {
     ok: boolean;
     python: boolean;
     vllmBin: boolean;
+    transformersPython?: boolean;
     time: string;
   };
   settings: {
@@ -240,6 +254,25 @@ export type ChatResponse = {
       content?: string;
     };
   }>;
+};
+
+export type ManagedProcess = {
+  pid: number;
+  type: string;
+  label: string | null;
+  meta: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type ManagedProcessesCleanupResponse = {
+  ok: boolean;
+  killedCount: number;
+  failed?: Array<{
+    pid: number;
+    type: string;
+    error: string;
+  }>;
+  remaining?: number;
 };
 
 type DeepPartial<T> = {
@@ -275,7 +308,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   activateModel: (id: string, payload?: Partial<Settings['inference']>) =>
-    request<{ ok: boolean; model: ModelItem; runtime: RuntimeState['vllm'] }>(`/models/${id}/activate`, {
+    request<{ ok: boolean; model: ModelItem; runtime: InferenceRuntime }>(`/models/${id}/activate`, {
       method: 'POST',
       body: JSON.stringify(payload || {}),
     }),
@@ -312,12 +345,12 @@ export const api = {
       body: JSON.stringify({}),
     }),
   activateLora: (id: string, payload?: Partial<Settings['inference']>) =>
-    request<{ ok: boolean; lora: LoraItem; runtime: RuntimeState['vllm'] }>(`/loras/${id}/activate`, {
+    request<{ ok: boolean; lora: LoraItem; runtime: InferenceRuntime }>(`/loras/${id}/activate`, {
       method: 'POST',
       body: JSON.stringify(payload || {}),
     }),
   deactivateLora: () =>
-    request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/loras/deactivate', {
+    request<{ ok: boolean; runtime: InferenceRuntime }>('/loras/deactivate', {
       method: 'POST',
       body: JSON.stringify({}),
     }),
@@ -390,12 +423,12 @@ export const api = {
     kvCacheDtype?: string;
     provider?: string;
   }) =>
-    request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/runtime/vllm/start', {
+    request<{ ok: boolean; runtime: InferenceRuntime }>('/runtime/vllm/start', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
   stopVllm: () =>
-    request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/runtime/vllm/stop', {
+    request<{ ok: boolean; runtime: InferenceRuntime }>('/runtime/vllm/stop', {
       method: 'POST',
     }),
   getRuntimeLogs: (tail = 200) =>
@@ -417,6 +450,15 @@ export const api = {
     network: Array<{ iface: string; operstate: string; rx_sec: number; tx_sec: number }>;
     gpuProcesses: Array<{ pid: number; name: string; cpu: number; mem: number; user: string; command: string }>;
   }>('/monitor/stats'),
+
+  getManagedProcesses: () =>
+    request<ManagedProcess[]>('/monitor/managed-processes'),
+
+  cleanupManagedProcesses: (payload?: { types?: string[] }) =>
+    request<ManagedProcessesCleanupResponse>('/monitor/managed-processes/cleanup', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
 
   killProcess: (pid: number) =>
     request<{ ok: boolean }>('/monitor/kill', {
@@ -462,7 +504,7 @@ export const api = {
   },
 
   useJobOutput: (jobId: string) =>
-    request<{ ok: boolean; runtime: RuntimeState['vllm']; job: Job }>('/runtime/use-job-output', {
+    request<{ ok: boolean; runtime: InferenceRuntime; job: Job }>('/runtime/use-job-output', {
       method: 'POST',
       body: JSON.stringify({ jobId }),
     }),

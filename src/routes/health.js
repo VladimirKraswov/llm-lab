@@ -10,6 +10,7 @@ router.get('/', (_req, res) => {
     service: 'llm-lab-service',
     time: new Date().toISOString(),
     python: exists(CONFIG.pythonBin),
+    transformersPython: exists(CONFIG.transformersPythonBin),
     vllmBin: exists(CONFIG.vllmBin),
     openWebUiPort: CONFIG.openWebUiPort,
     vllmPort: CONFIG.vllmPort,
