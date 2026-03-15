@@ -86,15 +86,17 @@ router.post('/use-job-output', async (req, res) => {
     }
 
     const lora = await getLoraByJobId(jobId);
-    let runtimeModelPath = job.outputDir;
+    let runtimeModelPath = job.modelId ? (await getModelById(job.modelId))?.path || job.baseModel : job.baseModel;
     let activeLoraId = null;
     let activeLoraName = null;
+    let loraPath = null;
+    let loraName = null;
 
     if (lora) {
-      const merged = await ensureMergedLora(lora.id);
-      runtimeModelPath = merged.mergedPath;
       activeLoraId = lora.id;
       activeLoraName = lora.name;
+      loraPath = lora.adapterPath;
+      loraName = lora.name;
     }
 
     const runtime = await startVllmRuntime({
@@ -108,6 +110,8 @@ router.post('/use-job-output', async (req, res) => {
       activeModelName: modelName,
       activeLoraId,
       activeLoraName,
+      loraPath,
+      loraName,
     });
 
     res.json({

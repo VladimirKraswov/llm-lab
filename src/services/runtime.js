@@ -24,6 +24,8 @@ async function startVllmRuntime({
   activeModelName = null,
   activeLoraId = null,
   activeLoraName = null,
+  loraPath = null,
+  loraName = null,
 }) {
   if (!fs.existsSync(CONFIG.vllmBin)) {
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
@@ -50,6 +52,12 @@ async function startVllmRuntime({
     '--max-model-len',
     String(maxModelLen),
   ];
+
+  if (loraPath && loraName) {
+    args.push('--enable-lora');
+    args.push('--lora-modules');
+    args.push(`${loraName}=${loraPath}`);
+  }
 
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
 

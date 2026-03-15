@@ -73,20 +73,28 @@ router.get('/:id/package/download', async (req, res) => {
 
 router.post('/:id/activate', async (req, res) => {
   try {
-    const item = await ensureMergedLora(req.params.id);
+    const item = await getLoraById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'lora not found' });
+    if (item.status !== 'ready') return res.status(400).json({ error: 'lora is not ready' });
+
     const settings = await getSettings();
     const inf = { ...settings.inference, ...(req.body || {}) };
 
     await stopVllmRuntime();
 
     let baseModelName = item.baseModelName;
+    let baseModelPath = item.baseModelRef;
+
     if (item.baseModelId) {
       const model = await getModelById(item.baseModelId);
-      if (model) baseModelName = model.name;
+      if (model) {
+        baseModelName = model.name;
+        baseModelPath = model.path;
+      }
     }
 
     const runtime = await startVllmRuntime({
-      model: item.mergedPath,
+      model: baseModelPath,
       port: Number(inf.port || CONFIG.vllmPort),
       maxModelLen: Number(inf.maxModelLen || 2048),
       gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
@@ -96,6 +104,8 @@ router.post('/:id/activate', async (req, res) => {
       activeModelName: baseModelName || null,
       activeLoraId: item.id,
       activeLoraName: item.name,
+      loraPath: item.adapterPath,
+      loraName: item.name,
     });
 
     emitEvent('lora_activated', {
