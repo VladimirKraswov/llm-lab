@@ -67,7 +67,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Runtime model</span>
-                  <span className="text-sm text-white">{data.runtime.vllm.model || 'Not running'}</span>
+                  <span className="text-sm text-white">{data.runtime.vllm?.model || 'Not running'}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Runtime port</span>

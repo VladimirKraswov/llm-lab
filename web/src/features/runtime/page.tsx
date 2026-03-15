@@ -233,7 +233,7 @@ export default function RuntimePage() {
 
               <Button
                 onClick={() => stopMutation.mutate()}
-                disabled={stopMutation.isPending || !runtimeQuery.data?.vllm.pid}
+                disabled={stopMutation.isPending || !runtimeQuery.data?.vllm?.pid}
                 className="bg-rose-500 text-white hover:bg-rose-400 disabled:bg-slate-800"
               >
                 Stop
@@ -241,7 +241,7 @@ export default function RuntimePage() {
 
               <Button
                 onClick={() => deactivateLoraMutation.mutate()}
-                disabled={deactivateLoraMutation.isPending || !runtimeQuery.data?.vllm.activeLoraId}
+                disabled={deactivateLoraMutation.isPending || !runtimeQuery.data?.vllm?.activeLoraId}
                 className="bg-slate-800 text-white hover:bg-slate-700"
               >
                 Switch to base model
@@ -263,17 +263,17 @@ export default function RuntimePage() {
                 value={
                   healthQuery.data?.ok
                     ? 'healthy'
-                    : (runtimeQuery.data?.vllm.pid ? 'starting' : 'failed')
+                    : (runtimeQuery.data?.vllm?.pid ? 'starting' : 'failed')
                 }
               />
             </div>
 
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Provider</span>
-              <span className="text-white capitalize font-medium">{runtimeQuery.data?.vllm.providerResolved || '—'}</span>
+              <span className="text-white capitalize font-medium">{runtimeQuery.data?.vllm?.providerResolved || '—'}</span>
             </div>
 
-            {runtimeQuery.data?.vllm.compatibilityRisk && (
+            {runtimeQuery.data?.vllm?.compatibilityRisk && (
               <div className={`p-2 rounded border text-xs ${runtimeQuery.data.vllm.compatibilityRisk === 'high' ? 'bg-rose-950/20 border-rose-900/50 text-rose-300' : 'bg-amber-950/20 border-amber-900/50 text-amber-300'}`}>
                 <div className="font-bold flex items-center gap-1 mb-1">
                   <AlertCircle size={14} />
@@ -285,17 +285,17 @@ export default function RuntimePage() {
 
             <div className="flex items-center justify-between">
               <span className="text-slate-400">PID</span>
-              <span className="text-white font-mono">{runtimeQuery.data?.vllm.pid || '—'}</span>
+              <span className="text-white font-mono">{runtimeQuery.data?.vllm?.pid || '—'}</span>
             </div>
 
             <div className="flex items-center justify-between gap-3">
               <span className="text-slate-400">Active model</span>
-              <span className="text-right text-white font-medium truncate max-w-[180px]" title={runtimeQuery.data?.vllm.activeModelName || ''}>
-                {runtimeQuery.data?.vllm.activeModelName || '—'}
+              <span className="text-right text-white font-medium truncate max-w-[180px]" title={runtimeQuery.data?.vllm?.activeModelName || ''}>
+                {runtimeQuery.data?.vllm?.activeModelName || '—'}
               </span>
             </div>
 
-            {runtimeQuery.data?.vllm.activeLoraName && (
+            {runtimeQuery.data?.vllm?.activeLoraName && (
               <div className="flex items-center justify-between gap-3">
                 <span className="text-slate-400">Active LoRA</span>
                 <span className="text-right text-white font-medium truncate max-w-[180px] text-blue-400">
@@ -306,7 +306,7 @@ export default function RuntimePage() {
 
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Port</span>
-              <span className="text-white">{runtimeQuery.data?.vllm.port || '—'}</span>
+              <span className="text-white">{runtimeQuery.data?.vllm?.port || '—'}</span>
             </div>
 
             {runtimeQuery.data?.vllm?.probe && (

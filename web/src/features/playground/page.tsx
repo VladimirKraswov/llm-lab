@@ -144,19 +144,19 @@ export default function PlaygroundPage() {
             <div className="flex-1 rounded-xl bg-slate-950/40 p-3">
               <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Health</div>
               <div className={`text-sm font-medium ${healthQuery.data?.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {healthQuery.data?.ok ? 'Healthy' : (runtimeQuery.data?.vllm.pid ? 'Starting...' : 'Offline')}
+                {healthQuery.data?.ok ? 'Healthy' : (runtimeQuery.data?.vllm?.pid ? 'Starting...' : 'Offline')}
               </div>
             </div>
             <div className="flex-1 rounded-xl bg-slate-950/40 p-3">
               <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Provider</div>
-              <div className="text-sm font-medium text-white capitalize">{runtimeQuery.data?.vllm.providerResolved || '—'}</div>
+              <div className="text-sm font-medium text-white capitalize">{runtimeQuery.data?.vllm?.providerResolved || '—'}</div>
             </div>
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Active model</div>
-            <div className="text-sm text-white break-words">{runtimeQuery.data?.vllm.activeModelName || '—'}</div>
-            {runtimeQuery.data?.vllm.activeLoraName && (
+            <div className="text-sm text-white break-words">{runtimeQuery.data?.vllm?.activeModelName || '—'}</div>
+            {runtimeQuery.data?.vllm?.activeLoraName && (
                <div className="mt-1 text-xs text-blue-400 font-medium">+ {runtimeQuery.data.vllm.activeLoraName}</div>
             )}
           </div>
@@ -164,7 +164,7 @@ export default function PlaygroundPage() {
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Serving path</div>
             <div className="mt-1 break-all text-[11px] font-mono text-slate-400">
-              {runtimeQuery.data?.vllm.model || 'None'}
+              {runtimeQuery.data?.vllm?.model || 'None'}
             </div>
           </div>
 
