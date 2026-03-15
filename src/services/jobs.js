@@ -10,6 +10,9 @@ const { readText } = require('../utils/fs');
 const { registerLoraFromJob } = require('./loras');
 const { runSyntheticGenJob } = require('./synthetic');
 const { createDatasetFromJsonl } = require('./datasets');
+const {
+  importSyntheticDatasetFromJsonlFile,
+} = require('./synthetic-datasets');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
@@ -63,7 +66,6 @@ async function getDatasetSnapshot(filePath) {
     const stats = fs.statSync(filePath);
 
     let hash = null;
-    // For files up to 500MB, we calculate a hash asynchronously
     if (stats.size < 500 * 1024 * 1024) {
       try {
         hash = await new Promise((resolve, reject) => {
@@ -460,7 +462,7 @@ async function startSyntheticGenJob(cfg) {
     paramsSnapshot: cfg,
     outputDir,
     logFile,
-    pid: process.pid, // We are running it in-process for now or it's managed by this job
+    pid: process.pid,
     error: null,
     tags: [],
     notes: '',
@@ -471,7 +473,6 @@ async function startSyntheticGenJob(cfg) {
   await upsertJob(job);
   emitEvent('job_updated', job);
 
-  // Background execution
   (async () => {
     try {
       const runningJob = await upsertJob({
@@ -489,10 +490,18 @@ async function startSyntheticGenJob(cfg) {
 
       const result = await runSyntheticGenJob(runningJob, updateStatus);
 
-      // Register the resulting dataset
+      logger.info('Synthetic generation result ready for import', {
+        jobId,
+        finalPath: result.finalPath,
+      });
+
       const datasetName = cfg.name || `synthetic-${jobId}`;
-      const jsonlContent = fs.readFileSync(result.finalPath, 'utf8');
-      const dataset = await createDatasetFromJsonl(datasetName, jsonlContent);
+
+      const dataset = await importSyntheticDatasetFromJsonlFile(
+        datasetName,
+        result.finalPath,
+        { sourcePath: result.finalPath }
+      );
 
       const finalJob = await upsertJob({
         ...(await getJobById(jobId)),
@@ -502,7 +511,7 @@ async function startSyntheticGenJob(cfg) {
         resultDatasetId: dataset.id,
         summaryMetrics: {
           rows: dataset.rows,
-        }
+        },
       });
       emitEvent('job_updated', finalJob);
     } catch (err) {
