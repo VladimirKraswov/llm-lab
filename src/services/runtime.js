@@ -149,9 +149,19 @@ async function startVllmRuntime(params) {
   if (!started) {
     await killProcessGroup(child.pid, 'SIGKILL');
     const logs = await readText(CONFIG.vllmLogFile, '');
-    const lastLines = logs.split('\n').slice(-30).join('\n');
+    const lastLines = logs.split('\n').slice(-50).join('\n');
     logger.error(`vLLM did not become healthy within timeout`, { model, port, lastLines });
-    throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
+
+    let specificError = 'vLLM startup timed out';
+    if (lastLines.includes('OutOfMemoryError') || lastLines.includes('CUDA out of memory')) {
+      specificError = 'CUDA Out of Memory (GPU capacity exceeded)';
+    } else if (lastLines.includes('Address already in use')) {
+      specificError = `Port ${port} is already in use`;
+    } else if (lastLines.includes('No such file or directory')) {
+      specificError = 'Model weights or configuration files not found';
+    }
+
+    throw new Error(`${specificError}. Last logs:\n${lastLines || 'None'}`);
   }
 
   const settings = await getSettings();

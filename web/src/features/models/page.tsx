@@ -23,6 +23,12 @@ export default function ModelsPage() {
     refetchInterval: 5000,
   });
 
+  const statsQuery = useQuery({
+    queryKey: ['monitor-stats'],
+    queryFn: api.getMonitorStats,
+    refetchInterval: 10000,
+  });
+
   const lorasQuery = useQuery({
     queryKey: ['loras'],
     queryFn: api.getLoras,
@@ -75,6 +81,12 @@ export default function ModelsPage() {
     return (lorasQuery.data || []).filter(l => l.baseModelId === model.id || l.baseModelRef === model.repoId);
   }, [selectedModelId, modelsQuery.data, lorasQuery.data]);
 
+  const maxVram = useMemo(() => {
+    const gpus = statsQuery.data?.gpus || [];
+    if (!gpus.length) return 0;
+    return Math.max(...gpus.map(g => g.vram));
+  }, [statsQuery.data]);
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -123,7 +135,9 @@ export default function ModelsPage() {
                   onClick={() => setSelectedModelId(item.id)}
                   className={`cursor-pointer rounded-2xl border p-4 transition ${
                     selectedModelId === item.id
-                      ? 'border-blue-500 bg-blue-500/10'
+                      ? (item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024)
+                        ? 'border-rose-500 bg-rose-500/10'
+                        : 'border-blue-500 bg-blue-500/10'
                       : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'
                   }`}
                 >
@@ -143,8 +157,16 @@ export default function ModelsPage() {
                           </div>
                         )}
                         {item.vramEstimate && (
-                          <div className="text-slate-400">
-                            VRAM: <span className="text-slate-200">~{item.vramEstimate}</span>
+                          <div className={
+                            (item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024)
+                              ? "text-rose-400 font-bold"
+                              : "text-slate-400"
+                          }>
+                            VRAM: <span className={
+                              (item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024)
+                                ? "text-rose-300"
+                                : "text-slate-200"
+                            }>~{item.vramEstimate}</span>
                           </div>
                         )}
                       </div>
