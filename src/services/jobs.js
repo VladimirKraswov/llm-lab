@@ -9,7 +9,6 @@ const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const { registerLoraFromJob } = require('./loras');
 const { runSyntheticGenJob } = require('./synthetic');
-const { createDatasetFromJsonl } = require('./datasets');
 const {
   importSyntheticDatasetFromJsonlFile,
 } = require('./synthetic-datasets');
@@ -468,6 +467,19 @@ async function startSyntheticGenJob(cfg) {
     notes: '',
     artifacts: [],
     summaryMetrics: {},
+    syntheticMeta: {
+      progressStep: 'queued',
+      finalPath: null,
+      import: {
+        sampleLine: null,
+        sampleParsed: null,
+        invalidSamples: [],
+        detectedFormats: [],
+        totalLines: 0,
+        validCount: 0,
+        invalidCount: 0,
+      },
+    },
   };
 
   await upsertJob(job);
@@ -479,12 +491,22 @@ async function startSyntheticGenJob(cfg) {
         ...job,
         status: 'running',
         startedAt: nowIso(),
+        syntheticMeta: {
+          ...job.syntheticMeta,
+          progressStep: 'running',
+        },
       });
       emitEvent('job_updated', runningJob);
 
       const updateStatus = async (step) => {
         const current = await getJobById(jobId);
-        const updated = await upsertJob({ ...current, progressStep: step });
+        const updated = await upsertJob({
+          ...current,
+          syntheticMeta: {
+            ...(current.syntheticMeta || {}),
+            progressStep: step,
+          },
+        });
         emitEvent('job_updated', updated);
       };
 
@@ -495,9 +517,19 @@ async function startSyntheticGenJob(cfg) {
         finalPath: result.finalPath,
       });
 
+      const beforeImport = await upsertJob({
+        ...(await getJobById(jobId)),
+        syntheticMeta: {
+          ...((await getJobById(jobId)).syntheticMeta || {}),
+          progressStep: 'importing',
+          finalPath: result.finalPath,
+        },
+      });
+      emitEvent('job_updated', beforeImport);
+
       const datasetName = cfg.name || `synthetic-${jobId}`;
 
-      const dataset = await importSyntheticDatasetFromJsonlFile(
+      const { dataset, importMeta } = await importSyntheticDatasetFromJsonlFile(
         datasetName,
         result.finalPath,
         { sourcePath: result.finalPath }
@@ -511,17 +543,52 @@ async function startSyntheticGenJob(cfg) {
         resultDatasetId: dataset.id,
         summaryMetrics: {
           rows: dataset.rows,
+          validCount: importMeta.validCount,
+          invalidCount: importMeta.invalidCount,
+        },
+        syntheticMeta: {
+          ...((await getJobById(jobId)).syntheticMeta || {}),
+          progressStep: 'completed',
+          finalPath: result.finalPath,
+          import: {
+            sampleLine: importMeta.sampleLine,
+            sampleParsed: importMeta.sampleParsed,
+            invalidSamples: importMeta.invalidSamples,
+            detectedFormats: importMeta.detectedFormats,
+            totalLines: importMeta.totalLines,
+            validCount: importMeta.validCount,
+            invalidCount: importMeta.invalidCount,
+          },
         },
       });
+
       emitEvent('job_updated', finalJob);
     } catch (err) {
       logger.error('Synthetic generation job failed', { jobId, error: err.message });
+
+      const details = err.syntheticImportDetails || null;
+      const current = await getJobById(jobId);
+
       const failedJob = await upsertJob({
-        ...(await getJobById(jobId)),
+        ...current,
         status: 'failed',
         finishedAt: nowIso(),
         error: String(err.message || err),
+        syntheticMeta: {
+          ...(current.syntheticMeta || {}),
+          progressStep: 'failed',
+          import: {
+            sampleLine: details?.sampleLine || null,
+            sampleParsed: details?.sampleParsed || null,
+            invalidSamples: details?.invalidSamples || [],
+            detectedFormats: details?.detectedFormats || [],
+            totalLines: details?.totalLines || 0,
+            validCount: details?.validCount || 0,
+            invalidCount: details?.invalidCount || 0,
+          },
+        },
       });
+
       emitEvent('job_updated', failedJob);
     }
   })();

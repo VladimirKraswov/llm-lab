@@ -11,20 +11,25 @@ function isNonEmptyString(value) {
 }
 
 function asMessages(userText, assistantText) {
+  const user = String(userText || '').trim();
+  const assistant = String(assistantText || '').trim();
+
+  if (!user) throw new Error('user content is empty');
+  if (!assistant) throw new Error('assistant content is empty');
+
   return {
     messages: [
-      { role: 'user', content: String(userText || '').trim() },
-      { role: 'assistant', content: String(assistantText || '').trim() },
+      { role: 'user', content: user },
+      { role: 'assistant', content: assistant },
     ],
   };
 }
 
 function tryNormalizeSyntheticRecord(item) {
-  if (!item || typeof item !== 'object') {
-    throw new Error('Row is not an object');
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    throw new Error('Row is not a JSON object');
   }
 
-  // Already in target format
   if (Array.isArray(item.messages)) {
     if (item.messages.length < 2) {
       throw new Error('messages must contain at least 2 items');
@@ -44,7 +49,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Classic instruction-output
   if (isNonEmptyString(item.instruction) && isNonEmptyString(item.output)) {
     return {
       normalized: asMessages(item.instruction, item.output),
@@ -52,7 +56,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Prompt-completion
   if (isNonEmptyString(item.prompt) && isNonEmptyString(item.completion)) {
     return {
       normalized: asMessages(item.prompt, item.completion),
@@ -60,7 +63,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Question-answer
   if (isNonEmptyString(item.question) && isNonEmptyString(item.answer)) {
     return {
       normalized: asMessages(item.question, item.answer),
@@ -68,7 +70,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Input-output
   if (isNonEmptyString(item.input) && isNonEmptyString(item.output)) {
     return {
       normalized: asMessages(item.input, item.output),
@@ -76,7 +77,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Context-response
   if (isNonEmptyString(item.context) && isNonEmptyString(item.response)) {
     return {
       normalized: asMessages(item.context, item.response),
@@ -84,7 +84,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Synthetic-style instruction/response
   if (isNonEmptyString(item.instruction) && isNonEmptyString(item.response)) {
     return {
       normalized: asMessages(item.instruction, item.response),
@@ -92,7 +91,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Synthetic-style question/response
   if (isNonEmptyString(item.question) && isNonEmptyString(item.response)) {
     return {
       normalized: asMessages(item.question, item.response),
@@ -100,7 +98,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Synthetic-style prompt/answer
   if (isNonEmptyString(item.prompt) && isNonEmptyString(item.answer)) {
     return {
       normalized: asMessages(item.prompt, item.answer),
@@ -108,7 +105,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Some synthetic kits emit "input" + "answer"
   if (isNonEmptyString(item.input) && isNonEmptyString(item.answer)) {
     return {
       normalized: asMessages(item.input, item.answer),
@@ -116,7 +112,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Some synthetic kits may emit nested fields
   if (
     item.record &&
     typeof item.record === 'object' &&
@@ -129,7 +124,6 @@ function tryNormalizeSyntheticRecord(item) {
     };
   }
 
-  // Generic fallback: common keys
   const possibleUserKeys = ['user', 'query', 'task', 'request'];
   const possibleAssistantKeys = ['assistant', 'result', 'completion', 'generated_answer'];
 
@@ -180,9 +174,17 @@ function parseSyntheticJsonl(jsonl) {
     }
   });
 
-  const sortedFormats = [...formats.entries()]
+  const detectedFormats = [...formats.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([name]) => name);
+
+  const sampleLine = lines[0] || '';
+  let sampleParsed = null;
+  try {
+    sampleParsed = sampleLine ? JSON.parse(sampleLine) : null;
+  } catch {
+    sampleParsed = sampleLine || null;
+  }
 
   return {
     totalLines: lines.length,
@@ -190,47 +192,41 @@ function parseSyntheticJsonl(jsonl) {
     invalidCount: invalid.length,
     valid,
     invalid,
-    detectedFormats: sortedFormats,
-    detectedFormat: sortedFormats[0] || 'unknown',
+    invalidSamples: invalid.slice(0, 5),
+    detectedFormats,
+    detectedFormat: detectedFormats[0] || 'unknown',
+    sampleLine,
+    sampleParsed,
   };
 }
 
-async function importSyntheticDatasetFromJsonlFile(name, filePath, options = {}) {
-  const datasetName = String(name || '').trim();
-  if (!datasetName) {
-    throw new Error('Dataset name is required');
-  }
-
-  if (!filePath || !fs.existsSync(filePath)) {
-    throw new Error(`Synthetic dataset file not found: ${filePath}`);
-  }
-
-  const jsonl = await fsp.readFile(filePath, 'utf8');
-  return importSyntheticDatasetFromJsonl(datasetName, jsonl, {
-    sourcePath: filePath,
-    ...options,
-  });
-}
-
 async function importSyntheticDatasetFromJsonl(name, jsonl, options = {}) {
-  const sampleLine = String(jsonl || '')
-    .split('\n')
-    .map((x) => x.trim())
-    .find(Boolean) || '';
+  const parsed = parseSyntheticJsonl(jsonl);
 
   logger.info('Synthetic dataset import sample', {
     datasetName: name,
     sourcePath: options.sourcePath || null,
-    sampleLine: sampleLine.slice(0, 2000),
+    sampleLine: parsed.sampleLine.slice(0, 2000),
+    detectedFormats: parsed.detectedFormats,
   });
-
-  const parsed = parseSyntheticJsonl(jsonl);
 
   if (!parsed.validCount) {
     const firstError = parsed.invalid[0];
-    throw new Error(
-      `Synthetic dataset import failed: 0 valid rows. First error: ${firstError?.error || 'unknown error'}`
-    );
+    const message =
+      `Synthetic dataset import failed: 0 valid rows. ` +
+      `First error: ${firstError?.error || 'unknown error'}`;
+
+    const error = new Error(message);
+    error.syntheticImportDetails = {
+      sampleLine: parsed.sampleLine.slice(0, 2000),
+      sampleParsed: parsed.sampleParsed,
+      invalidSamples: parsed.invalidSamples,
+      detectedFormats: parsed.detectedFormats,
+      totalLines: parsed.totalLines,
+      validCount: parsed.validCount,
+      invalidCount: parsed.invalidCount,
+    };
+    throw error;
   }
 
   const datasetId = uid('ds');
@@ -255,6 +251,7 @@ async function importSyntheticDatasetFromJsonl(name, jsonl, options = {}) {
     invalidRows: parsed.invalidCount,
     syntheticImport: true,
     syntheticSourcePath: options.sourcePath || null,
+    syntheticSampleRow: parsed.sampleParsed,
   };
 
   logger.info('Synthetic dataset imported', {
@@ -265,7 +262,61 @@ async function importSyntheticDatasetFromJsonl(name, jsonl, options = {}) {
     detectedFormats: parsed.detectedFormats,
   });
 
-  return addDataset(meta);
+  return {
+    dataset: await addDataset(meta),
+    importMeta: {
+      sampleLine: parsed.sampleLine.slice(0, 2000),
+      sampleParsed: parsed.sampleParsed,
+      invalidSamples: parsed.invalidSamples,
+      detectedFormats: parsed.detectedFormats,
+      totalLines: parsed.totalLines,
+      validCount: parsed.validCount,
+      invalidCount: parsed.invalidCount,
+    },
+  };
+}
+
+async function importSyntheticDatasetFromJsonlFile(name, filePath, options = {}) {
+  const datasetName = String(name || '').trim();
+  if (!datasetName) {
+    throw new Error('Dataset name is required');
+  }
+
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error(`Synthetic dataset file not found: ${filePath}`);
+  }
+
+  const jsonl = await fsp.readFile(filePath, 'utf8');
+  return importSyntheticDatasetFromJsonl(datasetName, jsonl, {
+    sourcePath: filePath,
+    ...options,
+  });
+}
+
+async function previewSyntheticJsonlFile(filePath, limit = 20) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error(`Synthetic dataset file not found: ${filePath}`);
+  }
+
+  const jsonl = await fsp.readFile(filePath, 'utf8');
+  const parsed = parseSyntheticJsonl(jsonl);
+
+  return {
+    path: filePath,
+    totalLines: parsed.totalLines,
+    validCount: parsed.validCount,
+    invalidCount: parsed.invalidCount,
+    detectedFormats: parsed.detectedFormats,
+    sampleLine: parsed.sampleLine.slice(0, 2000),
+    sampleParsed: parsed.sampleParsed,
+    preview: parsed.valid.slice(0, limit).map((x) => ({
+      line: x.line,
+      sourceFormat: x.sourceFormat,
+      original: x.original,
+      normalized: x.normalized,
+    })),
+    invalidSamples: parsed.invalidSamples,
+  };
 }
 
 module.exports = {
@@ -273,4 +324,5 @@ module.exports = {
   parseSyntheticJsonl,
   importSyntheticDatasetFromJsonl,
   importSyntheticDatasetFromJsonlFile,
+  previewSyntheticJsonlFile,
 };

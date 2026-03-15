@@ -7,9 +7,9 @@
  * - Игнор по .codebundleignore (gitignore-like)
  */
 
-const  fs = require("fs");
-const  fsp = require("fs/promises");
-const  path = require("path");
+import  fs from  "fs";
+import  fsp from "fs/promises";
+import  path from "path"
 
 const PROJECT_ROOT = process.cwd();
 const IGNORE_FILE_NAME = ".codebundleignore";

@@ -162,6 +162,30 @@ export type SummaryMetrics = {
   duration_human?: string;
   bf16?: boolean;
   fp16?: boolean;
+  validCount?: number;
+  invalidCount?: number;
+};
+
+export type SyntheticInvalidSample = {
+  line: number;
+  error: string;
+  raw: string;
+};
+
+export type SyntheticImportMeta = {
+  sampleLine?: string | null;
+  sampleParsed?: unknown;
+  invalidSamples?: SyntheticInvalidSample[];
+  detectedFormats?: string[];
+  totalLines?: number;
+  validCount?: number;
+  invalidCount?: number;
+};
+
+export type SyntheticMeta = {
+  progressStep?: string | null;
+  finalPath?: string | null;
+  import?: SyntheticImportMeta;
 };
 
 export type Job = {
@@ -172,10 +196,10 @@ export type Job = {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
-  datasetId: string;
-  datasetPath: string;
+  datasetId?: string;
+  datasetPath?: string;
   modelId?: string | null;
-  baseModel: string;
+  baseModel?: string;
   qlora?: Partial<Settings['qlora']>;
   outputDir: string;
   logFile: string;
@@ -198,10 +222,35 @@ export type Job = {
   tags?: string[];
   notes?: string;
   artifacts?: Array<{ name: string; size: number; path: string }>;
-  /** Текущий этап синтетической генерации (например, "chunking", "generating", "curating") */
   progressStep?: string;
   summaryMetrics?: SummaryMetrics;
+  resultDatasetId?: string | null;
+  syntheticMeta?: SyntheticMeta;
+};
 
+export type SyntheticPreviewRow = {
+  line: number;
+  sourceFormat: string;
+  original: unknown;
+  normalized: {
+    messages: Array<{ role: string; content: string }>;
+  };
+};
+
+export type SyntheticJobPreviewResponse = {
+  ok: boolean;
+  jobId: string;
+  status: JobStatus;
+  progressStep: string | null;
+  path: string;
+  totalLines: number;
+  validCount: number;
+  invalidCount: number;
+  detectedFormats: string[];
+  sampleLine: string | null;
+  sampleParsed: unknown;
+  preview: SyntheticPreviewRow[];
+  invalidSamples: SyntheticInvalidSample[];
 };
 
 export type RuntimeProbe = {
@@ -461,6 +510,9 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  getSyntheticJobPreview: (jobId: string, limit = 20) =>
+    request<SyntheticJobPreviewResponse>(`/synthetic/jobs/${jobId}/preview?limit=${limit}`),
+
   getRuntime: () => request<RuntimeState>('/runtime'),
   getRuntimeProviders: () => request<ProvidersResponse>('/runtime/providers'),
   getRuntimeHealth: () => request<RuntimeHealth>('/runtime/health'),
@@ -571,7 +623,7 @@ export const api = {
     return request<{ ok: boolean; filename: string; path: string }>('/synthetic/upload', {
       method: 'POST',
       body: formData,
-      headers: {}, // Let the browser set Content-Type with boundary
+      headers: {},
     });
   },
 };
