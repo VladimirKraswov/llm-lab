@@ -1,281 +1,340 @@
-const fs = require('fs');
-const fsp = require('fs/promises');
-const { spawn } = require('child_process');
-const { CONFIG } = require('../config');
-const { nowIso } = require('../utils/ids');
-const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
-const { getRuntime, saveRuntime, getSettings } = require('./state');
-const { emitEvent } = require('./events');
-const logger = require('../utils/logger');
-const { clearGpuMemory } = require('../utils/gpu');
-const { readText } = require('../utils/fs');
+import { useEffect, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../../lib/api';
+import { PageHeader } from '../../components/page-header';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { StatusBadge } from '../../components/status-badge';
+import { fmtDate } from '../../lib/utils';
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+export default function RuntimePage() {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
-function validateInferenceParams(params = {}) {
-  if (
-    params.gpuMemoryUtilization !== undefined &&
-    (typeof params.gpuMemoryUtilization !== 'number' ||
-      params.gpuMemoryUtilization < 0 ||
-      params.gpuMemoryUtilization > 1)
-  ) {
-    throw new Error('gpuMemoryUtilization must be between 0 and 1');
-  }
-
-  if (
-    params.maxModelLen !== undefined &&
-    (!Number.isInteger(params.maxModelLen) || params.maxModelLen < 1)
-  ) {
-    throw new Error('maxModelLen must be a positive integer');
-  }
-
-  if (
-    params.maxNumSeqs !== undefined &&
-    (!Number.isInteger(params.maxNumSeqs) || params.maxNumSeqs < 1)
-  ) {
-    throw new Error('maxNumSeqs must be a positive integer');
-  }
-
-  if (
-    params.swapSpace !== undefined &&
-    (!Number.isInteger(params.swapSpace) || params.swapSpace < 0)
-  ) {
-    throw new Error('swapSpace must be a non-negative integer');
-  }
-
-  if (
-    params.tensorParallelSize !== undefined &&
-    (!Number.isInteger(params.tensorParallelSize) || params.tensorParallelSize < 1)
-  ) {
-    throw new Error('tensorParallelSize must be a positive integer');
-  }
-}
-
-async function startVllmRuntime(params = {}) {
-  validateInferenceParams(params);
-
-  const {
-    model,
-    port,
-    maxModelLen,
-    gpuMemoryUtilization,
-    tensorParallelSize,
-    baseModel = null,
-    activeModelId = null,
-    activeModelName = null,
-    activeLoraId = null,
-    activeLoraName = null,
-    loraPath = null,
-    loraName = null,
-    quantization = null,
-    dtype = 'auto',
-    trustRemoteCode = true,
-    enforceEager = false,
-    kvCacheDtype = 'auto',
-    maxNumSeqs = 256,
-    swapSpace = 4,
-  } = params;
-
-  if (!model) {
-    throw new Error('model is required');
-  }
-
-  if (!fs.existsSync(CONFIG.vllmBin)) {
-    throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
-  }
-
-  logger.info('Starting vLLM runtime', {
-    model,
-    activeModelName,
-    activeLoraName,
-    loraPath,
-    port,
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
   });
 
-  await clearGpuMemory();
-
-  const runtime = await getRuntime();
-  if (runtime.vllm?.pid && isPidRunning(runtime.vllm.pid)) {
-    await stopVllmRuntime();
-  }
-
-  const args = [
-    'serve',
-    model,
-    '--host',
-    '0.0.0.0',
-    '--port',
-    String(port),
-    '--gpu-memory-utilization',
-    String(gpuMemoryUtilization),
-    '--tensor-parallel-size',
-    String(tensorParallelSize),
-    '--max-model-len',
-    String(maxModelLen),
-    '--max-num-seqs',
-    String(maxNumSeqs),
-    '--swap-space',
-    String(swapSpace),
-    '--dtype',
-    String(dtype || 'auto'),
-  ];
-
-  if (quantization) {
-    args.push('--quantization', String(quantization));
-  }
-
-  if (trustRemoteCode) {
-    args.push('--trust-remote-code');
-  }
-
-  if (enforceEager) {
-    args.push('--enforce-eager');
-  }
-
-  if (kvCacheDtype && kvCacheDtype !== 'auto') {
-    args.push('--kv-cache-dtype', String(kvCacheDtype));
-  }
-
-  if (loraPath && loraName) {
-    args.push('--enable-lora');
-    args.push('--lora-modules');
-    args.push(`${loraName}=${loraPath}`);
-  }
-
-  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
-
-  const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
-  const child = spawn(CONFIG.vllmBin, args, {
-    cwd: CONFIG.workspace,
-    detached: true,
-    stdio: ['ignore', outFd, outFd],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  const runtimeQuery = useQuery({
+    queryKey: ['runtime'],
+    queryFn: api.getRuntime,
+    refetchInterval: 5000,
   });
 
-  child.unref();
-  await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
-
-  let started = false;
-
-  for (let i = 0; i < 120; i += 1) {
-    const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
-
-    if (r.ok) {
-      started = true;
-      break;
-    }
-
-    if (!isPidRunning(child.pid)) {
-      logger.error('vLLM exited during startup', {
-        model,
-        port,
-        logFile: CONFIG.vllmLogFile,
-      });
-      throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
-    }
-
-    await sleep(1000);
-  }
-
-  if (!started) {
-    await killProcessGroup(child.pid, 'SIGKILL');
-    const logs = await readText(CONFIG.vllmLogFile, '');
-    const lastLines = logs.split('\n').slice(-30).join('\n');
-    logger.error('vLLM did not become healthy within timeout', {
-      model,
-      port,
-      lastLines,
-    });
-    throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
-  }
-
-  const settings = await getSettings();
-
-  const next = {
-    vllm: {
-      pid: child.pid,
-      model,
-      startedAt: nowIso(),
-      port,
-      logFile: CONFIG.vllmLogFile,
-      baseModel: baseModel || settings.baseModel,
-      activeModelId,
-      activeModelName,
-      activeLoraId,
-      activeLoraName,
-    },
-  };
-
-  await saveRuntime(next);
-  emitEvent('runtime_started', next.vllm);
-
-  logger.info('vLLM runtime started', {
-    pid: child.pid,
-    model,
-    port,
-    activeModelName,
-    activeLoraName,
+  const healthQuery = useQuery({
+    queryKey: ['runtime-health'],
+    queryFn: api.getRuntimeHealth,
+    refetchInterval: 5000,
   });
 
-  return next.vllm;
-}
+  const logsQuery = useQuery({
+    queryKey: ['runtime-logs'],
+    queryFn: () => api.getRuntimeLogs(400),
+    refetchInterval: 3000,
+  });
 
-async function stopVllmRuntime() {
-  const runtime = await getRuntime();
-  const pid = runtime.vllm?.pid;
+  const [model, setModel] = useState('');
+  const [port, setPort] = useState('8000');
+  const [maxModelLen, setMaxModelLen] = useState('8192');
+  const [gpuMemoryUtilization, setGpuMemoryUtilization] = useState('0.9');
+  const [tensorParallelSize, setTensorParallelSize] = useState('1');
+  const [maxNumSeqs, setMaxNumSeqs] = useState('256');
+  const [swapSpace, setSwapSpace] = useState('4');
+  const [quantization, setQuantization] = useState('');
+  const [dtype, setDtype] = useState('auto');
+  const [trustRemoteCode, setTrustRemoteCode] = useState(true);
+  const [enforceEager, setEnforceEager] = useState(false);
+  const [kvCacheDtype, setKvCacheDtype] = useState('auto');
 
-  if (pid && isPidRunning(pid)) {
-    await killProcessGroup(pid);
+  const initializedRef = useRef(false);
 
-    for (let i = 0; i < 20; i += 1) {
-      if (!isPidRunning(pid)) break;
-      await sleep(500);
-    }
+  useEffect(() => {
+    const settings = settingsQuery.data;
+    if (!settings || initializedRef.current) return;
 
-    if (isPidRunning(pid)) {
-      await killProcessGroup(pid, 'SIGKILL');
-    }
-  }
+    const inf = settings.inference || {};
 
-  const settings = await getSettings();
+    setModel(inf.model || '');
+    setPort(String(inf.port ?? 8000));
+    setMaxModelLen(String(inf.maxModelLen ?? 8192));
+    setGpuMemoryUtilization(String(inf.gpuMemoryUtilization ?? 0.9));
+    setTensorParallelSize(String(inf.tensorParallelSize ?? 1));
+    setQuantization(inf.quantization || '');
+    setMaxNumSeqs(String(inf.maxNumSeqs ?? 256));
+    setSwapSpace(String(inf.swapSpace ?? 4));
+    setDtype(inf.dtype || 'auto');
+    setTrustRemoteCode(inf.trustRemoteCode ?? true);
+    setEnforceEager(!!inf.enforceEager);
+    setKvCacheDtype(inf.kvCacheDtype || 'auto');
 
-  const next = {
-    vllm: {
-      pid: null,
-      model: null,
-      startedAt: null,
-      port: CONFIG.vllmPort,
-      logFile: CONFIG.vllmLogFile,
-      baseModel: settings.baseModel,
-      activeModelId: null,
-      activeModelName: null,
-      activeLoraId: null,
-      activeLoraName: null,
-    },
+    initializedRef.current = true;
+  }, [settingsQuery.data]);
+
+  const invalidateRuntime = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['runtime'] });
+    await queryClient.invalidateQueries({ queryKey: ['runtime-health'] });
+    await queryClient.invalidateQueries({ queryKey: ['runtime-logs'] });
   };
 
-  await saveRuntime(next);
-  emitEvent('runtime_stopped', next.vllm);
-  logger.info('vLLM runtime stopped');
+  const startMutation = useMutation({
+    mutationFn: api.startVllm,
+    onSuccess: invalidateRuntime,
+  });
 
-  return next.vllm;
+  const stopMutation = useMutation({
+    mutationFn: api.stopVllm,
+    onSuccess: invalidateRuntime,
+  });
+
+  const deactivateLoraMutation = useMutation({
+    mutationFn: api.deactivateLora,
+    onSuccess: invalidateRuntime,
+  });
+
+  const runtime = runtimeQuery.data?.vllm;
+  const isRunning = !!runtime?.pid;
+
+  const healthStatus = healthQuery.data?.ok
+    ? 'healthy'
+    : isRunning
+      ? 'starting'
+      : 'stopped';
+
+  return (
+    <div>
+      <PageHeader title="Runtime" description="Запуск vLLM и текущая активная модель / LoRA." />
+
+      <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
+        <Card>
+          <CardHeader>
+            <CardTitle>Manual vLLM configuration</CardTitle>
+          </CardHeader>
+
+          <CardContent className="space-y-4">
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Model path or repo</label>
+              <Input value={model} onChange={(e) => setModel(e.target.value)} />
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Port</label>
+                <Input value={port} onChange={(e) => setPort(e.target.value)} />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Tensor parallel</label>
+                <Input value={tensorParallelSize} onChange={(e) => setTensorParallelSize(e.target.value)} />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Max model len</label>
+                <Input value={maxModelLen} onChange={(e) => setMaxModelLen(e.target.value)} />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">GPU memory utilization</label>
+                <Input value={gpuMemoryUtilization} onChange={(e) => setGpuMemoryUtilization(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Quantization</label>
+                <select
+                  value={quantization}
+                  onChange={(e) => setQuantization(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">None (auto)</option>
+                  <option value="awq">AWQ</option>
+                  <option value="gptq">GPTQ</option>
+                  <option value="squeezellm">SqueezeLLM</option>
+                  <option value="marlin">Marlin</option>
+                  <option value="bitsandbytes">BitsAndBytes (4-bit)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">DType</label>
+                <select
+                  value={dtype}
+                  onChange={(e) => setDtype(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="half">Half (FP16)</option>
+                  <option value="float16">Float16</option>
+                  <option value="bfloat16">BFloat16</option>
+                  <option value="float">Float (FP32)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Max parallel seqs</label>
+                <Input value={maxNumSeqs} onChange={(e) => setMaxNumSeqs(e.target.value)} />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Swap space (GB)</label>
+                <Input value={swapSpace} onChange={(e) => setSwapSpace(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="flex items-center gap-3">
+                <input
+                  id="trust-remote-code-manual"
+                  type="checkbox"
+                  checked={trustRemoteCode}
+                  onChange={(e) => setTrustRemoteCode(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm font-medium text-white">Trust Remote Code</span>
+              </label>
+
+              <label className="flex items-center gap-3">
+                <input
+                  id="enforce-eager-manual"
+                  type="checkbox"
+                  checked={enforceEager}
+                  onChange={(e) => setEnforceEager(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm font-medium text-white">Enforce Eager Mode</span>
+              </label>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">KV Cache DType</label>
+              <select
+                value={kvCacheDtype}
+                onChange={(e) => setKvCacheDtype(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="auto">Auto</option>
+                <option value="fp8">FP8 (if supported)</option>
+              </select>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <Button
+                onClick={() =>
+                  startMutation.mutate({
+                    model,
+                    port: Number(port),
+                    maxModelLen: Number(maxModelLen),
+                    gpuMemoryUtilization: Number(gpuMemoryUtilization),
+                    tensorParallelSize: Number(tensorParallelSize),
+                    quantization: quantization || null,
+                    maxNumSeqs: Number(maxNumSeqs),
+                    swapSpace: Number(swapSpace),
+                    dtype,
+                    trustRemoteCode,
+                    enforceEager,
+                    kvCacheDtype,
+                  })
+                }
+                disabled={startMutation.isPending || !model.trim()}
+              >
+                {startMutation.isPending ? 'Starting...' : 'Start'}
+              </Button>
+
+              <Button
+                onClick={() => stopMutation.mutate()}
+                disabled={stopMutation.isPending || !isRunning}
+                className="bg-rose-500 text-white hover:bg-rose-400"
+              >
+                {stopMutation.isPending ? 'Stopping...' : 'Stop'}
+              </Button>
+
+              <Button
+                onClick={() => deactivateLoraMutation.mutate()}
+                disabled={deactivateLoraMutation.isPending}
+                className="bg-slate-800 text-white hover:bg-slate-700"
+              >
+                {deactivateLoraMutation.isPending ? 'Switching...' : 'Switch to base model'}
+              </Button>
+            </div>
+
+            {startMutation.error ? (
+              <p className="text-sm text-rose-300">{(startMutation.error).message}</p>
+            ) : null}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Runtime status</CardTitle>
+          </CardHeader>
+
+          <CardContent className="space-y-4 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">Health</span>
+              <StatusBadge value={healthStatus} />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">PID</span>
+              <span className="text-white">{runtime?.pid || '—'}</span>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-slate-400">Serving path</span>
+              <span className="text-right text-white">{runtime?.model || 'Not running'}</span>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-slate-400">Base model</span>
+              <span className="text-right text-white">{runtime?.baseModel || '—'}</span>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-slate-400">Active model</span>
+              <span className="text-right text-white">{runtime?.activeModelName || '—'}</span>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-slate-400">Active LoRA</span>
+              <span className="text-right text-white">{runtime?.activeLoraName || 'None'}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">Port</span>
+              <span className="text-white">{runtime?.port || '—'}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">Started</span>
+              <span className="text-white">{fmtDate(runtime?.startedAt)}</span>
+            </div>
+
+            <div className="mt-2 text-xs font-medium text-slate-400">Health output</div>
+            <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 text-[10px] leading-tight text-slate-300">
+              {healthQuery.data?.raw || 'No health output'}
+            </pre>
+
+            <div className="mt-2 text-xs font-medium text-slate-400">vLLM process logs</div>
+            <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 text-[10px] leading-tight text-slate-300">
+              {logsQuery.data?.content || 'No logs yet'}
+            </pre>
+
+            {healthQuery.data?.ok && (
+              <Button
+                onClick={() => navigate('/app/playground')}
+                className="mt-2 w-full bg-blue-600 hover:bg-blue-500"
+              >
+                Go to Playground
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
 }
-
-async function getRuntimeHealth(port) {
-  const targetPort = port || CONFIG.vllmPort;
-  const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${targetPort}/health`]);
-
-  return {
-    ok: r.ok,
-    port: targetPort,
-    raw: r.ok ? r.stdout : (r.stderr || r.stdout || null),
-  };
-}
-
-module.exports = {
-  startVllmRuntime,
-  stopVllmRuntime,
-  getRuntimeHealth,
-};
