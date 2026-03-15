@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api, type Dataset, type DatasetValidationResponse } from '../../lib/api';
+import { SyntheticGenWizard } from './synthetic-gen-wizard';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
@@ -73,7 +74,7 @@ export default function DatasetsPage() {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [tab, setTab] = useState<'upload' | 'jsonl' | 'manual'>('upload');
+  const [tab, setTab] = useState<'upload' | 'jsonl' | 'manual' | 'synthetic'>('upload');
   const [name, setName] = useState('');
   const [jsonl, setJsonl] = useState('');
   const [validation, setValidation] = useState<DatasetValidationResponse | null>(null);
@@ -220,16 +221,21 @@ export default function DatasetsPage() {
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
         <Card title="Create dataset">
-          <div className="mb-4 flex gap-2">
-            {(['upload', 'jsonl', 'manual'] as const).map((item) => (
+          <div className="mb-4 flex flex-wrap gap-2">
+            {[
+              { id: 'upload', label: 'Upload file' },
+              { id: 'jsonl', label: 'Paste JSONL' },
+              { id: 'manual', label: 'Manual editor' },
+              { id: 'synthetic', label: 'Synthetic Gen' },
+            ].map((item) => (
               <button
-                key={item}
-                onClick={() => setTab(item)}
-                className={`rounded-xl px-3 py-2 text-sm ${
-                  tab === item ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-300'
+                key={item.id}
+                onClick={() => setTab(item.id as any)}
+                className={`rounded-xl px-3 py-2 text-sm transition ${
+                  tab === item.id ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                 }`}
               >
-                {item === 'upload' ? 'Upload file' : item === 'jsonl' ? 'Paste JSONL' : 'Manual editor'}
+                {item.label}
               </button>
             ))}
           </div>
@@ -314,6 +320,15 @@ export default function DatasetsPage() {
                 </Button>
               </div>
             </div>
+          )}
+
+          {tab === 'synthetic' && (
+            <SyntheticGenWizard
+              onComplete={() => {
+                setTab('upload');
+                qc.invalidateQueries({ queryKey: ['datasets'] });
+              }}
+            />
           )}
 
           {tab === 'manual' && (

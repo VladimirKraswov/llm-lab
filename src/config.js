@@ -46,6 +46,13 @@ CONFIG.mergedModelsDir = path.join(CONFIG.workspace, 'exports', 'merged');
 CONFIG.packagesDir = path.join(CONFIG.workspace, 'exports', 'packages');
 CONFIG.logsDir = path.join(CONFIG.workspace, 'logs');
 
+CONFIG.syntheticDir = path.join(CONFIG.workspace, 'synthetic');
+CONFIG.syntheticInputDir = path.join(CONFIG.syntheticDir, 'input');
+CONFIG.syntheticParsedDir = path.join(CONFIG.syntheticDir, 'parsed');
+CONFIG.syntheticGeneratedDir = path.join(CONFIG.syntheticDir, 'generated');
+CONFIG.syntheticCuratedDir = path.join(CONFIG.syntheticDir, 'curated');
+CONFIG.syntheticFinalDir = path.join(CONFIG.syntheticDir, 'final');
+
 CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json');
 CONFIG.settingsFile = path.join(CONFIG.stateDir, 'settings.json');
 CONFIG.datasetsFile = path.join(CONFIG.stateDir, 'datasets.json');

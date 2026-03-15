@@ -1,12 +1,15 @@
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = { ...(init?.headers || {}) } as Record<string, string>;
+
+  if (!headers['Content-Type'] && !(init?.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
     ...init,
+    headers,
   });
 
   const text = await res.text();
@@ -137,6 +140,20 @@ export type DatasetValidationResponse = {
   invalidCount: number;
   preview: Array<{ messages: Array<{ role: string; content: string }> }>;
   errors: Array<{ line?: number; index?: number; error: string; raw: unknown }>;
+};
+
+export type SyntheticGenType = 'qa' | 'summary' | 'cot' | 'cot-enhance';
+
+export type SyntheticGenConfig = {
+  name: string;
+  type: SyntheticGenType;
+  model: string;
+  numPairs: number;
+  chunkSize: number;
+  chunkOverlap: number;
+  curate: boolean;
+  curateThreshold: number;
+  sourceFiles: string[];
 };
 
 export type Job = {
@@ -418,6 +435,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  startSyntheticGen: (payload: SyntheticGenConfig) =>
+    request<{ ok: boolean; jobId: string; logFile: string; outputDir: string }>('/jobs/synthetic-gen', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   stopJob: (id: string) =>
     request<{ ok: boolean }>(`/jobs/${id}/stop`, {
       method: 'POST',
@@ -531,6 +553,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ jobId }),
     }),
+
+  uploadSyntheticSource: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request<{ ok: boolean; filename: string; path: string }>('/synthetic/upload', {
+      method: 'POST',
+      body: formData,
+      headers: {}, // Let the browser set Content-Type with boundary
+    });
+  },
 };
 
 export type Api = typeof api;

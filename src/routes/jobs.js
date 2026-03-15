@@ -3,7 +3,14 @@ const fs = require('fs');
 const path = require('path');
 const archiver = require('archiver');
 const { getJobs } = require('../services/state');
-const { startFineTuneJob, updateJobMetadata, stopJob, getJobById, getJobLogs } = require('../services/jobs');
+const {
+  startFineTuneJob,
+  startSyntheticGenJob,
+  updateJobMetadata,
+  stopJob,
+  getJobById,
+  getJobLogs,
+} = require('../services/jobs');
 
 const router = express.Router();
 
@@ -31,6 +38,14 @@ router.get('/:id/logs', async (req, res) => {
 router.post('/fine-tune', async (req, res) => {
   try {
     res.json(await startFineTuneJob(req.body || {}));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/synthetic-gen', async (req, res) => {
+  try {
+    res.json(await startSyntheticGenJob(req.body || {}));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }

@@ -8,6 +8,8 @@ const { getSettings, getDatasets, getJobs, upsertJob, getModelById } = require('
 const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const { registerLoraFromJob } = require('./loras');
+const { runSyntheticGenJob } = require('./synthetic');
+const { createDatasetFromJsonl } = require('./datasets');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
@@ -442,8 +444,85 @@ async function getJobLogs(id, tail = 200) {
   };
 }
 
+async function startSyntheticGenJob(cfg) {
+  const jobId = uid('job');
+  const outputDir = path.join(CONFIG.syntheticDir, jobId);
+  const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
+
+  const job = {
+    id: jobId,
+    type: 'synthetic-gen',
+    name: cfg.name || jobId,
+    status: 'queued',
+    createdAt: nowIso(),
+    startedAt: null,
+    finishedAt: null,
+    paramsSnapshot: cfg,
+    outputDir,
+    logFile,
+    pid: process.pid, // We are running it in-process for now or it's managed by this job
+    error: null,
+    tags: [],
+    notes: '',
+    artifacts: [],
+    summaryMetrics: {},
+  };
+
+  await upsertJob(job);
+  emitEvent('job_updated', job);
+
+  // Background execution
+  (async () => {
+    try {
+      const runningJob = await upsertJob({
+        ...job,
+        status: 'running',
+        startedAt: nowIso(),
+      });
+      emitEvent('job_updated', runningJob);
+
+      const updateStatus = async (step) => {
+        const current = await getJobById(jobId);
+        const updated = await upsertJob({ ...current, progressStep: step });
+        emitEvent('job_updated', updated);
+      };
+
+      const result = await runSyntheticGenJob(runningJob, updateStatus);
+
+      // Register the resulting dataset
+      const datasetName = cfg.name || `synthetic-${jobId}`;
+      const jsonlContent = fs.readFileSync(result.finalPath, 'utf8');
+      const dataset = await createDatasetFromJsonl(datasetName, jsonlContent);
+
+      const finalJob = await upsertJob({
+        ...(await getJobById(jobId)),
+        status: 'completed',
+        finishedAt: nowIso(),
+        artifacts: getArtifacts(outputDir),
+        resultDatasetId: dataset.id,
+        summaryMetrics: {
+          rows: dataset.rows,
+        }
+      });
+      emitEvent('job_updated', finalJob);
+    } catch (err) {
+      logger.error('Synthetic generation job failed', { jobId, error: err.message });
+      const failedJob = await upsertJob({
+        ...(await getJobById(jobId)),
+        status: 'failed',
+        finishedAt: nowIso(),
+        error: String(err.message || err),
+      });
+      emitEvent('job_updated', failedJob);
+    }
+  })();
+
+  return { ok: true, jobId };
+}
+
 module.exports = {
   startFineTuneJob,
+  startSyntheticGenJob,
   updateJobMetadata,
   stopJob,
   getJobById,

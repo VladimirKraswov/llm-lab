@@ -16,6 +16,7 @@ const modelsRoute = require('./routes/models');
 const lorasRoute = require('./routes/loras');
 const logsRoute = require('./routes/logs');
 const monitorRoute = require('./routes/monitor');
+const syntheticRoute = require('./routes/synthetic');
 
 function buildCorsOrigin() {
   if (!CONFIG.webUiOrigin || CONFIG.webUiOrigin === '*') {
@@ -57,6 +58,7 @@ async function main() {
   app.use('/loras', lorasRoute);
   app.use('/logs', logsRoute);
   app.use('/monitor', monitorRoute);
+  app.use('/synthetic', syntheticRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -75,7 +77,8 @@ async function main() {
         req.path.startsWith('/models') ||
         req.path.startsWith('/loras') ||
         req.path.startsWith('/logs') ||
-        req.path.startsWith('/monitor')
+        req.path.startsWith('/monitor') ||
+        req.path.startsWith('/synthetic')
       ) {
         return next();
       }
