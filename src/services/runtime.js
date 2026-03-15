@@ -8,62 +8,90 @@ const { getRuntime, saveRuntime, getSettings } = require('./state');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
+const { readText } = require('../utils/fs');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function validateInferenceParams(params) {
-  if (params.gpuMemoryUtilization !== undefined && (params.gpuMemoryUtilization < 0 || params.gpuMemoryUtilization > 1)) {
+function validateInferenceParams(params = {}) {
+  if (
+    params.gpuMemoryUtilization !== undefined &&
+    (typeof params.gpuMemoryUtilization !== 'number' ||
+      params.gpuMemoryUtilization < 0 ||
+      params.gpuMemoryUtilization > 1)
+  ) {
     throw new Error('gpuMemoryUtilization must be between 0 and 1');
   }
-  if (params.maxModelLen !== undefined && (!Number.isInteger(params.maxModelLen) || params.maxModelLen < 1)) {
+
+  if (
+    params.maxModelLen !== undefined &&
+    (!Number.isInteger(params.maxModelLen) || params.maxModelLen < 1)
+  ) {
     throw new Error('maxModelLen must be a positive integer');
   }
-  if (params.maxNumSeqs !== undefined && (!Number.isInteger(params.maxNumSeqs) || params.maxNumSeqs < 1)) {
+
+  if (
+    params.maxNumSeqs !== undefined &&
+    (!Number.isInteger(params.maxNumSeqs) || params.maxNumSeqs < 1)
+  ) {
     throw new Error('maxNumSeqs must be a positive integer');
   }
-  if (params.swapSpace !== undefined && (!Number.isInteger(params.swapSpace) || params.swapSpace < 0)) {
+
+  if (
+    params.swapSpace !== undefined &&
+    (!Number.isInteger(params.swapSpace) || params.swapSpace < 0)
+  ) {
     throw new Error('swapSpace must be a non-negative integer');
   }
-  if (params.tensorParallelSize !== undefined && (!Number.isInteger(params.tensorParallelSize) || params.tensorParallelSize < 1)) {
+
+  if (
+    params.tensorParallelSize !== undefined &&
+    (!Number.isInteger(params.tensorParallelSize) || params.tensorParallelSize < 1)
+  ) {
     throw new Error('tensorParallelSize must be a positive integer');
   }
 }
 
-async function startVllmRuntime(params) {
+async function startVllmRuntime(params = {}) {
   validateInferenceParams(params);
+
   const {
     model,
-  port,
-  maxModelLen,
-  gpuMemoryUtilization,
-  tensorParallelSize,
-  baseModel = null,
-  activeModelId = null,
-  activeModelName = null,
-  activeLoraId = null,
-  activeLoraName = null,
-  loraPath = null,
-  loraName = null,
-  quantization = null,
-  dtype = 'auto',
-  trustRemoteCode = true,
-  enforceEager = false,
-  kvCacheDtype = 'auto',
-  maxNumSeqs = 256,
-  swapSpace = 4,
-}) {
+    port,
+    maxModelLen,
+    gpuMemoryUtilization,
+    tensorParallelSize,
+    baseModel = null,
+    activeModelId = null,
+    activeModelName = null,
+    activeLoraId = null,
+    activeLoraName = null,
+    loraPath = null,
+    loraName = null,
+    quantization = null,
+    dtype = 'auto',
+    trustRemoteCode = true,
+    enforceEager = false,
+    kvCacheDtype = 'auto',
+    maxNumSeqs = 256,
+    swapSpace = 4,
+  } = params;
+
+  if (!model) {
+    throw new Error('model is required');
+  }
+
   if (!fs.existsSync(CONFIG.vllmBin)) {
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
   }
 
-  logger.info(`Starting vLLM runtime`, {
+  logger.info('Starting vLLM runtime', {
     model,
     activeModelName,
     activeLoraName,
     loraPath,
-    port
+    port,
   });
 
   await clearGpuMemory();
@@ -95,7 +123,7 @@ async function startVllmRuntime(params) {
   ];
 
   if (quantization) {
-    args.push('--quantization', quantization);
+    args.push('--quantization', String(quantization));
   }
 
   if (trustRemoteCode) {
@@ -107,7 +135,7 @@ async function startVllmRuntime(params) {
   }
 
   if (kvCacheDtype && kvCacheDtype !== 'auto') {
-    args.push('--kv-cache-dtype', kvCacheDtype);
+    args.push('--kv-cache-dtype', String(kvCacheDtype));
   }
 
   if (loraPath && loraName) {
@@ -133,13 +161,18 @@ async function startVllmRuntime(params) {
 
   for (let i = 0; i < 120; i += 1) {
     const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
+
     if (r.ok) {
       started = true;
       break;
     }
 
     if (!isPidRunning(child.pid)) {
-      logger.error(`vLLM exited during startup`, { model, port, logFile: CONFIG.vllmLogFile });
+      logger.error('vLLM exited during startup', {
+        model,
+        port,
+        logFile: CONFIG.vllmLogFile,
+      });
       throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
     }
 
@@ -150,7 +183,11 @@ async function startVllmRuntime(params) {
     await killProcessGroup(child.pid, 'SIGKILL');
     const logs = await readText(CONFIG.vllmLogFile, '');
     const lastLines = logs.split('\n').slice(-30).join('\n');
-    logger.error(`vLLM did not become healthy within timeout`, { model, port, lastLines });
+    logger.error('vLLM did not become healthy within timeout', {
+      model,
+      port,
+      lastLines,
+    });
     throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
   }
 
@@ -173,13 +210,15 @@ async function startVllmRuntime(params) {
 
   await saveRuntime(next);
   emitEvent('runtime_started', next.vllm);
-  logger.info(`vLLM runtime started`, {
+
+  logger.info('vLLM runtime started', {
     pid: child.pid,
     model,
     port,
     activeModelName,
-    activeLoraName
+    activeLoraName,
   });
+
   return next.vllm;
 }
 
@@ -189,10 +228,12 @@ async function stopVllmRuntime() {
 
   if (pid && isPidRunning(pid)) {
     await killProcessGroup(pid);
+
     for (let i = 0; i < 20; i += 1) {
       if (!isPidRunning(pid)) break;
       await sleep(500);
     }
+
     if (isPidRunning(pid)) {
       await killProcessGroup(pid, 'SIGKILL');
     }
@@ -217,7 +258,8 @@ async function stopVllmRuntime() {
 
   await saveRuntime(next);
   emitEvent('runtime_stopped', next.vllm);
-  logger.info(`vLLM runtime stopped`);
+  logger.info('vLLM runtime stopped');
+
   return next.vllm;
 }
 
