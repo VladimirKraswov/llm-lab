@@ -1,6 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const { CONFIG } = require('../config');
 const { uid, nowIso } = require('../utils/ids');
 const { addModel, getModels, getModelById, removeModel, upsertModel } = require('./state');
@@ -8,6 +7,7 @@ const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const logger = require('../utils/logger');
 const { getModelMetadata } = require('../utils/model-meta');
+const { spawnPythonJsonScript } = require('../utils/python-runner');
 
 function safeSlug(value) {
   return String(value || '')
@@ -38,36 +38,33 @@ async function downloadModel({ repoId, name }) {
     logFile,
     pid: null,
     error: null,
+    configPath: null,
   });
 
   emitEvent('model_updated', item);
 
   fs.mkdirSync(CONFIG.modelsDir, { recursive: true });
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  const py = `
-import os
-from huggingface_hub import snapshot_download
-
-repo_id = ${JSON.stringify(repoId)}
-local_dir = ${JSON.stringify(modelPath)}
-os.makedirs(local_dir, exist_ok=True)
-
-snapshot_download(
-    repo_id=repo_id,
-    local_dir=local_dir,
-    local_dir_use_symlinks=False,
-    resume_download=True,
-)
-print(local_dir)
-`.trim();
+  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'download_model.py');
+  const payload = {
+    repoId,
+    localDir: modelPath,
+  };
 
   const outFd = fs.openSync(logFile, 'a');
-  const child = spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+  const { child, configPath } = await spawnPythonJsonScript({
+    pythonBin: CONFIG.pythonBin,
+    scriptPath,
+    payload,
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    configDir: CONFIG.trainingConfigsDir,
+    configPrefix: modelId,
+    logLabel: `download-model:${modelId}`,
   });
 
   child.unref();
@@ -75,36 +72,56 @@ print(local_dir)
   const running = await upsertModel({
     ...item,
     pid: child.pid,
+    configPath,
   });
   emitEvent('model_updated', running);
 
   child.on('exit', async (code) => {
+    logger.info('Model download process exited', {
+      modelId,
+      code,
+      configPath,
+    });
+
     const next = await upsertModel({
       ...running,
       status: code === 0 ? 'ready' : 'failed',
       error: code === 0 ? null : `download exited with code ${code}`,
       pid: null,
+      configPath,
     });
     emitEvent('model_updated', next);
+
     if (code === 0) {
       const meta = getModelMetadata(next.path);
       const withMeta = await upsertModel({
         ...next,
-        ...meta
+        ...meta,
       });
       emitEvent('model_updated', withMeta);
       logger.info(`Model downloaded successfully: ${next.name}`, { modelId: next.id });
     } else {
-      logger.error(`Model download failed: ${next.name}`, { modelId: next.id, error: next.error });
+      logger.error(`Model download failed: ${next.name}`, {
+        modelId: next.id,
+        error: next.error,
+        configPath,
+      });
     }
   });
 
   child.on('error', async (err) => {
+    logger.error('Model download process error', {
+      modelId,
+      configPath,
+      error: String(err.message || err),
+    });
+
     const next = await upsertModel({
       ...running,
       status: 'failed',
       error: String(err.message || err),
       pid: null,
+      configPath,
     });
     emitEvent('model_updated', next);
   });
@@ -149,49 +166,69 @@ async function quantizeModel({ modelId, method, name }) {
     error: null,
     quantization: method,
     sourceModelId: modelId,
+    configPath: null,
   });
 
   emitEvent('model_updated', item);
+
   fs.mkdirSync(modelPath, { recursive: true });
+  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  let py = '';
+  let scriptFile = null;
+  let payload = null;
+
   if (method === 'awq') {
-    py = `
-import torch
-from awq import AutoAWQForCausalLM
-from transformers import AutoTokenizer
-
-model_path = ${JSON.stringify(source.path)}
-quant_path = ${JSON.stringify(modelPath)}
-
-quant_config = { "zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "GEMM" }
-
-model = AutoAWQForCausalLM.from_pretrained(model_path)
-tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-
-model.quantize(tokenizer, quant_config=quant_config)
-model.save_quantized(quant_path)
-tokenizer.save_pretrained(quant_path)
-`.trim();
+    scriptFile = 'quantize_awq.py';
+    payload = {
+      modelPath: source.path,
+      outputDir: modelPath,
+      quantConfig: {
+        zero_point: true,
+        q_group_size: 128,
+        w_bit: 4,
+        version: 'GEMM',
+      },
+      trustRemoteCode: true,
+    };
   } else {
-    // Default to BitsAndBytes 4-bit (though usually it's used on the fly, we can "save" it if unsloth/transformers allows)
     throw new Error(`Quantization method ${method} not implemented in this version`);
   }
 
+  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', scriptFile);
   const outFd = fs.openSync(logFile, 'a');
-  const child = spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+
+  const { child, configPath } = await spawnPythonJsonScript({
+    pythonBin: CONFIG.pythonBin,
+    scriptPath,
+    payload,
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    configDir: CONFIG.trainingConfigsDir,
+    configPrefix: newId,
+    logLabel: `quantize-model:${newId}`,
   });
 
   child.unref();
 
-  const running = await upsertModel({ ...item, pid: child.pid });
+  const running = await upsertModel({
+    ...item,
+    pid: child.pid,
+    configPath,
+  });
   emitEvent('model_updated', running);
 
   child.on('exit', async (code) => {
+    logger.info('Model quantization process exited', {
+      modelId: newId,
+      sourceModelId: modelId,
+      code,
+      method,
+      configPath,
+    });
+
     const isOk = code === 0;
     const meta = isOk ? getModelMetadata(modelPath) : {};
     const next = await upsertModel({
@@ -200,6 +237,43 @@ tokenizer.save_pretrained(quant_path)
       status: isOk ? 'ready' : 'failed',
       error: isOk ? null : `quantization exited with code ${code}`,
       pid: null,
+      configPath,
+    });
+    emitEvent('model_updated', next);
+
+    if (isOk) {
+      logger.info('Model quantization completed', {
+        modelId: newId,
+        sourceModelId: modelId,
+        method,
+        configPath,
+      });
+    } else {
+      logger.error('Model quantization failed', {
+        modelId: newId,
+        sourceModelId: modelId,
+        method,
+        error: next.error,
+        configPath,
+      });
+    }
+  });
+
+  child.on('error', async (err) => {
+    logger.error('Model quantization process error', {
+      modelId: newId,
+      sourceModelId: modelId,
+      method,
+      configPath,
+      error: String(err.message || err),
+    });
+
+    const next = await upsertModel({
+      ...running,
+      status: 'failed',
+      error: String(err.message || err),
+      pid: null,
+      configPath,
     });
     emitEvent('model_updated', next);
   });

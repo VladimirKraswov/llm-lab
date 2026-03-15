@@ -1,5 +1,4 @@
 const fs = require('fs');
-const { spawn } = require('child_process');
 const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso, uid } = require('../utils/ids');
@@ -10,144 +9,7 @@ const { readText } = require('../utils/fs');
 const { registerLoraFromJob } = require('./loras');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
-
-function buildTrainPython(job, settings) {
-  const cfg = {
-    baseModel: job.baseModel,
-    datasetPath: job.datasetPath,
-    outputDir: job.outputDir,
-    qlora: { ...settings.qlora, ...(job.qlora || {}) },
-    wandb: settings.wandb || {},
-  };
-
-  return `
-import json
-import os
-import unsloth
-import torch
-
-from datasets import load_dataset
-from unsloth import FastLanguageModel
-from transformers import TrainingArguments
-from trl import SFTTrainer
-
-cfg = json.loads(${JSON.stringify(JSON.stringify(cfg))})
-
-os.makedirs(cfg["outputDir"], exist_ok=True)
-
-wandb_cfg = cfg.get("wandb", {}) or {}
-wandb_enabled = bool(wandb_cfg.get("enabled")) and wandb_cfg.get("mode", "online") != "disabled"
-
-if wandb_cfg.get("mode") == "offline":
-    os.environ["WANDB_MODE"] = "offline"
-
-if wandb_cfg.get("baseUrl"):
-    os.environ["WANDB_BASE_URL"] = wandb_cfg["baseUrl"]
-
-if wandb_enabled:
-    import wandb
-    if wandb_cfg.get("apiKey"):
-        wandb.login(key=wandb_cfg["apiKey"])
-    wandb.init(
-        project=wandb_cfg.get("project", "llm-lab"),
-        entity=wandb_cfg.get("entity"),
-        name=os.path.basename(cfg["outputDir"]),
-        config=cfg,
-        dir=cfg["outputDir"],
-        mode=wandb_cfg.get("mode", "online")
-    )
-
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name=cfg["baseModel"],
-    max_seq_length=cfg["qlora"]["maxSeqLength"],
-    load_in_4bit=cfg["qlora"]["loadIn4bit"],
-    trust_remote_code=True,
-)
-
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
-
-model = FastLanguageModel.get_peft_model(
-    model,
-    r=cfg["qlora"]["loraR"],
-    target_modules=cfg["qlora"]["targetModules"],
-    lora_alpha=cfg["qlora"]["loraAlpha"],
-    lora_dropout=cfg["qlora"]["loraDropout"],
-    bias="none",
-    use_gradient_checkpointing="unsloth",
-)
-
-if torch.cuda.is_available():
-    model = model.to("cuda")
-
-dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
-
-def format_row(row):
-    messages = row.get("messages", [])
-    if not isinstance(messages, list) or len(messages) < 2:
-        return {"text": ""}
-
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=False,
-    )
-    return {"text": text}
-
-dataset = dataset.map(format_row)
-dataset = dataset.filter(lambda x: bool(x["text"] and x["text"].strip()))
-
-if len(dataset) == 0:
-    raise ValueError("Dataset is empty after formatting/filtering")
-
-use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-
-args = TrainingArguments(
-    output_dir=cfg["outputDir"],
-    per_device_train_batch_size=cfg["qlora"]["perDeviceTrainBatchSize"],
-    gradient_accumulation_steps=cfg["qlora"]["gradientAccumulationSteps"],
-    learning_rate=cfg["qlora"]["learningRate"],
-    num_train_epochs=cfg["qlora"]["numTrainEpochs"],
-    warmup_ratio=cfg["qlora"]["warmupRatio"],
-    logging_steps=1,
-    save_strategy="epoch",
-    save_safetensors=True,
-    bf16=use_bf16,
-    fp16=not use_bf16,
-    report_to=["wandb"] if wandb_enabled else [],
-    remove_unused_columns=False,
-    group_by_length=False,
-    optim="adamw_8bit",
-)
-
-trainer = SFTTrainer(
-    model=model,
-    tokenizer=tokenizer,
-    train_dataset=dataset,
-    args=args,
-    dataset_text_field="text",
-    packing=False,
-    dataset_num_proc=1,
-)
-
-trainer.train()
-trainer.save_model(cfg["outputDir"])
-tokenizer.save_pretrained(cfg["outputDir"])
-
-# Export metrics
-with open(os.path.join(cfg["outputDir"], "metrics.json"), "w") as f:
-    json.dump(trainer.state.log_history, f, indent=2)
-
-print(json.dumps({
-    "ok": True,
-    "outputDir": cfg["outputDir"],
-    "rows": len(dataset),
-    "bf16": use_bf16,
-    "wandbEnabled": wandb_enabled,
-    "wandbMode": wandb_cfg.get("mode", "online"),
-}))
-`.trim();
-}
+const { spawnPythonJsonScript } = require('../utils/python-runner');
 
 function validateQLoraParams(params) {
   if (params.learningRate !== undefined && (typeof params.learningRate !== 'number' || params.learningRate <= 0)) {
@@ -242,23 +104,43 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     logFile,
     pid: null,
     error: null,
+    configPath: null,
   };
 
   await upsertJob(job);
   emitEvent('job_updated', job);
-  logger.info(`Starting fine-tune job: ${job.name}`, { jobId, datasetId, baseModel: selectedBaseModel });
+  logger.info(`Starting fine-tune job: ${job.name}`, {
+    jobId,
+    datasetId,
+    baseModel: selectedBaseModel,
+  });
 
   fs.mkdirSync(outputDir, { recursive: true });
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  const script = buildTrainPython(job, settings);
+  const trainConfig = {
+    baseModel: job.baseModel,
+    datasetPath: job.datasetPath,
+    outputDir: job.outputDir,
+    qlora: { ...settings.qlora, ...(job.qlora || {}) },
+    wandb: settings.wandb || {},
+  };
+
   const outFd = fs.openSync(logFile, 'a');
+  const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'train.py');
 
-  const child = spawn(CONFIG.pythonBin, ['-u', '-c', script], {
+  const { child, configPath } = await spawnPythonJsonScript({
+    pythonBin: CONFIG.pythonBin,
+    scriptPath,
+    payload: trainConfig,
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
     env: buildTrainingEnv(settings),
+    configDir: CONFIG.trainingConfigsDir,
+    configPrefix: jobId,
+    logLabel: `fine-tune:${jobId}`,
   });
 
   child.unref();
@@ -268,10 +150,17 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     status: 'running',
     startedAt: nowIso(),
     pid: child.pid,
+    configPath,
   });
   emitEvent('job_updated', runningJob);
 
   child.on('exit', async (code) => {
+    logger.info('Fine-tune process exited', {
+      jobId,
+      code,
+      configPath,
+    });
+
     const jobs = await getJobs();
     const current = jobs.find((j) => j.id === jobId);
     if (!current) return;
@@ -281,13 +170,20 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
       status: code === 0 ? 'completed' : 'failed',
       finishedAt: nowIso(),
       error: code === 0 ? null : `trainer exited with code ${code}`,
+      pid: null,
+      configPath,
     });
 
     emitEvent('job_updated', next);
+
     if (code === 0) {
-      logger.info(`Job completed: ${jobId}`);
+      logger.info(`Job completed: ${jobId}`, { configPath });
     } else {
-      logger.error(`Job failed: ${jobId}`, { code, error: next.error });
+      logger.error(`Job failed: ${jobId}`, {
+        code,
+        error: next.error,
+        configPath,
+      });
     }
 
     if (code === 0) {
@@ -298,11 +194,23 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
           jobId,
           error: String(err.message || err),
         });
+
+        logger.error('LoRA auto-registration failed after fine-tune', {
+          jobId,
+          configPath,
+          error: String(err.message || err),
+        });
       }
     }
   });
 
   child.on('error', async (err) => {
+    logger.error('Fine-tune process error', {
+      jobId,
+      configPath,
+      error: String(err.message || err),
+    });
+
     const jobs = await getJobs();
     const current = jobs.find((j) => j.id === jobId);
     if (!current) return;
@@ -312,21 +220,35 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
       status: 'failed',
       finishedAt: nowIso(),
       error: String(err.message || err),
+      pid: null,
+      configPath,
     });
 
     emitEvent('job_updated', next);
   });
 
-  return { ok: true, jobId, logFile, outputDir };
+  return {
+    ok: true,
+    jobId,
+    logFile,
+    outputDir,
+    configPath,
+  };
 }
 
 async function stopJob(jobId) {
   const jobs = await getJobs();
   const job = jobs.find((j) => j.id === jobId);
   if (!job) throw new Error('job not found');
+
   if (!job.pid || !isPidRunning(job.pid)) {
     if (job.status === 'running') {
-      await upsertJob({ ...job, status: 'failed', finishedAt: nowIso(), error: 'Process not found' });
+      await upsertJob({
+        ...job,
+        status: 'failed',
+        finishedAt: nowIso(),
+        error: 'Process not found',
+      });
     }
     throw new Error('job is not running');
   }
@@ -340,6 +262,8 @@ async function stopJob(jobId) {
   });
 
   emitEvent('job_updated', next);
+  logger.info('Job stopped', { jobId });
+
   return { ok: true };
 }
 

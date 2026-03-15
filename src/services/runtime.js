@@ -1,6 +1,6 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
-const { spawn } = require('child_process');
+const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso } = require('../utils/ids');
 const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
@@ -9,6 +9,7 @@ const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { readText, removeFile } = require('../utils/fs');
+const { spawnPythonJsonScript } = require('../utils/python-runner');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -112,8 +113,13 @@ async function startVllmRuntime(params = {}) {
     swapSpace = 4,
   } = merged;
 
-  if (!model || !String(model).trim()) {
+  const normalizedModel = String(model || '').trim();
+  if (!normalizedModel) {
     throw new Error('model is required');
+  }
+
+  if (!fs.existsSync(CONFIG.pythonBin)) {
+    throw new Error(`Python binary not found: ${CONFIG.pythonBin}`);
   }
 
   if (!fs.existsSync(CONFIG.vllmBin)) {
@@ -121,7 +127,7 @@ async function startVllmRuntime(params = {}) {
   }
 
   logger.info('Starting vLLM runtime', {
-    model,
+    model: normalizedModel,
     activeModelName,
     activeLoraName,
     loraPath,
@@ -135,126 +141,136 @@ async function startVllmRuntime(params = {}) {
     await stopVllmRuntime();
   }
 
-  const args = [
-    'serve',
-    String(model),
-    '--host',
-    '0.0.0.0',
-    '--port',
-    String(port),
-    '--gpu-memory-utilization',
-    String(gpuMemoryUtilization),
-    '--tensor-parallel-size',
-    String(tensorParallelSize),
-    '--max-model-len',
-    String(maxModelLen),
-    '--max-num-seqs',
-    String(maxNumSeqs),
-    '--swap-space',
-    String(swapSpace),
-    '--dtype',
-    String(dtype || 'auto'),
-  ];
-
-  if (quantization) {
-    args.push('--quantization', String(quantization));
-  }
-
-  if (trustRemoteCode) {
-    args.push('--trust-remote-code');
-  }
-
-  if (enforceEager) {
-    args.push('--enforce-eager');
-  }
-
-  if (kvCacheDtype && kvCacheDtype !== 'auto') {
-    args.push('--kv-cache-dtype', String(kvCacheDtype));
-  }
-
-  if (loraPath && loraName) {
-    args.push('--enable-lora', '--lora-modules', `${loraName}=${loraPath}`);
-  }
-
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
-  const child = spawn(CONFIG.vllmBin, args, {
-    cwd: CONFIG.workspace,
-    detached: true,
-    stdio: ['ignore', outFd, outFd],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
-  });
-
-  child.unref();
-  await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
-
-  let started = false;
-
+  let outFd;
   try {
-    for (let i = 0; i < 120; i += 1) {
-      const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
+    outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
 
-      if (r.ok) {
-        started = true;
-        break;
-      }
-
-      if (!isPidRunning(child.pid)) {
-        logger.error('vLLM exited during startup', {
-          model,
-          port,
-          logFile: CONFIG.vllmLogFile,
-        });
-        throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
-      }
-
-      await sleep(1000);
-    }
-
-    if (!started) {
-      await killProcessGroup(child.pid, 'SIGKILL');
-      const logs = await readText(CONFIG.vllmLogFile, '');
-      const lastLines = logs.split('\n').slice(-30).join('\n');
-      logger.error('vLLM did not become healthy within timeout', {
-        model,
-        port,
-        lastLines,
-      });
-      throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
-    }
-  } catch (err) {
-    await removeFile(CONFIG.vllmPidFile).catch(() => {});
-    throw err;
-  }
-
-  const next = {
-    vllm: {
-      pid: child.pid,
-      model,
-      startedAt: nowIso(),
+    const scriptPath = path.join(CONFIG.workspace, 'src', 'python', 'start_vllm.py');
+    const payload = {
+      vllmBin: CONFIG.vllmBin,
+      model: normalizedModel,
+      host: '0.0.0.0',
       port,
+      gpuMemoryUtilization,
+      tensorParallelSize,
+      maxModelLen,
+      maxNumSeqs,
+      swapSpace,
+      dtype,
+      quantization,
+      trustRemoteCode,
+      enforceEager,
+      kvCacheDtype,
+      loraPath,
+      loraName,
+      cwd: CONFIG.workspace,
+      pidFile: CONFIG.vllmPidFile,
       logFile: CONFIG.vllmLogFile,
-      baseModel: baseModel || settings.baseModel,
-      activeModelId,
+    };
+
+    const { child, configPath } = await spawnPythonJsonScript({
+      pythonBin: CONFIG.pythonBin,
+      scriptPath,
+      payload,
+      cwd: CONFIG.workspace,
+      detached: true,
+      stdio: ['ignore', outFd, outFd],
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      configDir: CONFIG.trainingConfigsDir,
+      configPrefix: `vllm-${port}`,
+      logLabel: `runtime-vllm:${port}`,
+    });
+
+    child.unref();
+    await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
+
+    let started = false;
+
+    try {
+      for (let i = 0; i < 120; i += 1) {
+        const r = runText('curl', [
+          '-fsS',
+          '--max-time',
+          '2',
+          `http://127.0.0.1:${port}/health`,
+        ]);
+
+        if (r.ok) {
+          started = true;
+          break;
+        }
+
+        if (!isPidRunning(child.pid)) {
+          logger.error('vLLM exited during startup', {
+            model: normalizedModel,
+            port,
+            logFile: CONFIG.vllmLogFile,
+            configPath,
+          });
+          throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
+        }
+
+        await sleep(1000);
+      }
+
+      if (!started) {
+        await killProcessGroup(child.pid, 'SIGKILL');
+        const logs = await readText(CONFIG.vllmLogFile, '');
+        const lastLines = logs.split('\n').slice(-30).join('\n');
+        logger.error('vLLM did not become healthy within timeout', {
+          model: normalizedModel,
+          port,
+          lastLines,
+          configPath,
+        });
+        throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
+      }
+    } catch (err) {
+      await removeFile(CONFIG.vllmPidFile).catch(() => {});
+      throw err;
+    }
+
+    const next = {
+      vllm: {
+        pid: child.pid,
+        model: normalizedModel,
+        startedAt: nowIso(),
+        port,
+        logFile: CONFIG.vllmLogFile,
+        configPath,
+        baseModel: baseModel || settings.baseModel,
+        activeModelId,
+        activeModelName,
+        activeLoraId,
+        activeLoraName,
+      },
+    };
+
+    await saveRuntime(next);
+    emitEvent('runtime_started', next.vllm);
+
+    logger.info('vLLM runtime started', {
+      pid: child.pid,
+      model: normalizedModel,
+      port,
       activeModelName,
-      activeLoraId,
       activeLoraName,
-    },
-  };
+      configPath,
+    });
 
-  await saveRuntime(next);
-  emitEvent('runtime_started', next.vllm);
-
-  logger.info('vLLM runtime started', {
-    pid: child.pid,
-    model,
-    port,
-    activeModelName,
-    activeLoraName,
-  });
-
-  return next.vllm;
+    return next.vllm;
+  } finally {
+    if (typeof outFd === 'number') {
+      try {
+        fs.closeSync(outFd);
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 async function stopVllmRuntime() {
@@ -284,6 +300,7 @@ async function stopVllmRuntime() {
       startedAt: null,
       port: CONFIG.vllmPort,
       logFile: CONFIG.vllmLogFile,
+      configPath: null,
       baseModel: settings.baseModel,
       activeModelId: null,
       activeModelName: null,
@@ -302,7 +319,13 @@ async function stopVllmRuntime() {
 async function getRuntimeHealth(port) {
   const runtime = await getRuntime();
   const targetPort = port || runtime.vllm?.port || CONFIG.vllmPort;
-  const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${targetPort}/health`]);
+
+  const r = runText('curl', [
+    '-fsS',
+    '--max-time',
+    '2',
+    `http://127.0.0.1:${targetPort}/health`,
+  ]);
 
   return {
     ok: r.ok,

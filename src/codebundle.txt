@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebundleignore
-generated: 2026-03-15T07:34:28.334Z
+generated: 2026-03-15T11:02:44.647Z
 
 
 
@@ -270,16 +270,33 @@ path: /config.js
 const path = require('path');
 require('dotenv').config();
 
+function toNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeOrigin(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '*') return '*';
+
+  try {
+    const url = new URL(raw);
+    return url.origin;
+  } catch {
+    return '*';
+  }
+}
+
 const CONFIG = {
   host: process.env.SVC_HOST || '0.0.0.0',
-  port: Number(process.env.SVC_PORT || 8787),
+  port: toNumber(process.env.SVC_PORT, 8787),
   workspace: process.env.WORKSPACE || '/opt/deepseek-workspace',
   mlEnv: process.env.ML_ENV || '/opt/deepseek-workspace/environments/ml_env',
-  openWebUiPort: Number(process.env.OPENWEBUI_PORT || 3000),
-  vllmPort: Number(process.env.VLLM_PORT || 8000),
+  openWebUiPort: toNumber(process.env.OPENWEBUI_PORT, 3000),
+  vllmPort: toNumber(process.env.VLLM_PORT, 8000),
   defaultBaseModel: process.env.DEFAULT_BASE_MODEL || 'Qwen/Qwen2.5-7B-Instruct',
-  maxJsonMb: Number(process.env.MAX_JSON_MB || 25),
-  webUiOrigin: process.env.WEB_UI_ORIGIN || '*',
+  maxJsonMb: toNumber(process.env.MAX_JSON_MB, 25),
+  webUiOrigin: normalizeOrigin(process.env.WEB_UI_ORIGIN || '*'),
 };
 
 CONFIG.stateDir = path.join(CONFIG.workspace, '.llm-lab');
@@ -305,6 +322,240 @@ CONFIG.pythonBin = path.join(CONFIG.mlEnv, 'bin', 'python');
 CONFIG.vllmBin = path.join(CONFIG.mlEnv, 'bin', 'vllm');
 
 module.exports = { CONFIG };
+
+
+path: /python/download_model.py
+----------------------------------------
+import json
+import os
+import sys
+from huggingface_hub import snapshot_download
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: download_model.py <config.json>")
+
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    repo_id = cfg["repoId"]
+    local_dir = cfg["localDir"]
+
+    os.makedirs(local_dir, exist_ok=True)
+
+    snapshot_download(
+        repo_id=repo_id,
+        local_dir=local_dir,
+        local_dir_use_symlinks=False,
+        resume_download=True,
+    )
+    print(local_dir)
+
+if __name__ == "__main__":
+    main()
+
+
+path: /python/merge_lora.py
+----------------------------------------
+import json
+import os
+import sys
+
+def report(p):
+    print(f"__PROGRESS__:{p}", flush=True)
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: merge_lora.py <config.json>")
+
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    adapter_path = cfg["adapterPath"]
+    output_dir = cfg["outputDir"]
+
+    os.makedirs(output_dir, exist_ok=True)
+    report(10)
+
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    report(15)
+
+    from peft import AutoPeftModelForCausalLM
+    from transformers import AutoTokenizer
+    report(20)
+
+    model = AutoPeftModelForCausalLM.from_pretrained(
+        adapter_path,
+        torch_dtype="auto",
+        device_map=device,
+    )
+    report(50)
+
+    merged = model.merge_and_unload()
+    report(70)
+
+    merged.save_pretrained(output_dir, safe_serialization=True)
+    report(90)
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path, fix_mistral_regex=True)
+    except TypeError:
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+
+    tokenizer.save_pretrained(output_dir)
+    report(100)
+    print(f"__RESULT__:{output_dir}")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+
+path: /python/quantize_awq.py
+----------------------------------------
+
+
+
+path: /python/train.py
+----------------------------------------
+import json
+import os
+import sys
+
+import torch
+import unsloth
+from datasets import load_dataset
+from unsloth import FastLanguageModel
+from transformers import TrainingArguments
+from trl import SFTTrainer
+
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: train.py <config.json>")
+
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    os.makedirs(cfg["outputDir"], exist_ok=True)
+
+    wandb_cfg = cfg.get("wandb", {}) or {}
+    wandb_enabled = bool(wandb_cfg.get("enabled")) and wandb_cfg.get("mode", "online") != "disabled"
+
+    if wandb_cfg.get("mode") == "offline":
+        os.environ["WANDB_MODE"] = "offline"
+
+    if wandb_cfg.get("baseUrl"):
+        os.environ["WANDB_BASE_URL"] = wandb_cfg["baseUrl"]
+
+    if wandb_enabled:
+        import wandb
+        if wandb_cfg.get("apiKey"):
+            wandb.login(key=wandb_cfg["apiKey"])
+        wandb.init(
+            project=wandb_cfg.get("project", "llm-lab"),
+            entity=wandb_cfg.get("entity"),
+            name=os.path.basename(cfg["outputDir"]),
+            config=cfg,
+            dir=cfg["outputDir"],
+            mode=wandb_cfg.get("mode", "online"),
+        )
+
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=cfg["baseModel"],
+        max_seq_length=cfg["qlora"]["maxSeqLength"],
+        load_in_4bit=cfg["qlora"]["loadIn4bit"],
+        trust_remote_code=True,
+    )
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=cfg["qlora"]["loraR"],
+        target_modules=cfg["qlora"]["targetModules"],
+        lora_alpha=cfg["qlora"]["loraAlpha"],
+        lora_dropout=cfg["qlora"]["loraDropout"],
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+    )
+
+    if torch.cuda.is_available():
+        model = model.to("cuda")
+
+    dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
+
+    def format_row(row):
+        messages = row.get("messages", [])
+        if not isinstance(messages, list) or len(messages) < 2:
+            return {"text": ""}
+        text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        return {"text": text}
+
+    dataset = dataset.map(format_row)
+    dataset = dataset.filter(lambda x: bool(x["text"] and x["text"].strip()))
+
+    if len(dataset) == 0:
+        raise ValueError("Dataset is empty after formatting/filtering")
+
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+
+    args = TrainingArguments(
+        output_dir=cfg["outputDir"],
+        per_device_train_batch_size=cfg["qlora"]["perDeviceTrainBatchSize"],
+        gradient_accumulation_steps=cfg["qlora"]["gradientAccumulationSteps"],
+        learning_rate=cfg["qlora"]["learningRate"],
+        num_train_epochs=cfg["qlora"]["numTrainEpochs"],
+        warmup_ratio=cfg["qlora"]["warmupRatio"],
+        logging_steps=1,
+        save_strategy="epoch",
+        save_safetensors=True,
+        bf16=use_bf16,
+        fp16=not use_bf16,
+        report_to=["wandb"] if wandb_enabled else [],
+        remove_unused_columns=False,
+        group_by_length=False,
+        optim="adamw_8bit",
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset,
+        args=args,
+        dataset_text_field="text",
+        packing=False,
+        dataset_num_proc=1,
+    )
+
+    trainer.train()
+    trainer.save_model(cfg["outputDir"])
+    tokenizer.save_pretrained(cfg["outputDir"])
+
+    with open(os.path.join(cfg["outputDir"], "metrics.json"), "w", encoding="utf-8") as f:
+        json.dump(trainer.state.log_history, f, indent=2)
+
+    print(json.dumps({
+        "ok": True,
+        "outputDir": cfg["outputDir"],
+        "rows": len(dataset),
+        "bf16": use_bf16,
+        "wandbEnabled": wandb_enabled,
+        "wandbMode": wandb_cfg.get("mode", "online"),
+    }))
+
+
+if __name__ == "__main__":
+    main()
 
 
 path: /routes/dashboard.js
@@ -488,6 +739,9 @@ module.exports = router;
 path: /routes/jobs.js
 ----------------------------------------
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const archiver = require('archiver');
 const { getJobs } = require('../services/state');
 const { startFineTuneJob, stopJob, getJobById, getJobLogs } = require('../services/jobs');
 
@@ -527,6 +781,49 @@ router.post('/:id/stop', async (req, res) => {
     res.json(await stopJob(req.params.id));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/artifacts/metrics', async (req, res) => {
+  try {
+    const { outputDir } = await getJobById(req.params.id);
+    const filePath = path.join(outputDir, 'metrics.json');
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Metrics not found' });
+    }
+    res.download(filePath, 'metrics.json');
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/artifacts/logs', async (req, res) => {
+  try {
+    const { logFile } = await getJobById(req.params.id);
+    if (!fs.existsSync(logFile)) {
+      return res.status(404).json({ error: 'Logs not found' });
+    }
+    res.download(logFile, `${req.params.id}.log`);
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/artifacts/wandb', async (req, res) => {
+  try {
+    const { outputDir } = await getJobById(req.params.id);
+    const wandbDir = path.join(outputDir, 'wandb');
+    if (!fs.existsSync(wandbDir)) {
+      return res.status(404).json({ error: 'W&B data not found' });
+    }
+
+    res.attachment(`wandb-${req.params.id}.tar.gz`);
+    const archive = archiver('tar', { gzip: true });
+    archive.pipe(res);
+    archive.directory(wandbDir, 'wandb');
+    archive.finalize();
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
   }
 });
 
@@ -656,29 +953,46 @@ router.get('/:id/package/download', async (req, res) => {
 
 router.post('/:id/activate', async (req, res) => {
   try {
-    const item = await ensureMergedLora(req.params.id);
+    const item = await getLoraById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'lora not found' });
+    if (item.status !== 'ready') return res.status(400).json({ error: 'lora is not ready' });
+
     const settings = await getSettings();
     const inf = { ...settings.inference, ...(req.body || {}) };
 
     await stopVllmRuntime();
 
     let baseModelName = item.baseModelName;
+    let baseModelPath = item.baseModelRef;
+
     if (item.baseModelId) {
       const model = await getModelById(item.baseModelId);
-      if (model) baseModelName = model.name;
+      if (model) {
+        baseModelName = model.name;
+        baseModelPath = model.path;
+      }
     }
 
     const runtime = await startVllmRuntime({
-      model: item.mergedPath,
+      model: baseModelPath,
       port: Number(inf.port || CONFIG.vllmPort),
       maxModelLen: Number(inf.maxModelLen || 2048),
       gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
       tensorParallelSize: Number(inf.tensorParallelSize || 1),
+      quantization: inf.quantization,
+      dtype: inf.dtype,
+      trustRemoteCode: inf.trustRemoteCode,
+      enforceEager: inf.enforceEager,
+      kvCacheDtype: inf.kvCacheDtype,
+      maxNumSeqs: inf.maxNumSeqs,
+      swapSpace: inf.swapSpace,
       baseModel: baseModelName,
       activeModelId: item.baseModelId || null,
       activeModelName: baseModelName || null,
       activeLoraId: item.id,
       activeLoraName: item.name,
+      loraPath: item.adapterPath,
+      loraName: item.name,
     });
 
     emitEvent('lora_activated', {
@@ -743,14 +1057,28 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { getModels, getModelById, getSettings } = require('../services/state');
-const { downloadModel, deleteModel, getModelLogs } = require('../services/models');
+const { downloadModel, deleteModel, getModelLogs, quantizeModel } = require('../services/models');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { CONFIG } = require('../config');
 
 const router = express.Router();
 
 router.get('/', async (_req, res) => {
-  res.json(await getModels());
+  const models = await getModels();
+
+  // Backfill metadata for models missing it
+  const { getModelMetadata } = require('../utils/model-meta');
+  const { upsertModel } = require('../services/state');
+
+  const updatedModels = await Promise.all(models.map(async (m) => {
+    if (m.status === 'ready' && (!m.sizeHuman || !m.vramEstimate)) {
+      const meta = getModelMetadata(m.path);
+      return await upsertModel({ ...m, ...meta });
+    }
+    return m;
+  }));
+
+  res.json(updatedModels);
 });
 
 router.get('/:id', async (req, res) => {
@@ -777,6 +1105,15 @@ router.post('/download', async (req, res) => {
   }
 });
 
+router.post('/quantize', async (req, res) => {
+  try {
+    const { modelId, method, name } = req.body || {};
+    res.json(await quantizeModel({ modelId, method, name }));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
 router.post('/:id/activate', async (req, res) => {
   try {
     const item = await getModelById(req.params.id);
@@ -794,6 +1131,13 @@ router.post('/:id/activate', async (req, res) => {
       maxModelLen: Number(inf.maxModelLen || 2048),
       gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
       tensorParallelSize: Number(inf.tensorParallelSize || 1),
+      quantization: inf.quantization,
+      dtype: inf.dtype,
+      trustRemoteCode: inf.trustRemoteCode,
+      enforceEager: inf.enforceEager,
+      kvCacheDtype: inf.kvCacheDtype,
+      maxNumSeqs: inf.maxNumSeqs,
+      swapSpace: inf.swapSpace,
       baseModel: item.name,
       activeModelId: item.id,
       activeModelName: item.name,
@@ -959,13 +1303,17 @@ router.get('/', async (_req, res) => {
 
 router.get('/health', async (_req, res) => {
   try {
+    const runtime = await getRuntime();
     const settings = await getSettings();
-    const response = await fetch(`http://127.0.0.1:${settings.inference.port}/health`);
+    const port = runtime.vllm?.port || settings.inference.port || CONFIG.vllmPort;
+
+    const response = await fetch(`http://127.0.0.1:${port}/health`);
     const text = await response.text();
 
     res.json({
       ok: response.ok,
       raw: text,
+      port,
     });
   } catch (err) {
     res.json({
@@ -986,6 +1334,13 @@ router.post('/vllm/start', async (req, res) => {
       maxModelLen: inf.maxModelLen,
       gpuMemoryUtilization: inf.gpuMemoryUtilization,
       tensorParallelSize: inf.tensorParallelSize,
+      quantization: inf.quantization,
+      dtype: inf.dtype,
+      trustRemoteCode: inf.trustRemoteCode,
+      enforceEager: inf.enforceEager,
+      kvCacheDtype: inf.kvCacheDtype,
+      maxNumSeqs: inf.maxNumSeqs,
+      swapSpace: inf.swapSpace,
       baseModel: inf.model,
       activeModelId: null,
       activeModelName: inf.model,
@@ -1001,6 +1356,22 @@ router.post('/vllm/start', async (req, res) => {
 
 router.post('/vllm/stop', async (_req, res) => {
   res.json({ ok: true, runtime: await stopVllmRuntime() });
+});
+
+router.get('/logs', async (req, res) => {
+  try {
+    const { readText } = require('../utils/fs');
+    const tail = Math.max(20, Math.min(2000, Number(req.query.tail || 200)));
+    const text = await readText(CONFIG.vllmLogFile, '');
+    const lines = text.split('\n');
+
+    res.json({
+      logFile: CONFIG.vllmLogFile,
+      content: lines.slice(-tail).join('\n'),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
 });
 
 router.post('/use-job-output', async (req, res) => {
@@ -1028,18 +1399,22 @@ router.post('/use-job-output', async (req, res) => {
       if (model) modelName = model.name;
     }
 
-    // Check if there is a LoRA for this job and ensure it's merged
     const lora = await getLoraByJobId(jobId);
-    let runtimeModelPath = job.outputDir;
+    let runtimeModelPath = job.modelId ? (await getModelById(job.modelId))?.path || job.baseModel : job.baseModel;
     let activeLoraId = null;
     let activeLoraName = null;
+    let loraPath = null;
+    let loraName = null;
 
     if (lora) {
-      const merged = await ensureMergedLora(lora.id);
-      runtimeModelPath = merged.mergedPath;
       activeLoraId = lora.id;
       activeLoraName = lora.name;
+      loraPath = lora.adapterPath;
+      loraName = lora.name;
     }
+
+    const logger = require('../utils/logger');
+    logger.info(`Using job output in runtime`, { jobId, activeLoraName });
 
     const runtime = await startVllmRuntime({
       model: runtimeModelPath,
@@ -1047,11 +1422,20 @@ router.post('/use-job-output', async (req, res) => {
       maxModelLen: Number(maxModelLen || inf.maxModelLen || 2048),
       gpuMemoryUtilization: Number(gpuMemoryUtilization || inf.gpuMemoryUtilization || 0.85),
       tensorParallelSize: Number(tensorParallelSize || inf.tensorParallelSize || 1),
+      quantization: inf.quantization,
+      dtype: inf.dtype,
+      trustRemoteCode: inf.trustRemoteCode,
+      enforceEager: inf.enforceEager,
+      kvCacheDtype: inf.kvCacheDtype,
+      maxNumSeqs: inf.maxNumSeqs,
+      swapSpace: inf.swapSpace,
       baseModel: modelName,
       activeModelId: job.modelId || null,
       activeModelName: modelName,
       activeLoraId,
       activeLoraName,
+      loraPath,
+      loraName,
     });
 
     res.json({
@@ -1071,7 +1455,8 @@ router.post('/chat', async (req, res) => {
   try {
     const settings = await getSettings();
     const runtime = await getRuntime();
-    // Use model from request, or currently loaded model in runtime, or fallback to settings
+    const port = runtime.vllm?.port || settings.inference.port || CONFIG.vllmPort;
+
     const model = req.body?.model || runtime.vllm?.model || settings.inference.model;
     const messages = req.body?.messages;
     const stream = !!req.body?.stream;
@@ -1080,7 +1465,7 @@ router.post('/chat', async (req, res) => {
       return res.status(400).json({ error: 'messages are required' });
     }
 
-    const response = await fetch(`http://127.0.0.1:${settings.inference.port}/v1/chat/completions`, {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1094,7 +1479,7 @@ router.post('/chat', async (req, res) => {
 
     if (!response.ok) {
       const text = await response.text();
-      return res.status(500).json({ error: text || 'inference failed' });
+      return res.status(500).json({ error: text || 'inference failed', port });
     }
 
     if (stream) {
@@ -1114,7 +1499,7 @@ router.post('/chat', async (req, res) => {
       try {
         return res.json(JSON.parse(text));
       } catch {
-        return res.status(500).json({ error: 'invalid inference response', raw: text });
+        return res.status(500).json({ error: 'invalid inference response', raw: text, port });
       }
     }
   } catch (err) {
@@ -1123,9 +1508,12 @@ router.post('/chat', async (req, res) => {
 });
 
 router.get('/ui', async (_req, res) => {
+  const runtime = await getRuntime();
+  const port = runtime.vllm?.port || CONFIG.vllmPort;
+
   res.json({
     openWebUI: `http://127.0.0.1:${CONFIG.openWebUiPort}`,
-    vllmApi: `http://127.0.0.1:${CONFIG.vllmPort}/v1`,
+    vllmApi: `http://127.0.0.1:${port}/v1`,
   });
 });
 
@@ -1171,6 +1559,13 @@ const lorasRoute = require('./routes/loras');
 const logsRoute = require('./routes/logs');
 const monitorRoute = require('./routes/monitor');
 
+function buildCorsOrigin() {
+  if (!CONFIG.webUiOrigin || CONFIG.webUiOrigin === '*') {
+    return true;
+  }
+  return CONFIG.webUiOrigin;
+}
+
 async function main() {
   try {
     console.log('Initializing workspace...');
@@ -1185,7 +1580,12 @@ async function main() {
   }
 
   const app = express();
-  app.use(cors({ origin: true, credentials: false }));
+
+  app.use(cors({
+    origin: buildCorsOrigin(),
+    credentials: false,
+  }));
+
   app.use(express.json({ limit: `${CONFIG.maxJsonMb}mb` }));
 
   app.use('/health', healthRoute);
@@ -1237,6 +1637,7 @@ async function main() {
     console.log(`LLM Lab Service listening on http://${CONFIG.host}:${CONFIG.port}`);
     console.log(`Workspace: ${CONFIG.workspace}`);
     console.log(`Python: ${CONFIG.pythonBin}`);
+    console.log(`Web UI origin: ${CONFIG.webUiOrigin}`);
   });
 
   server.on('error', (err) => {
@@ -1636,15 +2037,26 @@ cfg = json.loads(${JSON.stringify(JSON.stringify(cfg))})
 
 os.makedirs(cfg["outputDir"], exist_ok=True)
 
-if cfg.get("wandb", {}).get("enabled"):
+wandb_cfg = cfg.get("wandb", {}) or {}
+wandb_enabled = bool(wandb_cfg.get("enabled")) and wandb_cfg.get("mode", "online") != "disabled"
+
+if wandb_cfg.get("mode") == "offline":
+    os.environ["WANDB_MODE"] = "offline"
+
+if wandb_cfg.get("baseUrl"):
+    os.environ["WANDB_BASE_URL"] = wandb_cfg["baseUrl"]
+
+if wandb_enabled:
     import wandb
-    if cfg["wandb"].get("apiKey"):
-        wandb.login(key=cfg["wandb"]["apiKey"])
+    if wandb_cfg.get("apiKey"):
+        wandb.login(key=wandb_cfg["apiKey"])
     wandb.init(
-        project=cfg["wandb"].get("project", "llm-lab"),
-        entity=cfg["wandb"].get("entity"),
+        project=wandb_cfg.get("project", "llm-lab"),
+        entity=wandb_cfg.get("entity"),
         name=os.path.basename(cfg["outputDir"]),
-        config=cfg
+        config=cfg,
+        dir=cfg["outputDir"],
+        mode=wandb_cfg.get("mode", "online")
     )
 
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -1704,7 +2116,7 @@ args = TrainingArguments(
     save_safetensors=True,
     bf16=use_bf16,
     fp16=not use_bf16,
-    report_to=["wandb"] if cfg.get("wandb", {}).get("enabled") else [],
+    report_to=["wandb"] if wandb_enabled else [],
     remove_unused_columns=False,
     group_by_length=False,
     optim="adamw_8bit",
@@ -1724,11 +2136,17 @@ trainer.train()
 trainer.save_model(cfg["outputDir"])
 tokenizer.save_pretrained(cfg["outputDir"])
 
+# Export metrics
+with open(os.path.join(cfg["outputDir"], "metrics.json"), "w") as f:
+    json.dump(trainer.state.log_history, f, indent=2)
+
 print(json.dumps({
     "ok": True,
     "outputDir": cfg["outputDir"],
     "rows": len(dataset),
     "bf16": use_bf16,
+    "wandbEnabled": wandb_enabled,
+    "wandbMode": wandb_cfg.get("mode", "online"),
 }))
 `.trim();
 }
@@ -1751,10 +2169,43 @@ function validateQLoraParams(params) {
   }
 }
 
+function buildTrainingEnv(settings) {
+  const env = {
+    ...process.env,
+    PYTHONUNBUFFERED: '1',
+  };
+
+  const wandb = settings.wandb || {};
+
+  if (wandb.httpProxy) {
+    env.HTTP_PROXY = wandb.httpProxy;
+    env.http_proxy = wandb.httpProxy;
+  }
+
+  if (wandb.httpsProxy) {
+    env.HTTPS_PROXY = wandb.httpsProxy;
+    env.https_proxy = wandb.httpsProxy;
+  }
+
+  if (wandb.noProxy) {
+    env.NO_PROXY = wandb.noProxy;
+    env.no_proxy = wandb.noProxy;
+  }
+
+  if (wandb.baseUrl) {
+    env.WANDB_BASE_URL = wandb.baseUrl;
+  }
+
+  if (wandb.mode) {
+    env.WANDB_MODE = wandb.mode;
+  }
+
+  return env;
+}
+
 async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
   if (qlora) validateQLoraParams(qlora);
 
-  // Auto-cleanup GPU before starting new training
   await clearGpuMemory();
 
   const settings = await getSettings();
@@ -1797,7 +2248,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 
   await upsertJob(job);
   emitEvent('job_updated', job);
-  logger.info(`Starting fine-tune job: ${job.name}`, { jobId, datasetId, baseModel });
+  logger.info(`Starting fine-tune job: ${job.name}`, { jobId, datasetId, baseModel: selectedBaseModel });
 
   fs.mkdirSync(outputDir, { recursive: true });
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
@@ -1809,7 +2260,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    env: buildTrainingEnv(settings),
   });
 
   child.unref();
@@ -1876,7 +2327,6 @@ async function stopJob(jobId) {
   const job = jobs.find((j) => j.id === jobId);
   if (!job) throw new Error('job not found');
   if (!job.pid || !isPidRunning(job.pid)) {
-    // If state says running but PID is not, update state
     if (job.status === 'running') {
       await upsertJob({ ...job, status: 'failed', finishedAt: nowIso(), error: 'Process not found' });
     }
@@ -1942,6 +2392,7 @@ const {
 const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
+const { getDirSize, formatSize } = require('../utils/model-meta');
 
 async function registerLoraFromJob(jobId, customName = null) {
   const existing = await getLoraByJobId(jobId);
@@ -1977,9 +2428,13 @@ async function registerLoraFromJob(jobId, customName = null) {
     error: null,
   });
 
-  emitEvent('lora_created', item);
-  logger.info(`LoRA registered from job: ${item.name}`, { loraId: item.id, jobId });
-  return item;
+  const size = fs.existsSync(item.adapterPath) ? getDirSize(item.adapterPath) : 0;
+  const withSize = { ...item, size, sizeHuman: formatSize(size) };
+
+  const final = await upsertLora(withSize);
+  emitEvent('lora_created', final);
+  logger.info(`LoRA registered from job: ${final.name}`, { loraId: final.id, jobId });
+  return final;
 }
 
 async function buildMergedLora(loraId) {
@@ -2240,6 +2695,7 @@ const { addModel, getModels, getModelById, removeModel, upsertModel } = require(
 const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const logger = require('../utils/logger');
+const { getModelMetadata } = require('../utils/model-meta');
 
 function safeSlug(value) {
   return String(value || '')
@@ -2319,6 +2775,12 @@ print(local_dir)
     });
     emitEvent('model_updated', next);
     if (code === 0) {
+      const meta = getModelMetadata(next.path);
+      const withMeta = await upsertModel({
+        ...next,
+        ...meta
+      });
+      emitEvent('model_updated', withMeta);
       logger.info(`Model downloaded successfully: ${next.name}`, { modelId: next.id });
     } else {
       logger.error(`Model download failed: ${next.name}`, { modelId: next.id, error: next.error });
@@ -2353,6 +2815,86 @@ async function deleteModel(modelId) {
   return { ok: true };
 }
 
+async function quantizeModel({ modelId, method, name }) {
+  const source = await getModelById(modelId);
+  if (!source) throw new Error('source model not found');
+  if (source.status !== 'ready') throw new Error('source model is not ready');
+
+  const newId = uid('model');
+  const slug = safeSlug(name || `${source.name}-${method}`);
+  const modelPath = path.join(CONFIG.modelsDir, `${slug}-${newId}`);
+  const logFile = path.join(CONFIG.logsDir, `${newId}.log`);
+
+  const item = await addModel({
+    id: newId,
+    name: name || `${source.name} (${method})`,
+    repoId: `local/quantized/${source.id}`,
+    createdAt: nowIso(),
+    status: 'building',
+    path: modelPath,
+    logFile,
+    pid: null,
+    error: null,
+    quantization: method,
+    sourceModelId: modelId,
+  });
+
+  emitEvent('model_updated', item);
+  fs.mkdirSync(modelPath, { recursive: true });
+
+  let py = '';
+  if (method === 'awq') {
+    py = `
+import torch
+from awq import AutoAWQForCausalLM
+from transformers import AutoTokenizer
+
+model_path = ${JSON.stringify(source.path)}
+quant_path = ${JSON.stringify(modelPath)}
+
+quant_config = { "zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "GEMM" }
+
+model = AutoAWQForCausalLM.from_pretrained(model_path)
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+model.quantize(tokenizer, quant_config=quant_config)
+model.save_quantized(quant_path)
+tokenizer.save_pretrained(quant_path)
+`.trim();
+  } else {
+    // Default to BitsAndBytes 4-bit (though usually it's used on the fly, we can "save" it if unsloth/transformers allows)
+    throw new Error(`Quantization method ${method} not implemented in this version`);
+  }
+
+  const outFd = fs.openSync(logFile, 'a');
+  const child = spawn(CONFIG.pythonBin, ['-u', '-c', py], {
+    cwd: CONFIG.workspace,
+    detached: true,
+    stdio: ['ignore', outFd, outFd],
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+
+  child.unref();
+
+  const running = await upsertModel({ ...item, pid: child.pid });
+  emitEvent('model_updated', running);
+
+  child.on('exit', async (code) => {
+    const isOk = code === 0;
+    const meta = isOk ? getModelMetadata(modelPath) : {};
+    const next = await upsertModel({
+      ...running,
+      ...meta,
+      status: isOk ? 'ready' : 'failed',
+      error: isOk ? null : `quantization exited with code ${code}`,
+      pid: null,
+    });
+    emitEvent('model_updated', next);
+  });
+
+  return running;
+}
+
 async function getModelLogs(id, tail = 200) {
   const item = await getModelById(id);
   if (!item) throw new Error('model not found');
@@ -2370,6 +2912,7 @@ module.exports = {
   downloadModel,
   deleteModel,
   getModelLogs,
+  quantizeModel,
 };
 
 
@@ -2385,39 +2928,137 @@ const { getRuntime, saveRuntime, getSettings } = require('./state');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
+const { readText, removeFile } = require('../utils/fs');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function startVllmRuntime({
-  model,
-  port,
-  maxModelLen,
-  gpuMemoryUtilization,
-  tensorParallelSize,
-  baseModel = null,
-  activeModelId = null,
-  activeModelName = null,
-  activeLoraId = null,
-  activeLoraName = null,
-}) {
+function validateInferenceParams(params = {}) {
+  if (
+    params.port !== undefined &&
+    (!Number.isInteger(params.port) || params.port < 1 || params.port > 65535)
+  ) {
+    throw new Error('port must be an integer between 1 and 65535');
+  }
+
+  if (
+    params.gpuMemoryUtilization !== undefined &&
+    (typeof params.gpuMemoryUtilization !== 'number' ||
+      params.gpuMemoryUtilization <= 0 ||
+      params.gpuMemoryUtilization > 1)
+  ) {
+    throw new Error('gpuMemoryUtilization must be between 0 and 1');
+  }
+
+  if (
+    params.maxModelLen !== undefined &&
+    (!Number.isInteger(params.maxModelLen) || params.maxModelLen < 1)
+  ) {
+    throw new Error('maxModelLen must be a positive integer');
+  }
+
+  if (
+    params.maxNumSeqs !== undefined &&
+    (!Number.isInteger(params.maxNumSeqs) || params.maxNumSeqs < 1)
+  ) {
+    throw new Error('maxNumSeqs must be a positive integer');
+  }
+
+  if (
+    params.swapSpace !== undefined &&
+    (!Number.isInteger(params.swapSpace) || params.swapSpace < 0)
+  ) {
+    throw new Error('swapSpace must be a non-negative integer');
+  }
+
+  if (
+    params.tensorParallelSize !== undefined &&
+    (!Number.isInteger(params.tensorParallelSize) || params.tensorParallelSize < 1)
+  ) {
+    throw new Error('tensorParallelSize must be a positive integer');
+  }
+}
+
+async function startVllmRuntime(params = {}) {
+  const settings = await getSettings();
+  const inf = settings.inference || {};
+
+  const merged = {
+    model: params.model ?? inf.model ?? settings.baseModel,
+    port: Number(params.port ?? inf.port ?? CONFIG.vllmPort),
+    maxModelLen: Number(params.maxModelLen ?? inf.maxModelLen ?? 8192),
+    gpuMemoryUtilization: Number(
+      params.gpuMemoryUtilization ?? inf.gpuMemoryUtilization ?? 0.9,
+    ),
+    tensorParallelSize: Number(params.tensorParallelSize ?? inf.tensorParallelSize ?? 1),
+    maxNumSeqs: Number(params.maxNumSeqs ?? inf.maxNumSeqs ?? 256),
+    swapSpace: Number(params.swapSpace ?? inf.swapSpace ?? 4),
+    quantization: params.quantization ?? inf.quantization ?? null,
+    dtype: params.dtype ?? inf.dtype ?? 'auto',
+    trustRemoteCode: params.trustRemoteCode ?? inf.trustRemoteCode ?? true,
+    enforceEager: params.enforceEager ?? inf.enforceEager ?? false,
+    kvCacheDtype: params.kvCacheDtype ?? inf.kvCacheDtype ?? 'auto',
+    baseModel: params.baseModel ?? null,
+    activeModelId: params.activeModelId ?? null,
+    activeModelName: params.activeModelName ?? null,
+    activeLoraId: params.activeLoraId ?? null,
+    activeLoraName: params.activeLoraName ?? null,
+    loraPath: params.loraPath ?? null,
+    loraName: params.loraName ?? null,
+  };
+
+  validateInferenceParams(merged);
+
+  const {
+    model,
+    port,
+    maxModelLen,
+    gpuMemoryUtilization,
+    tensorParallelSize,
+    baseModel = null,
+    activeModelId = null,
+    activeModelName = null,
+    activeLoraId = null,
+    activeLoraName = null,
+    loraPath = null,
+    loraName = null,
+    quantization = null,
+    dtype = 'auto',
+    trustRemoteCode = true,
+    enforceEager = false,
+    kvCacheDtype = 'auto',
+    maxNumSeqs = 256,
+    swapSpace = 4,
+  } = merged;
+
+  const normalizedModel = String(model || '').trim();
+  if (!normalizedModel) {
+    throw new Error('model is required');
+  }
+
   if (!fs.existsSync(CONFIG.vllmBin)) {
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
   }
 
-  // Auto-cleanup GPU before starting new runtime
+  logger.info('Starting vLLM runtime', {
+    model: normalizedModel,
+    activeModelName,
+    activeLoraName,
+    loraPath,
+    port,
+  });
+
   await clearGpuMemory();
 
   const runtime = await getRuntime();
-  // Double check if something is still running or state is stale
   if (runtime.vllm?.pid && isPidRunning(runtime.vllm.pid)) {
     await stopVllmRuntime();
   }
 
   const args = [
     'serve',
-    model,
+    normalizedModel,
     '--host',
     '0.0.0.0',
     '--port',
@@ -2428,53 +3069,130 @@ async function startVllmRuntime({
     String(tensorParallelSize),
     '--max-model-len',
     String(maxModelLen),
+    '--max-num-seqs',
+    String(maxNumSeqs),
+    '--swap-space',
+    String(swapSpace),
+    '--dtype',
+    String(dtype || 'auto'),
   ];
+
+  if (quantization) {
+    args.push('--quantization', String(quantization));
+  }
+
+  if (trustRemoteCode) {
+    args.push('--trust-remote-code');
+  }
+
+  if (enforceEager) {
+    args.push('--enforce-eager');
+  }
+
+  if (kvCacheDtype && kvCacheDtype !== 'auto') {
+    args.push('--kv-cache-dtype', String(kvCacheDtype));
+  }
+
+  if (loraPath && loraName) {
+    args.push('--enable-lora', '--lora-modules', `${loraName}=${loraPath}`);
+  }
 
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
 
-  const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
-  const child = spawn(CONFIG.vllmBin, args, {
-    cwd: CONFIG.workspace,
-    detached: true,
-    stdio: ['ignore', outFd, outFd],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
-  });
+  let outFd;
+  try {
+    outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
 
-  child.unref();
-  await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
+    const child = spawn(CONFIG.vllmBin, args, {
+      cwd: CONFIG.workspace,
+      detached: true,
+      stdio: ['ignore', outFd, outFd],
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    });
 
-  for (let i = 0; i < 120; i += 1) {
-    const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${port}/health`]);
-    if (r.ok) break;
+    child.unref();
+    await fsp.writeFile(CONFIG.vllmPidFile, String(child.pid), 'utf8');
 
-    if (!isPidRunning(child.pid)) {
-      throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
+    let started = false;
+
+    try {
+      for (let i = 0; i < 120; i += 1) {
+        const r = runText('curl', [
+          '-fsS',
+          '--max-time',
+          '2',
+          `http://127.0.0.1:${port}/health`,
+        ]);
+
+        if (r.ok) {
+          started = true;
+          break;
+        }
+
+        if (!isPidRunning(child.pid)) {
+          logger.error('vLLM exited during startup', {
+            model: normalizedModel,
+            port,
+            logFile: CONFIG.vllmLogFile,
+          });
+          throw new Error(`vLLM exited during startup; check ${CONFIG.vllmLogFile}`);
+        }
+
+        await sleep(1000);
+      }
+
+      if (!started) {
+        await killProcessGroup(child.pid, 'SIGKILL');
+        const logs = await readText(CONFIG.vllmLogFile, '');
+        const lastLines = logs.split('\n').slice(-30).join('\n');
+        logger.error('vLLM did not become healthy within timeout', {
+          model: normalizedModel,
+          port,
+          lastLines,
+        });
+        throw new Error(`vLLM startup timed out. Last logs: ${lastLines || 'None'}`);
+      }
+    } catch (err) {
+      await removeFile(CONFIG.vllmPidFile).catch(() => {});
+      throw err;
     }
 
-    await sleep(1000);
-  }
+    const next = {
+      vllm: {
+        pid: child.pid,
+        model: normalizedModel,
+        startedAt: nowIso(),
+        port,
+        logFile: CONFIG.vllmLogFile,
+        baseModel: baseModel || settings.baseModel,
+        activeModelId,
+        activeModelName,
+        activeLoraId,
+        activeLoraName,
+      },
+    };
 
-  const settings = await getSettings();
+    await saveRuntime(next);
+    emitEvent('runtime_started', next.vllm);
 
-  const next = {
-    vllm: {
+    logger.info('vLLM runtime started', {
       pid: child.pid,
-      model,
-      startedAt: nowIso(),
+      model: normalizedModel,
       port,
-      logFile: CONFIG.vllmLogFile,
-      baseModel: baseModel || settings.baseModel,
-      activeModelId,
       activeModelName,
-      activeLoraId,
       activeLoraName,
-    },
-  };
+    });
 
-  await saveRuntime(next);
-  emitEvent('runtime_started', next.vllm);
-  logger.info(`vLLM runtime started`, { pid: child.pid, model, port });
-  return next.vllm;
+    return next.vllm;
+  } finally {
+    if (typeof outFd === 'number') {
+      try {
+        fs.closeSync(outFd);
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 async function stopVllmRuntime() {
@@ -2483,15 +3201,18 @@ async function stopVllmRuntime() {
 
   if (pid && isPidRunning(pid)) {
     await killProcessGroup(pid);
+
     for (let i = 0; i < 20; i += 1) {
       if (!isPidRunning(pid)) break;
       await sleep(500);
     }
+
     if (isPidRunning(pid)) {
       await killProcessGroup(pid, 'SIGKILL');
     }
   }
 
+  await removeFile(CONFIG.vllmPidFile).catch(() => {});
   const settings = await getSettings();
 
   const next = {
@@ -2511,13 +3232,21 @@ async function stopVllmRuntime() {
 
   await saveRuntime(next);
   emitEvent('runtime_stopped', next.vllm);
-  logger.info(`vLLM runtime stopped`);
+  logger.info('vLLM runtime stopped');
+
   return next.vllm;
 }
 
 async function getRuntimeHealth(port) {
-  const targetPort = port || CONFIG.vllmPort;
-  const r = runText('curl', ['-fsS', '--max-time', '2', `http://127.0.0.1:${targetPort}/health`]);
+  const runtime = await getRuntime();
+  const targetPort = port || runtime.vllm?.port || CONFIG.vllmPort;
+
+  const r = runText('curl', [
+    '-fsS',
+    '--max-time',
+    '2',
+    `http://127.0.0.1:${targetPort}/health`,
+  ]);
 
   return {
     ok: r.ok,
@@ -2580,18 +3309,30 @@ const DEFAULT_SETTINGS = {
   },
   wandb: {
     enabled: false,
+    mode: 'online', // online | offline | disabled
     apiKey: '',
     project: 'llm-lab',
     entity: '',
+    baseUrl: '',
+    httpProxy: '',
+    httpsProxy: '',
+    noProxy: '',
   },
   inference: {
     backend: 'vllm',
     model: CONFIG.defaultBaseModel,
     host: '0.0.0.0',
     port: CONFIG.vllmPort,
-    gpuMemoryUtilization: 0.9,
+    gpuMemoryUtilization: 0.85,
     tensorParallelSize: 1,
     maxModelLen: 8192,
+    maxNumSeqs: 256,
+    swapSpace: 4,
+    quantization: null,
+    dtype: 'auto',
+    trustRemoteCode: true,
+    enforceEager: false,
+    kvCacheDtype: 'auto',
   },
 };
 
@@ -2634,7 +3375,23 @@ async function ensureWorkspace() {
 }
 
 async function getSettings() {
-  return (await readJson(CONFIG.settingsFile, DEFAULT_SETTINGS)) || DEFAULT_SETTINGS;
+  const current = (await readJson(CONFIG.settingsFile, DEFAULT_SETTINGS)) || DEFAULT_SETTINGS;
+  return {
+    ...DEFAULT_SETTINGS,
+    ...current,
+    qlora: {
+      ...DEFAULT_SETTINGS.qlora,
+      ...(current.qlora || {}),
+    },
+    wandb: {
+      ...DEFAULT_SETTINGS.wandb,
+      ...(current.wandb || {}),
+    },
+    inference: {
+      ...DEFAULT_SETTINGS.inference,
+      ...(current.inference || {}),
+    },
+  };
 }
 
 async function setSettings(next) {
@@ -3120,6 +3877,94 @@ module.exports = {
 };
 
 
+path: /utils/model-meta.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+
+function getDirSize(dirPath) {
+  let size = 0;
+  const files = fs.readdirSync(dirPath);
+
+  for (let i = 0; i < files.length; i++) {
+    const filePath = path.join(dirPath, files[i]);
+    const stats = fs.statSync(filePath);
+
+    if (stats.isFile()) {
+      size += stats.size;
+    } else if (stats.isDirectory()) {
+      size += getDirSize(filePath);
+    }
+  }
+
+  return size;
+}
+
+function formatSize(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function getModelMetadata(modelPath) {
+  const metadata = {
+    size: 0,
+    sizeHuman: 'unknown',
+    quantization: 'none',
+    parameters: 'unknown',
+    vramEstimate: 'unknown'
+  };
+
+  if (!fs.existsSync(modelPath)) return metadata;
+
+  try {
+    metadata.size = getDirSize(modelPath);
+    metadata.sizeHuman = formatSize(metadata.size);
+
+    const configPath = path.join(modelPath, 'config.json');
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+      // Try to detect quantization
+      if (config.quantization_config) {
+        metadata.quantization = config.quantization_config.quant_method || 'unknown';
+      } else if (modelPath.toLowerCase().includes('gptq')) {
+        metadata.quantization = 'gptq';
+      } else if (modelPath.toLowerCase().includes('awq')) {
+        metadata.quantization = 'awq';
+      } else if (modelPath.toLowerCase().includes('gguf')) {
+        metadata.quantization = 'gguf';
+      }
+
+      // Parameters
+      if (config.num_hidden_layers && config.hidden_size) {
+        // Very rough estimate: 12 * layers * hidden^2
+        // Better to use actual file sizes or specific config fields if available
+      }
+    }
+
+    // VRAM estimate (very rough)
+    // For 16-bit: ~2GB per 1B parameters
+    // For 4-bit: ~0.7GB per 1B parameters
+    // Since we often don't have param count easily, we can use file size + buffer
+    metadata.vramEstimate = formatSize(metadata.size * 1.2);
+
+  } catch (err) {
+    console.error('Error getting model metadata:', err);
+  }
+
+  return metadata;
+}
+
+module.exports = {
+  getDirSize,
+  formatSize,
+  getModelMetadata
+};
+
+
 path: /utils/proc.js
 ----------------------------------------
 const { spawn, spawnSync } = require('child_process');
@@ -3172,8 +4017,8 @@ module.exports = {
 
 
 === SUMMARY ===
-included: 26
+included: 31
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 82865
+totalBytes(approx): 105655
