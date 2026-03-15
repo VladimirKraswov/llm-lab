@@ -54,6 +54,8 @@ export type Settings = {
     gpuMemoryUtilization: number;
     tensorParallelSize: number;
     maxModelLen: number;
+    maxNumSeqs: number;
+    swapSpace: number;
     quantization: string | null;
     dtype: string;
     trustRemoteCode: boolean;
@@ -66,6 +68,10 @@ export type Settings = {
     apiKey: string;
     project: string;
     entity: string;
+    baseUrl?: string;
+    httpProxy?: string;
+    httpsProxy?: string;
+    noProxy?: string;
   };
 };
 
@@ -170,6 +176,7 @@ export type RuntimeState = {
 export type RuntimeHealth = {
   ok: boolean;
   raw?: string;
+  port?: number;
 };
 
 export type LogEntry = {
@@ -236,7 +243,8 @@ export const api = {
 
   getModels: () => request<ModelItem[]>('/models'),
   getModel: (id: string) => request<ModelItem>(`/models/${id}`),
-  getModelLogs: (id: string, tail = 200) => request<{ id: string; logFile: string; content: string }>(`/models/${id}/logs?tail=${tail}`),
+  getModelLogs: (id: string, tail = 200) =>
+    request<{ id: string; logFile: string; content: string }>(`/models/${id}/logs?tail=${tail}`),
   downloadModel: (payload: { repoId: string; name?: string }) =>
     request<ModelItem>('/models/download', {
       method: 'POST',
@@ -348,11 +356,13 @@ export const api = {
     maxModelLen: number;
     gpuMemoryUtilization: number;
     tensorParallelSize: number;
-    quantization?: string | null,
-    dtype?: string,
-    trustRemoteCode?: boolean,
-    enforceEager?: boolean,
-    kvCacheDtype?: string,
+    maxNumSeqs?: number;
+    swapSpace?: number;
+    quantization?: string | null;
+    dtype?: string;
+    trustRemoteCode?: boolean;
+    enforceEager?: boolean;
+    kvCacheDtype?: string;
   }) =>
     request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/runtime/vllm/start', {
       method: 'POST',
@@ -382,14 +392,17 @@ export const api = {
     gpuProcesses: Array<{ pid: number; name: string; cpu: number; mem: number; user: string; command: string }>;
   }>('/monitor/stats'),
 
-  killProcess: (pid: number) => request<{ ok: boolean }>('/monitor/kill', {
-    method: 'POST',
-    body: JSON.stringify({ pid }),
-  }),
+  killProcess: (pid: number) =>
+    request<{ ok: boolean }>('/monitor/kill', {
+      method: 'POST',
+      body: JSON.stringify({ pid }),
+    }),
 
-  clearGpu: () => request<{ ok: boolean; killedCount: number }>('/monitor/clear-gpu', {
-    method: 'POST',
-  }),
+  clearGpu: () =>
+    request<{ ok: boolean; killedCount: number }>('/monitor/clear-gpu', {
+      method: 'POST',
+    }),
+
   chat: (payload: {
     model?: string;
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
@@ -413,17 +426,20 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...payload, stream: true }),
     });
+
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text || `HTTP ${res.status}`);
     }
+
     return res.body;
   },
+
   useJobOutput: (jobId: string) =>
-  request<{ ok: boolean; runtime: RuntimeState['vllm']; job: Job }>('/runtime/use-job-output', {
-    method: 'POST',
-    body: JSON.stringify({ jobId }),
-  }),
+    request<{ ok: boolean; runtime: RuntimeState['vllm']; job: Job }>('/runtime/use-job-output', {
+      method: 'POST',
+      body: JSON.stringify({ jobId }),
+    }),
 };
 
 export type Api = typeof api;
