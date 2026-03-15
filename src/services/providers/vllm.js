@@ -19,10 +19,18 @@ class VllmProvider {
     return { available: true };
   }
 
+  async getAvailabilityDetails() {
+    return this.isAvailable();
+  }
+
   async resolveCompatibility(modelInfo) {
     // Mixtral AWQ is risky in vLLM according to the task
     if (modelInfo.modelType === 'mixtral' && modelInfo.quantization === 'awq') {
-      return { compatible: true, risk: 'high', warning: 'Mixtral-AWQ might return empty responses in some vLLM versions.' };
+      return {
+        compatible: true,
+        risk: 'high',
+        warning: 'Mixtral-AWQ might return empty responses in some vLLM versions. Transformers provider is preferred for this model.'
+      };
     }
     return { compatible: true, risk: 'low' };
   }
@@ -86,10 +94,6 @@ class VllmProvider {
 
     child.unref();
     return child.pid;
-  }
-
-  async getAvailabilityDetails() {
-    return this.isAvailable();
   }
 
   async stop(runtimeState) {

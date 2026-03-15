@@ -84,6 +84,8 @@ const DEFAULT_RUNTIME = {
     activeLoraName: null,
     providerRequested: 'auto',
     providerResolved: null,
+    compatibilityRisk: null,
+    compatibilityWarning: null,
     probe: {
       ok: false,
       status: 'idle',

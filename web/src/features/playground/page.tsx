@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { ResponseRenderer } from '../../components/response-renderer';
+import { AlertCircle, CheckCircle2 } from 'lucide-react';
 
 type Msg = {
   role: 'user' | 'assistant';
@@ -41,12 +42,6 @@ export default function PlaygroundPage() {
     queryKey: ['runtime-health'],
     queryFn: api.getRuntimeHealth,
     refetchInterval: 3000,
-  });
-
-  const providersQuery = useQuery({
-    queryKey: ['runtime-providers'],
-    queryFn: api.getRuntimeProviders,
-    refetchInterval: 5000,
   });
 
   const [input, setInput] = useState(
@@ -145,99 +140,98 @@ export default function PlaygroundPage() {
         <div className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="text-sm font-semibold text-white">Runtime</div>
 
-          <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-500">Health</div>
-            <div className="mt-1 text-sm text-white">{healthQuery.data?.ok ? 'healthy' : 'not ready'}</div>
-          </div>
-
-          <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-500">Base model</div>
-            <div className="mt-1 text-sm text-white">{runtimeQuery.data?.vllm.baseModel || '—'}</div>
-          </div>
-
-          <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-500">Active model</div>
-            <div className="mt-1 text-sm text-white">{runtimeQuery.data?.vllm.activeModelName || '—'}</div>
-          </div>
-
-          <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-500">Active LoRA</div>
-            <div className="mt-1 text-sm text-white">{runtimeQuery.data?.vllm.activeLoraName || 'None'}</div>
-          </div>
-
-          <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-500">Serving path</div>
-            <div className="mt-1 break-all text-sm text-white">
-              {runtimeQuery.data?.vllm.model || 'No runtime model'}
+          <div className="flex gap-2">
+            <div className="flex-1 rounded-xl bg-slate-950/40 p-3">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Health</div>
+              <div className={`text-sm font-medium ${healthQuery.data?.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {healthQuery.data?.ok ? 'Healthy' : (runtimeQuery.data?.vllm.pid ? 'Starting...' : 'Offline')}
+              </div>
+            </div>
+            <div className="flex-1 rounded-xl bg-slate-950/40 p-3">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Provider</div>
+              <div className="text-sm font-medium text-white capitalize">{runtimeQuery.data?.vllm.providerResolved || '—'}</div>
             </div>
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-500">Provider (Requested / Resolved)</div>
-            <div className="mt-1 text-sm text-white capitalize">
-              {runtimeQuery.data?.vllm.providerRequested || '—'} / {runtimeQuery.data?.vllm.providerResolved || '—'}
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Active model</div>
+            <div className="text-sm text-white break-words">{runtimeQuery.data?.vllm.activeModelName || '—'}</div>
+            {runtimeQuery.data?.vllm.activeLoraName && (
+               <div className="mt-1 text-xs text-blue-400 font-medium">+ {runtimeQuery.data.vllm.activeLoraName}</div>
+            )}
+          </div>
+
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Serving path</div>
+            <div className="mt-1 break-all text-[11px] font-mono text-slate-400">
+              {runtimeQuery.data?.vllm.model || 'None'}
             </div>
           </div>
 
           {runtimeQuery.data?.vllm?.probe && (
-            <div className={`rounded-xl p-3 ${runtimeQuery.data.vllm.probe.ok ? 'bg-emerald-950/40 border border-emerald-900/50' : 'bg-rose-950/40 border border-rose-900/50'}`}>
-               <div className="text-xs text-slate-500">Model Probe</div>
-               <div className="mt-1 text-sm text-white">
-                 {runtimeQuery.data.vllm.probe.status === 'checking' ? 'Checking...' : (runtimeQuery.data.vllm.probe.ok ? 'Success ✅' : 'Failed ❌')}
-                 {runtimeQuery.data.vllm.probe.error && <div className="mt-1 text-[10px] text-rose-400 leading-tight">{runtimeQuery.data.vllm.probe.error}</div>}
+            <div className={`rounded-xl p-3 border ${runtimeQuery.data.vllm.probe.ok ? 'bg-emerald-950/20 border-emerald-900/50' : 'bg-rose-950/20 border-rose-900/50'}`}>
+               <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Model Probe</span>
+                  {runtimeQuery.data.vllm.probe.ok ? <CheckCircle2 size={12} className="text-emerald-500" /> : <AlertCircle size={12} className="text-rose-500" />}
                </div>
+               <div className="text-sm text-white font-medium">
+                 {runtimeQuery.data.vllm.probe.status === 'checking' ? 'Checking...' : (runtimeQuery.data.vllm.probe.ok ? 'Verified' : 'Failed')}
+               </div>
+               {runtimeQuery.data.vllm.probe.error && <div className="mt-1 text-[10px] text-rose-400 leading-tight">{runtimeQuery.data.vllm.probe.error}</div>}
             </div>
           )}
 
-          <div>
-            <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+          <div className="pt-2">
+            <label className="mb-2 block text-[10px] uppercase tracking-wider font-bold text-slate-500">
               Temperature
             </label>
             <input
               value={temperature}
               onChange={(e) => setTemperature(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white"
+              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none"
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+            <label className="mb-2 block text-[10px] uppercase tracking-wider font-bold text-slate-500">
               Max tokens
             </label>
             <input
               value={maxTokens}
               onChange={(e) => setMaxTokens(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white"
+              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none"
             />
           </div>
 
-          <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-xs text-slate-400">
-            Для теста попробуй:
-            <div className="mt-2 text-slate-300">Сделай React компонент карточки профиля</div>
-            <div className="text-slate-300">Напиши Dockerfile и объясни его</div>
-            <div className="text-slate-300">Покажи Python и SQL в одном ответе</div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-xs text-slate-400 leading-relaxed">
+            <span className="text-slate-500 font-semibold mb-1 block">Test prompts:</span>
+            • Create a profile card component in React<br/>
+            • Write a Dockerfile for a Python app<br/>
+            • Explain Fibonacci in 3 sentences
           </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 flex flex-col">
           <div className="mb-4 flex items-center justify-between">
             <div className="text-sm font-semibold text-white">Chat</div>
-            {error && <div className="text-xs font-medium text-red-500">Error: {error}</div>}
+            {error && <div className="text-xs font-medium text-rose-400 flex items-center gap-1"><AlertCircle size={14}/> {error}</div>}
           </div>
 
-          <div className="mb-4 h-[560px] overflow-auto rounded-2xl bg-slate-950 p-4">
+          <div className="mb-4 flex-1 h-[560px] overflow-auto rounded-2xl bg-slate-950 p-4 border border-slate-900 shadow-inner">
             {!messages.length ? (
-              <div className="text-sm text-slate-500">No messages yet.</div>
+              <div className="h-full flex items-center justify-center text-sm text-slate-600 italic">
+                No messages yet. Send a prompt to start.
+              </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-6">
                 {messages.map((m, idx) => (
-                  <div key={idx} className={m.role === 'user' ? 'text-right' : 'text-left'}>
+                  <div key={idx} className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
                     {m.role === 'user' ? (
-                      <div className="inline-block max-w-[85%] rounded-2xl bg-blue-600 px-4 py-3 text-sm whitespace-pre-wrap text-white">
+                      <div className="inline-block max-w-[85%] rounded-2xl bg-blue-600 px-4 py-3 text-sm whitespace-pre-wrap text-white shadow-md">
                         {m.content}
                       </div>
                     ) : (
-                      <div className="inline-block max-w-[92%] rounded-2xl border border-slate-800 bg-slate-900 px-4 py-4 text-left align-top text-slate-100 shadow-lg shadow-black/20">
+                      <div className="inline-block max-w-[92%] rounded-2xl border border-slate-800 bg-slate-900 px-5 py-5 text-left align-top text-slate-100 shadow-xl shadow-black/40">
                         <ResponseRenderer content={m.content} />
                       </div>
                     )}
@@ -249,18 +243,26 @@ export default function PlaygroundPage() {
 
           <div className="space-y-3">
             <Textarea
-              className="min-h-[110px]"
+              className="min-h-[110px] shadow-sm"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Напиши сообщение модели..."
+              placeholder="Type your message here..."
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  sendMessage();
+                }
+              }}
             />
             <div className="flex gap-3">
-              <Button onClick={sendMessage} disabled={!runtimeQuery.data?.vllm?.model || isStreaming}>
-                {isStreaming ? 'Generating…' : 'Send'}
+              <Button onClick={sendMessage} disabled={!runtimeQuery.data?.vllm?.pid || isStreaming}>
+                {isStreaming ? 'Generating…' : 'Send Message'}
               </Button>
-              <Button className="bg-slate-800 hover:bg-slate-700" onClick={() => setMessages([])}>
-                Clear
+              <Button className="bg-slate-800 hover:bg-slate-700" onClick={() => setMessages([])} disabled={!messages.length}>
+                Clear Chat
               </Button>
+              <span className="text-[10px] text-slate-600 self-center ml-auto hidden md:block">
+                Press Ctrl + Enter to send
+              </span>
             </div>
           </div>
         </div>

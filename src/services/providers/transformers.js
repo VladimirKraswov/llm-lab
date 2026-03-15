@@ -13,26 +13,25 @@ class TransformersProvider {
   }
 
   async isAvailable() {
-    // Check if dependencies are installed
-    // Specifically autoawq >= 0.1.8 as mentioned in requirements
     const checkScript = `
 import importlib.util
 import sys
 
 def get_version(name):
     try:
-        module = __import__(name)
+        module = importlib.import_module(name)
         return getattr(module, "__version__", "unknown")
     except ImportError:
         return None
 
-t_ver = get_version("transformers")
-a_ver = get_version("awq")
+packages = ["transformers", "torch", "flask", "peft"]
+missing = [p for p in packages if get_version(p) is None]
 
-if not t_ver:
-    print("transformers_missing")
+if missing:
+    print(f"missing:{','.join(missing)}")
     sys.exit(0)
 
+a_ver = get_version("awq")
 if a_ver:
     from packaging import version
     if version.parse(a_ver) < version.parse("0.1.8"):
@@ -40,23 +39,31 @@ if a_ver:
     else:
         print("ok")
 else:
-    print("ok_no_awq")
+    print("ok")
 `;
     try {
       const r = runText(CONFIG.pythonBin, ['-c', checkScript]);
       const out = (r.stdout || '').trim();
 
-      if (out === 'transformers_missing') {
-        return { available: false, reason: 'Transformers library not found in Python environment' };
+      if (out.startsWith('missing:')) {
+        const pkgs = out.split(':')[1];
+        return { available: false, reason: `Missing required Python packages: ${pkgs}` };
       }
       if (out.startsWith('autoawq_old')) {
         const ver = out.split(':')[1];
         return { available: false, reason: `autoawq >= 0.1.8 is required for AWQ models (found ${ver})` };
       }
-      return { available: true };
+      if (out === 'ok') {
+        return { available: true };
+      }
+      return { available: false, reason: `Unexpected dependency check output: ${out}` };
     } catch (err) {
       return { available: false, reason: `Dependency check failed: ${err.message}` };
     }
+  }
+
+  async getAvailabilityDetails() {
+    return this.isAvailable();
   }
 
   async resolveCompatibility(modelInfo) {
@@ -67,64 +74,10 @@ else:
   }
 
   async start(config) {
-    // Note: We need a python script for transformers server.
-    // Since it's not provided, we'll assume it exists or we create a minimal one.
-    // For now, I'll use a placeholder and describe that in reality we need src/python/start_transformers.py
-
     const scriptPath = path.join(__dirname, '..', '..', 'python', 'start_transformers.py');
 
-    // Create minimal transformers server if it doesn't exist for demonstration
     if (!fs.existsSync(scriptPath)) {
-        const minimalServer = `
-import json
-import sys
-import os
-from flask import Flask, request, jsonify
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-def main():
-    with open(sys.argv[1], "r") as f:
-        cfg = json.load(f)
-
-    model_id = cfg["model"]
-    port = cfg["port"]
-
-    print(f"Loading model {model_id}...")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            device_map="auto",
-            torch_dtype=torch.float16 if cfg.get("dtype") == "half" else "auto",
-            trust_remote_code=cfg.get("trustRemoteCode", True)
-        )
-    except Exception as e:
-        print(f"FATAL ERROR: Failed to load model: {e}")
-        sys.exit(1) # Fail fast
-
-    app = Flask(__name__)
-
-    @app.route("/health")
-    def health():
-        return jsonify({"status": "ok"})
-
-    @app.route("/v1/chat/completions", methods=["POST"])
-    def chat():
-        data = request.json
-        messages = data.get("messages", [])
-        # Very minimal implementation for probe/demo
-        return jsonify({
-            "choices": [{"message": {"role": "assistant", "content": "Transformers response demo"}}],
-            "usage": {"completion_tokens": 3}
-        })
-
-    app.run(host="0.0.0.0", port=port)
-
-if __name__ == "__main__":
-    main()
-`;
-        fs.writeFileSync(scriptPath, minimalServer);
+      throw new Error(`Transformers provider script not found at ${scriptPath}`);
     }
 
     const payload = {
@@ -132,9 +85,10 @@ if __name__ == "__main__":
       port: config.port,
       dtype: config.dtype,
       trustRemoteCode: config.trustRemoteCode,
+      loraPath: config.loraPath,
     };
 
-    const outFd = fs.openSync(CONFIG.vllmLogFile, 'a'); // Reusing log file
+    const outFd = fs.openSync(CONFIG.vllmLogFile, 'a');
     const { child } = await spawnPythonJsonScript({
       pythonBin: CONFIG.pythonBin,
       scriptPath,
@@ -152,14 +106,17 @@ if __name__ == "__main__":
     return child.pid;
   }
 
-  async getAvailabilityDetails() {
-    return this.isAvailable();
-  }
-
   async stop(runtimeState) {
     const pid = runtimeState.pid;
     if (pid && isPidRunning(pid)) {
       await killProcessGroup(pid);
+      for (let i = 0; i < 20; i++) {
+        if (!isPidRunning(pid)) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+      if (isPidRunning(pid)) {
+        await killProcessGroup(pid, 'SIGKILL');
+      }
     }
   }
 
@@ -185,7 +142,10 @@ if __name__ == "__main__":
       if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
-      return { ok: !!content.trim(), error: content.trim() ? null : 'Empty response' };
+      if (!content.trim()) {
+        return { ok: false, error: 'Empty response from model' };
+      }
+      return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
     }

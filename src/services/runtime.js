@@ -3,13 +3,12 @@ const fsp = require('fs/promises');
 const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso } = require('../utils/ids');
-const { runText, isPidRunning, killProcessGroup } = require('../utils/proc');
+const { isPidRunning } = require('../utils/proc');
 const { getRuntime, saveRuntime, getSettings } = require('./state');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { readText, removeFile } = require('../utils/fs');
-const { spawnPythonJsonScript } = require('../utils/python-runner');
 const providers = require('./providers');
 
 function sleep(ms) {
@@ -250,7 +249,6 @@ async function startVllmRuntime(params = {}) {
   await fsp.writeFile(CONFIG.vllmPidFile, String(pid), 'utf8');
 
   let healthy = false;
-  let startError = null;
 
   try {
     for (let i = 0; i < 120; i += 1) {
@@ -291,6 +289,8 @@ async function startVllmRuntime(params = {}) {
       activeLoraName,
       providerRequested: requestedProviderId,
       providerResolved: provider.id,
+      compatibilityRisk: compatibility.risk,
+      compatibilityWarning: compatibility.warning || null,
       probe: {
         ok: false,
         status: 'checking',
@@ -357,6 +357,8 @@ async function stopVllmRuntime() {
       activeLoraName: null,
       providerRequested: 'auto',
       providerResolved: null,
+      compatibilityRisk: null,
+      compatibilityWarning: null,
       probe: {
         ok: false,
         status: 'idle',
@@ -376,19 +378,23 @@ async function stopVllmRuntime() {
 async function getRuntimeHealth(port) {
   const runtime = await getRuntime();
   const targetPort = port || runtime.vllm?.port || CONFIG.vllmPort;
+  const providerId = runtime.vllm?.providerResolved || 'vllm';
+  const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
 
-  const r = runText('curl', [
-    '-fsS',
-    '--max-time',
-    '2',
-    `http://127.0.0.1:${targetPort}/health`,
-  ]);
-
-  return {
-    ok: r.ok,
-    port: targetPort,
-    raw: r.ok ? r.stdout : (r.stderr || r.stdout || null),
-  };
+  try {
+    const h = await provider.health({ port: targetPort });
+    return {
+      ok: h.ok,
+      port: targetPort,
+      raw: h.status,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      port: targetPort,
+      raw: String(err.message || err),
+    };
+  }
 }
 
 module.exports = {

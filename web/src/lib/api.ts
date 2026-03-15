@@ -172,6 +172,8 @@ export type RuntimeState = {
     activeLoraName?: string | null;
     providerRequested?: string;
     providerResolved?: string | null;
+    compatibilityRisk?: 'low' | 'medium' | 'high' | null;
+    compatibilityWarning?: string | null;
     probe?: {
       ok: boolean;
       status: string;
@@ -386,6 +388,7 @@ export const api = {
     trustRemoteCode?: boolean;
     enforceEager?: boolean;
     kvCacheDtype?: string;
+    provider?: string;
   }) =>
     request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/runtime/vllm/start', {
       method: 'POST',

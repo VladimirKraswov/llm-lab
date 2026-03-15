@@ -9,7 +9,12 @@ const PROVIDERS = {
 
 async function getAvailableProviders() {
   const result = [
-    { id: 'auto', label: 'Auto', description: 'Automatically select the best provider for the model', available: true }
+    {
+      id: 'auto',
+      label: 'Auto',
+      description: 'Automatically select the best provider for the model',
+      available: true
+    }
   ];
 
   for (const p of Object.values(PROVIDERS)) {
@@ -51,13 +56,34 @@ async function resolveProvider(requestedId, modelInfo) {
 
   const availability = await provider.isAvailable();
   if (!availability.available) {
-    throw new Error(`Provider ${targetId} is not available: ${availability.reason}`);
+    // If auto selected a provider that is not available, we have a problem.
+    // In resolveProvider, we should probably fail if manual choice is unavailable,
+    // but if auto choice is unavailable, maybe fallback?
+    // But the requirement says: "если transformers unavailable, не пытаться его стартовать молча"
+
+    if (requestedId && requestedId !== 'auto') {
+        throw new Error(`Provider ${targetId} is not available: ${availability.reason}`);
+    } else {
+        // Auto-selection fallback
+        if (targetId === 'transformers') {
+            logger.warn('Preferred provider transformers unavailable, falling back to vllm', { reason: availability.reason });
+            const vllmProv = PROVIDERS['vllm'];
+            const vllmAvail = await vllmProv.isAvailable();
+            if (!vllmAvail.available) {
+                throw new Error(`No available providers. vLLM: ${vllmAvail.reason}, Transformers: ${availability.reason}`);
+            }
+            targetId = 'vllm';
+        } else {
+            throw new Error(`Provider ${targetId} is not available: ${availability.reason}`);
+        }
+    }
   }
 
-  const compatibility = await provider.resolveCompatibility(modelInfo);
+  const resolvedProvider = PROVIDERS[targetId];
+  const compatibility = await resolvedProvider.resolveCompatibility(modelInfo);
 
   return {
-    provider,
+    provider: resolvedProvider,
     compatibility,
   };
 }

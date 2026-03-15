@@ -1,7 +1,6 @@
 const express = require('express');
 const { getSettings, getRuntime, getJobs, getModelById, getLoraByJobId } = require('../services/state');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
-const { ensureMergedLora } = require('../services/loras');
 const { CONFIG } = require('../config');
 const logger = require('../utils/logger');
 const providers = require('../services/providers');
@@ -33,13 +32,14 @@ router.get('/health', async (_req, res) => {
     const runtime = await getRuntime();
     const settings = await getSettings();
     const port = runtime.vllm?.port || settings.inference.port || CONFIG.vllmPort;
+    const providerId = runtime.vllm?.providerResolved || 'vllm';
+    const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
 
-    const response = await fetch(`http://127.0.0.1:${port}/health`);
-    const text = await response.text();
+    const h = await provider.health({ port });
 
     res.json({
-      ok: response.ok,
-      raw: text,
+      ok: h.ok,
+      raw: h.status,
       port,
     });
   } catch (err) {
@@ -73,6 +73,7 @@ router.post('/vllm/start', async (req, res) => {
       activeModelName: inf.model,
       activeLoraId: null,
       activeLoraName: null,
+      provider: inf.provider,
     });
 
     res.json({ ok: true, runtime });
@@ -140,7 +141,6 @@ router.post('/use-job-output', async (req, res) => {
       loraName = lora.name;
     }
 
-    const logger = require('../utils/logger');
     logger.info(`Using job output in runtime`, { jobId, activeLoraName });
 
     const runtime = await startVllmRuntime({
@@ -163,6 +163,7 @@ router.post('/use-job-output', async (req, res) => {
       activeLoraName,
       loraPath,
       loraName,
+      provider: inf.provider,
     });
 
     res.json({
@@ -172,7 +173,6 @@ router.post('/use-job-output', async (req, res) => {
     });
   } catch (err) {
     const errorMsg = String(err.message || err);
-    const logger = require('../utils/logger');
     logger.error(`Failed to use job output in runtime`, { error: errorMsg });
     res.status(500).json({ error: errorMsg });
   }
