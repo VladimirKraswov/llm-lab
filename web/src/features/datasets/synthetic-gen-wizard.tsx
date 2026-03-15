@@ -36,6 +36,7 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
   const [curate, setCurate] = useState(true);
   const [curateThreshold, setCurateThreshold] = useState(7.0);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [selectedModelId, setSelectedModelId] = useState<string>('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -43,6 +44,11 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
     queryKey: ['runtime'],
     queryFn: api.getRuntime,
     refetchInterval: 3000,
+  });
+
+  const { data: models } = useQuery({
+    queryKey: ['models'],
+    queryFn: api.getModels,
   });
 
   const { data: jobs } = useQuery({
@@ -60,6 +66,13 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
     },
   });
 
+  const activateMutation = useMutation({
+    mutationFn: (id: string) => api.activateModel(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['runtime'] });
+    },
+  });
+
   const startMutation = useMutation({
     mutationFn: api.startSyntheticGen,
     onSuccess: (data) => {
@@ -68,7 +81,13 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
     },
   });
 
-  const isRuntimeReady = runtime?.inference?.probe?.ok;
+  const selectedModel = models?.find(m => m.id === selectedModelId);
+  const isActiveModel = runtime?.inference?.model && (
+    runtime.inference.activeModelId === selectedModelId ||
+    runtime.inference.model === selectedModel?.repoId ||
+    runtime.inference.model === selectedModel?.path
+  );
+  const isRuntimeReady = runtime?.inference?.probe?.ok && isActiveModel;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -149,30 +168,61 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
 
       {step === 2 && (
         <div className="space-y-4">
-          <div className="rounded-xl bg-slate-950/50 p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium text-white">Inference Runtime</div>
-                <div className="text-xs text-slate-400">Synthetic generation requires an active model</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className={`h-2 w-2 rounded-full ${isRuntimeReady ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                <span className="text-xs uppercase tracking-wider text-slate-300">
-                  {isRuntimeReady ? 'Ready' : 'Not Running'}
-                </span>
-              </div>
-            </div>
-            {runtime?.inference?.model && (
-              <div className="mt-3 text-sm text-slate-300">
-                Active model: <span className="font-mono text-blue-400">{runtime.inference.model}</span>
-              </div>
-            )}
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-300">Select Model</label>
+            <select
+              value={selectedModelId}
+              onChange={(e) => setSelectedModelId(e.target.value)}
+              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none"
+            >
+              <option value="">-- Select a model --</option>
+              {models?.filter(m => m.status === 'ready').map(m => (
+                <option key={m.id} value={m.id}>{m.name} ({m.repoId})</option>
+              ))}
+            </select>
           </div>
-          {!isRuntimeReady && (
-            <div className="rounded-xl border border-amber-900 bg-amber-950/30 p-3 text-sm text-amber-200">
-              Please start an inference model in the <span className="font-bold">Playground</span> or <span className="font-bold">Models</span> tab before continuing.
+
+          {selectedModel && (
+            <div className="rounded-xl bg-slate-950/50 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-white">Runtime Status</div>
+                  <div className="text-xs text-slate-400">
+                    {isActiveModel ? 'The selected model is loaded and ready' : 'Model needs to be loaded into the runtime'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className={`h-2 w-2 rounded-full ${isRuntimeReady ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                  <span className="text-xs uppercase tracking-wider text-slate-300">
+                    {isRuntimeReady ? 'Ready' : 'Not Ready'}
+                  </span>
+                </div>
+              </div>
+
+              {!isActiveModel && (
+                <Button
+                  className="mt-4 w-full bg-blue-700 hover:bg-blue-600"
+                  onClick={() => activateMutation.mutate(selectedModelId)}
+                  disabled={activateMutation.isPending}
+                >
+                  {activateMutation.isPending ? 'Loading Model...' : 'Load Model into Runtime'}
+                </Button>
+              )}
             </div>
           )}
+
+          {!selectedModel && (
+            <div className="rounded-xl border border-blue-900 bg-blue-950/30 p-3 text-sm text-blue-200">
+              Please select a model from your library to continue.
+            </div>
+          )}
+
+          {selectedModel && !isRuntimeReady && isActiveModel && (
+            <div className="rounded-xl border border-amber-900 bg-amber-950/30 p-3 text-sm text-amber-200">
+              The runtime is starting or initializing. Please wait...
+            </div>
+          )}
+
           <div className="flex justify-between">
             <Button className="bg-slate-800 hover:bg-slate-700" onClick={prevStep}>
               Back
@@ -247,7 +297,7 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
                 startMutation.mutate({
                   name,
                   type,
-                  model: runtime?.inference?.model || '',
+                  model: selectedModel?.path || runtime?.inference?.model || '',
                   numPairs,
                   chunkSize,
                   chunkOverlap,

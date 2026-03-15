@@ -162,7 +162,7 @@ export default function MonitorPage() {
           {
             time: new Date().toLocaleTimeString(),
             cpu: data.cpu?.load || 0,
-            mem: data.memory?.total ? (data.memory.used / data.memory.total) * 100 : 0,
+            mem: data.memory?.total ? (data.memory.active / data.memory.total) * 100 : 0,
             vram: percent(data.gpus?.[0]?.vramUsed, data.gpus?.[0]?.vram),
             gpu: data.gpus?.[0]?.utilizationGpu || 0,
           },
@@ -209,9 +209,9 @@ export default function MonitorPage() {
                 <MemoryStick size={20} />
               </div>
               <div>
-                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">RAM</div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">RAM (Active)</div>
                 <div className="text-xl font-bold text-white">
-                  {(data.memory?.total ? (data.memory.used / data.memory.total) * 100 : 0).toFixed(1)}%
+                  {(data.memory?.total ? (data.memory.active / data.memory.total) * 100 : 0).toFixed(1)}%
                 </div>
               </div>
             </div>
@@ -284,7 +284,7 @@ export default function MonitorPage() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                   <XAxis dataKey="time" hide />
-                  <YAxis stroke="#64748b" fontSize={12} tickFormatter={(v) => `${v}%`} />
+                  <YAxis stroke="#64748b" fontSize={12} tickFormatter={(v) => `${v.toFixed(1)}%`} />
                   <Tooltip
                     contentStyle={{
                       backgroundColor: '#0f172a',
@@ -292,6 +292,7 @@ export default function MonitorPage() {
                       borderRadius: '8px',
                     }}
                     itemStyle={{ fontSize: '12px' }}
+                    formatter={(v: number) => [`${v.toFixed(1)}%`]}
                   />
                   <Area type="monotone" dataKey="cpu" stroke="#3b82f6" fillOpacity={1} fill="url(#colorCpu)" name="CPU %" />
                   <Area type="monotone" dataKey="mem" stroke="#a855f7" fillOpacity={1} fill="url(#colorMem)" name="RAM %" />
@@ -313,7 +314,8 @@ export default function MonitorPage() {
                 <PieChart>
                   <Pie
                     data={[
-                      { name: 'Used', value: data.memory.used },
+                      { name: 'Active', value: data.memory.active },
+                      { name: 'Cache', value: Math.max(0, data.memory.used - data.memory.active) },
                       { name: 'Free', value: data.memory.free },
                     ]}
                     innerRadius={40}
@@ -322,6 +324,7 @@ export default function MonitorPage() {
                     dataKey="value"
                   >
                     <Cell fill="#a855f7" />
+                    <Cell fill="#7c3aed" />
                     <Cell fill="#1e293b" />
                   </Pie>
                   <Tooltip formatter={(v: number) => fmtBytes(v)} />
