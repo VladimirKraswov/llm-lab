@@ -156,6 +156,14 @@ export type SyntheticGenConfig = {
   sourceFiles: string[];
 };
 
+export type SummaryMetrics = {
+  rows?: number;
+  final_loss?: number;
+  duration_human?: string;
+  bf16?: boolean;
+  fp16?: boolean;
+};
+
 export type Job = {
   id: string;
   type: string;
@@ -192,12 +200,8 @@ export type Job = {
   artifacts?: Array<{ name: string; size: number; path: string }>;
   /** Текущий этап синтетической генерации (например, "chunking", "generating", "curating") */
   progressStep?: string;
-  /** Метрики после завершения задания */
-  summaryMetrics?: {
-    /** Количество сгенерированных строк/примеров */
-    rows?: number;
-    // при необходимости можно добавить другие поля
-  };
+  summaryMetrics?: SummaryMetrics;
+
 };
 
 export type RuntimeProbe = {
