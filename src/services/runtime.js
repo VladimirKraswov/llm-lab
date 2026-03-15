@@ -31,6 +31,14 @@ async function startVllmRuntime({
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
   }
 
+  logger.info(`Starting vLLM runtime`, {
+    model,
+    activeModelName,
+    activeLoraName,
+    loraPath,
+    port
+  });
+
   await clearGpuMemory();
 
   const runtime = await getRuntime();
@@ -112,7 +120,13 @@ async function startVllmRuntime({
 
   await saveRuntime(next);
   emitEvent('runtime_started', next.vllm);
-  logger.info(`vLLM runtime started`, { pid: child.pid, model, port });
+  logger.info(`vLLM runtime started`, {
+    pid: child.pid,
+    model,
+    port,
+    activeModelName,
+    activeLoraName
+  });
   return next.vllm;
 }
 
