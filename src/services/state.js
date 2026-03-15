@@ -60,6 +60,11 @@ const DEFAULT_SETTINGS = {
     gpuMemoryUtilization: 0.9,
     tensorParallelSize: 1,
     maxModelLen: 8192,
+    quantization: null,
+    dtype: 'auto',
+    trustRemoteCode: true,
+    enforceEager: false,
+    kvCacheDtype: 'auto',
   },
 };
 

@@ -54,6 +54,11 @@ export type Settings = {
     gpuMemoryUtilization: number;
     tensorParallelSize: number;
     maxModelLen: number;
+    quantization: string | null;
+    dtype: string;
+    trustRemoteCode: boolean;
+    enforceEager: boolean;
+    kvCacheDtype: string;
   };
   wandb?: {
     enabled: boolean;
@@ -332,6 +337,11 @@ export const api = {
     maxModelLen: number;
     gpuMemoryUtilization: number;
     tensorParallelSize: number;
+    quantization?: string | null,
+    dtype?: string,
+    trustRemoteCode?: boolean,
+    enforceEager?: boolean,
+    kvCacheDtype?: string,
   }) =>
     request<{ ok: boolean; runtime: RuntimeState['vllm'] }>('/runtime/vllm/start', {
       method: 'POST',

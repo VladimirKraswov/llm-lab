@@ -22,6 +22,11 @@ export default function RuntimePage() {
   const [maxModelLen, setMaxModelLen] = useState('8192');
   const [gpuMemoryUtilization, setGpuMemoryUtilization] = useState('0.9');
   const [tensorParallelSize, setTensorParallelSize] = useState('1');
+  const [quantization, setQuantization] = useState<string>('');
+  const [dtype, setDtype] = useState('auto');
+  const [trustRemoteCode, setTrustRemoteCode] = useState(true);
+  const [enforceEager, setEnforceEager] = useState(false);
+  const [kvCacheDtype, setKvCacheDtype] = useState('auto');
 
   useEffect(() => {
     if (settingsQuery.data) {
@@ -30,6 +35,11 @@ export default function RuntimePage() {
       setMaxModelLen(String(settingsQuery.data.inference.maxModelLen));
       setGpuMemoryUtilization(String(settingsQuery.data.inference.gpuMemoryUtilization));
       setTensorParallelSize(String(settingsQuery.data.inference.tensorParallelSize));
+      setQuantization(settingsQuery.data.inference.quantization || '');
+      setDtype(settingsQuery.data.inference.dtype || 'auto');
+      setTrustRemoteCode(!!settingsQuery.data.inference.trustRemoteCode);
+      setEnforceEager(!!settingsQuery.data.inference.enforceEager);
+      setKvCacheDtype(settingsQuery.data.inference.kvCacheDtype || 'auto');
     }
   }, [settingsQuery.data]);
 
@@ -90,6 +100,76 @@ export default function RuntimePage() {
               </div>
             </div>
 
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Quantization</label>
+                <select
+                  value={quantization}
+                  onChange={(e) => setQuantization(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">None (auto)</option>
+                  <option value="awq">AWQ</option>
+                  <option value="gptq">GPTQ</option>
+                  <option value="squeezellm">SqueezeLLM</option>
+                  <option value="marlin">Marlin</option>
+                  <option value="bitsandbytes">BitsAndBytes (4-bit)</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">DType</label>
+                <select
+                  value={dtype}
+                  onChange={(e) => setDtype(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="half">Half (FP16)</option>
+                  <option value="float16">Float16</option>
+                  <option value="bfloat16">BFloat16</option>
+                  <option value="float">Float (FP32)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="flex items-center gap-3">
+                <input
+                  id="trust-remote-code-manual"
+                  type="checkbox"
+                  checked={trustRemoteCode}
+                  onChange={(e) => setTrustRemoteCode(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-blue-500"
+                />
+                <label htmlFor="trust-remote-code-manual" className="text-sm font-medium text-white cursor-pointer">
+                  Trust Remote Code
+                </label>
+              </div>
+              <div className="flex items-center gap-3">
+                <input
+                  id="enforce-eager-manual"
+                  type="checkbox"
+                  checked={enforceEager}
+                  onChange={(e) => setEnforceEager(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-blue-500"
+                />
+                <label htmlFor="enforce-eager-manual" className="text-sm font-medium text-white cursor-pointer">
+                  Enforce Eager Mode
+                </label>
+              </div>
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">KV Cache DType</label>
+              <select
+                value={kvCacheDtype}
+                onChange={(e) => setKvCacheDtype(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="auto">Auto</option>
+                <option value="fp8">FP8 (if supported)</option>
+              </select>
+            </div>
+
             <div className="flex flex-wrap gap-3">
               <Button
                 onClick={() =>
@@ -99,6 +179,11 @@ export default function RuntimePage() {
                     maxModelLen: Number(maxModelLen),
                     gpuMemoryUtilization: Number(gpuMemoryUtilization),
                     tensorParallelSize: Number(tensorParallelSize),
+                    quantization: quantization || null,
+                    dtype,
+                    trustRemoteCode,
+                    enforceEager,
+                    kvCacheDtype,
                   })
                 }
                 disabled={startMutation.isPending}

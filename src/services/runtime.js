@@ -26,6 +26,11 @@ async function startVllmRuntime({
   activeLoraName = null,
   loraPath = null,
   loraName = null,
+  quantization = null,
+  dtype = 'auto',
+  trustRemoteCode = true,
+  enforceEager = false,
+  kvCacheDtype = 'auto',
 }) {
   if (!fs.existsSync(CONFIG.vllmBin)) {
     throw new Error(`vLLM binary not found: ${CONFIG.vllmBin}`);
@@ -59,7 +64,25 @@ async function startVllmRuntime({
     String(tensorParallelSize),
     '--max-model-len',
     String(maxModelLen),
+    '--dtype',
+    String(dtype || 'auto'),
   ];
+
+  if (quantization) {
+    args.push('--quantization', quantization);
+  }
+
+  if (trustRemoteCode) {
+    args.push('--trust-remote-code');
+  }
+
+  if (enforceEager) {
+    args.push('--enforce-eager');
+  }
+
+  if (kvCacheDtype && kvCacheDtype !== 'auto') {
+    args.push('--kv-cache-dtype', kvCacheDtype);
+  }
 
   if (loraPath && loraName) {
     args.push('--enable-lora');
