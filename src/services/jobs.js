@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { CONFIG } = require('../config');
 const { nowIso, uid } = require('../utils/ids');
 const { isPidRunning, killProcessGroup } = require('../utils/proc');
@@ -10,10 +11,99 @@ const { registerLoraFromJob } = require('./loras');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
+const { getModelMetadata } = require('../utils/model-meta');
 const {
   registerManagedProcess,
   unregisterManagedProcess,
 } = require('../utils/managed-processes');
+
+async function getEnvSnapshot() {
+  try {
+    const code = `
+import sys
+import torch
+import transformers
+import unsloth
+import json
+try:
+    unsloth_version = getattr(unsloth, "__version__", "unknown")
+except:
+    unsloth_version = "unknown"
+print(json.dumps({
+    "python": sys.version.split()[0],
+    "torch": torch.__version__,
+    "transformers": transformers.__version__,
+    "unsloth": unsloth_version
+}))
+`;
+    const { exec } = require('child_process');
+    const output = await new Promise((resolve, reject) => {
+      exec(`${CONFIG.pythonBin} -c '${code.replace(/'/g, "'\\''")}'`, { timeout: 10000 }, (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      });
+    });
+    return JSON.parse(output);
+  } catch (err) {
+    logger.warn('Failed to get env snapshot', { error: err.message });
+    return {
+      python: 'unknown',
+      torch: 'unknown',
+      transformers: 'unknown',
+      unsloth: 'unknown',
+    };
+  }
+}
+
+async function getDatasetSnapshot(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return { path: filePath, size: 0, mtime: null, hash: null };
+    const stats = fs.statSync(filePath);
+
+    let hash = null;
+    // For files up to 500MB, we calculate a hash asynchronously
+    if (stats.size < 500 * 1024 * 1024) {
+      try {
+        hash = await new Promise((resolve, reject) => {
+          const stream = fs.createReadStream(filePath);
+          const md5 = crypto.createHash('md5');
+          stream.on('data', (data) => md5.update(data));
+          stream.on('end', () => resolve(md5.digest('hex')));
+          stream.on('error', (err) => reject(err));
+        });
+      } catch (err) {
+        logger.warn('Failed to get dataset hash', { filePath, error: err.message });
+      }
+    }
+
+    return {
+      path: filePath,
+      size: stats.size,
+      mtime: stats.mtime.toISOString(),
+      hash,
+    };
+  } catch (err) {
+    return { path: filePath, size: 0, mtime: null, hash: null };
+  }
+}
+
+function getArtifacts(outputDir) {
+  try {
+    if (!fs.existsSync(outputDir)) return [];
+    const files = fs.readdirSync(outputDir);
+    return files.map((file) => {
+      const filePath = path.join(outputDir, file);
+      const stats = fs.statSync(filePath);
+      return {
+        name: file,
+        size: stats.size,
+        path: filePath,
+      };
+    });
+  } catch (err) {
+    return [];
+  }
+}
 
 function validateQLoraParams(params) {
   if (params.learningRate !== undefined && (typeof params.learningRate !== 'number' || params.learningRate <= 0)) {
@@ -91,6 +181,19 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
   const outputDir = path.join(CONFIG.trainingOutputsDir, jobId);
   const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
 
+  const trainConfig = {
+    baseModel: selectedBaseModel,
+    datasetPath: ds.processedPath,
+    outputDir,
+    qlora: { ...settings.qlora, ...(qlora || {}) },
+    wandb: settings.wandb || {},
+  };
+
+  const [envSnapshot, datasetSnapshot] = await Promise.all([
+    getEnvSnapshot(),
+    getDatasetSnapshot(ds.processedPath),
+  ]);
+
   const job = {
     id: jobId,
     type: 'fine-tune',
@@ -109,6 +212,17 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     pid: null,
     error: null,
     configPath: null,
+    paramsSnapshot: trainConfig,
+    datasetSnapshot,
+    modelSnapshot: {
+      path: selectedBaseModel,
+      ...getModelMetadata(selectedBaseModel),
+    },
+    envSnapshot,
+    tags: [],
+    notes: '',
+    artifacts: [],
+    summaryMetrics: {},
   };
 
   await upsertJob(job);
@@ -122,14 +236,6 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
   fs.mkdirSync(outputDir, { recursive: true });
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
-
-  const trainConfig = {
-    baseModel: job.baseModel,
-    datasetPath: job.datasetPath,
-    outputDir: job.outputDir,
-    qlora: { ...settings.qlora, ...(job.qlora || {}) },
-    wandb: settings.wandb || {},
-  };
 
   const outFd = fs.openSync(logFile, 'a');
   const scriptPath = path.join(__dirname, '..', 'python', 'train.py');
@@ -184,13 +290,29 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     const current = jobs.find((j) => j.id === jobId);
     if (!current) return;
 
-    const next = await upsertJob({
-      ...current,
+    const patch = {
       status: code === 0 ? 'completed' : 'failed',
       finishedAt: nowIso(),
       error: code === 0 ? null : `trainer exited with code ${code}`,
       pid: null,
       configPath,
+    };
+
+    if (code === 0) {
+      const summaryFile = path.join(current.outputDir, 'summary.json');
+      if (fs.existsSync(summaryFile)) {
+        try {
+          patch.summaryMetrics = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
+        } catch (err) {
+          logger.warn('Failed to read summary.json', { jobId, error: err.message });
+        }
+      }
+      patch.artifacts = getArtifacts(current.outputDir);
+    }
+
+    const next = await upsertJob({
+      ...current,
+      ...patch,
     });
 
     emitEvent('job_updated', next);
@@ -257,6 +379,17 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
   };
 }
 
+async function updateJobMetadata(jobId, { tags, notes }) {
+  const current = await getJobById(jobId);
+  const next = await upsertJob({
+    ...current,
+    tags: tags !== undefined ? tags : current.tags,
+    notes: notes !== undefined ? notes : current.notes,
+  });
+  emitEvent('job_updated', next);
+  return next;
+}
+
 async function stopJob(jobId) {
   const jobs = await getJobs();
   const job = jobs.find((j) => j.id === jobId);
@@ -311,7 +444,9 @@ async function getJobLogs(id, tail = 200) {
 
 module.exports = {
   startFineTuneJob,
+  updateJobMetadata,
   stopJob,
   getJobById,
   getJobLogs,
+  getArtifacts,
 };

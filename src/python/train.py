@@ -1,6 +1,8 @@
 import json
 import os
 import sys
+import time
+from datetime import timedelta
 
 import torch
 import unsloth
@@ -113,9 +115,49 @@ def main():
         dataset_num_proc=1,
     )
 
-    trainer.train()
+    start_time = time.time()
+    train_result = trainer.train()
+    end_time = time.time()
+
     trainer.save_model(cfg["outputDir"])
     tokenizer.save_pretrained(cfg["outputDir"])
+
+    duration = end_time - start_time
+
+    metrics = train_result.metrics
+    final_loss = None
+    if trainer.state.log_history:
+        for entry in reversed(trainer.state.log_history):
+            if "loss" in entry:
+                final_loss = entry["loss"]
+                break
+
+    wandb_run_id = None
+    if wandb_enabled:
+        try:
+            import wandb
+            if wandb.run:
+                wandb_run_id = wandb.run.id
+        except:
+            pass
+
+    summary = {
+        "duration": duration,
+        "duration_human": str(timedelta(seconds=int(duration))),
+        "final_loss": final_loss,
+        "train_runtime": metrics.get("train_runtime"),
+        "train_samples_per_second": metrics.get("train_samples_per_second"),
+        "train_steps_per_second": metrics.get("train_steps_per_second"),
+        "total_flos": metrics.get("total_flos"),
+        "train_loss": metrics.get("train_loss"),
+        "rows": len(dataset),
+        "bf16": use_bf16,
+        "fp16": not use_bf16,
+        "wandb_run_id": wandb_run_id,
+    }
+
+    with open(os.path.join(cfg["outputDir"], "summary.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
 
     with open(os.path.join(cfg["outputDir"], "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(trainer.state.log_history, f, indent=2)
@@ -123,8 +165,7 @@ def main():
     print(json.dumps({
         "ok": True,
         "outputDir": cfg["outputDir"],
-        "rows": len(dataset),
-        "bf16": use_bf16,
+        "summary": summary,
         "wandbEnabled": wandb_enabled,
         "wandbMode": wandb_cfg.get("mode", "online"),
     }))

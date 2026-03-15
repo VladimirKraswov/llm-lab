@@ -71,6 +71,15 @@ export default function JobsPage() {
     refetchInterval: 3000,
   });
 
+  const metadataMutation = useMutation({
+    mutationFn: (payload: { tags?: string[]; notes?: string }) =>
+      api.updateJobMetadata(selectedId as string, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['job', selectedId] });
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+    },
+  });
+
   const logsQuery = useQuery({
     queryKey: ['job-logs', selectedId],
     queryFn: () => api.getJobLogs(selectedId as string, 300),
@@ -208,8 +217,135 @@ export default function JobsPage() {
                   </div>
                 </div>
 
+                {jobQuery.data.summaryMetrics && (
+                  <div className="mt-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4">
+                    <div className="text-sm font-medium text-emerald-400">Summary Results</div>
+                    <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500">Final Loss</div>
+                        <div className="text-lg font-semibold text-white">
+                          {jobQuery.data.summaryMetrics.final_loss?.toFixed(4) || '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500">Duration</div>
+                        <div className="text-lg font-semibold text-white">
+                          {jobQuery.data.summaryMetrics.duration_human || '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500">Rows Used</div>
+                        <div className="text-lg font-semibold text-white">{jobQuery.data.summaryMetrics.rows || '—'}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500">Precision</div>
+                        <div className="text-lg font-semibold text-white">
+                          {jobQuery.data.summaryMetrics.bf16 ? 'BF16' : jobQuery.data.summaryMetrics.fp16 ? 'FP16' : '—'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
+                    <div className="text-sm font-medium text-white">Environment & Snapshots</div>
+                    <div className="mt-3 space-y-2">
+                      {jobQuery.data.envSnapshot && (
+                        <div className="flex justify-between text-xs">
+                          <span className="text-slate-500">Env:</span>
+                          <span className="text-slate-300">
+                            Python {jobQuery.data.envSnapshot.python}, Torch {jobQuery.data.envSnapshot.torch}
+                          </span>
+                        </div>
+                      )}
+                      {jobQuery.data.datasetSnapshot && (
+                        <div className="flex justify-between text-xs">
+                          <span className="text-slate-500">Dataset:</span>
+                          <span className="text-slate-300" title={jobQuery.data.datasetSnapshot.path}>
+                            {formatSize(jobQuery.data.datasetSnapshot.size)} (
+                            {jobQuery.data.datasetSnapshot.hash?.slice(0, 8) || 'no hash'})
+                          </span>
+                        </div>
+                      )}
+                      {jobQuery.data.modelSnapshot && (
+                        <div className="flex justify-between text-xs">
+                          <span className="text-slate-500">Base Model:</span>
+                          <span className="text-slate-300">
+                            {jobQuery.data.modelSnapshot.quantization || 'none'} /{' '}
+                            {jobQuery.data.modelSnapshot.sizeHuman || 'unknown size'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
+                    <div className="text-sm font-medium text-white">Metadata & Tags</div>
+                    <div className="mt-3 space-y-3">
+                      <div>
+                        <div className="mb-1 text-[10px] uppercase text-slate-500">Tags</div>
+                        <div className="flex flex-wrap gap-1">
+                          {jobQuery.data.tags?.map((tag: string) => (
+                            <span
+                              key={tag}
+                              className="group flex items-center gap-1 rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-400"
+                            >
+                              {tag}
+                              <button
+                                onClick={() =>
+                                  metadataMutation.mutate({
+                                    tags: jobQuery.data.tags?.filter((t: string) => t !== tag),
+                                  })
+                                }
+                                className="opacity-50 hover:text-white hover:opacity-100"
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                          <input
+                            type="text"
+                            placeholder="+ tag"
+                            className="w-16 bg-transparent text-[10px] text-white outline-none placeholder:text-slate-600"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                const val = (e.target as HTMLInputElement).value.trim();
+                                if (val && !jobQuery.data.tags?.includes(val)) {
+                                  metadataMutation.mutate({ tags: [...(jobQuery.data.tags || []), val] });
+                                  (e.target as HTMLInputElement).value = '';
+                                }
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="mb-1 text-[10px] uppercase text-slate-500">Notes</div>
+                        <textarea
+                          className="w-full rounded-xl border border-slate-800 bg-slate-900 p-2 text-xs text-white focus:border-blue-500 focus:outline-none"
+                          rows={2}
+                          placeholder="Add notes..."
+                          defaultValue={jobQuery.data.notes || ''}
+                          onBlur={(e) => {
+                            if (e.target.value !== (jobQuery.data?.notes || '')) {
+                              metadataMutation.mutate({ notes: e.target.value });
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
-                  <div className="text-sm font-medium text-white">Artifacts</div>
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium text-white">Artifacts</div>
+                    <div className="text-xs text-slate-500">
+                      {jobQuery.data.artifacts?.length || 0} files in output directory
+                    </div>
+                  </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <a
                       href={`${apiBase}/jobs/${jobQuery.data.id}/artifacts/metrics`}
@@ -236,6 +372,16 @@ export default function JobsPage() {
                       Download W&B Run (.tar.gz)
                     </a>
                   </div>
+                  {jobQuery.data.artifacts && jobQuery.data.artifacts.length > 0 && (
+                    <div className="mt-3 max-h-32 overflow-y-auto rounded-xl bg-slate-950/50 p-2 text-[10px]">
+                      {jobQuery.data.artifacts.map((art: any, idx: number) => (
+                        <div key={idx} className="flex justify-between border-b border-slate-800 py-1 last:border-0">
+                          <span className="text-slate-400">{art.name}</span>
+                          <span className="text-slate-600">{formatSize(art.size)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/30 p-4">

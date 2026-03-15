@@ -156,6 +156,24 @@ export type Job = {
   logFile: string;
   pid: number | null;
   error: string | null;
+  paramsSnapshot?: any;
+  datasetSnapshot?: {
+    path: string;
+    size: number;
+    mtime: string | null;
+    hash?: string | null;
+  };
+  modelSnapshot?: any;
+  envSnapshot?: {
+    python: string;
+    torch: string;
+    transformers: string;
+    unsloth: string;
+  };
+  tags?: string[];
+  notes?: string;
+  artifacts?: Array<{ name: string; size: number; path: string }>;
+  summaryMetrics?: any;
 };
 
 export type RuntimeProbe = {
@@ -403,6 +421,11 @@ export const api = {
   stopJob: (id: string) =>
     request<{ ok: boolean }>(`/jobs/${id}/stop`, {
       method: 'POST',
+    }),
+  updateJobMetadata: (id: string, payload: { tags?: string[]; notes?: string }) =>
+    request<Job>(`/jobs/${id}/metadata`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
     }),
 
   getRuntime: () => request<RuntimeState>('/runtime'),
