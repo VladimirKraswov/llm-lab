@@ -190,7 +190,14 @@ export type Job = {
   tags?: string[];
   notes?: string;
   artifacts?: Array<{ name: string; size: number; path: string }>;
-  summaryMetrics?: any;
+  /** Текущий этап синтетической генерации (например, "chunking", "generating", "curating") */
+  progressStep?: string;
+  /** Метрики после завершения задания */
+  summaryMetrics?: {
+    /** Количество сгенерированных строк/примеров */
+    rows?: number;
+    // при необходимости можно добавить другие поля
+  };
 };
 
 export type RuntimeProbe = {
