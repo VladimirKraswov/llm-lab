@@ -8,6 +8,7 @@ import { Input } from '../../components/ui/input';
 import { api, apiBase } from '../../lib/api';
 import { fmtDate } from '../../lib/utils';
 import { StatusBadge } from '../../components/status-badge';
+import { QuantizeModelModal } from './quantize-modal';
 
 export default function ModelsPage() {
   const qc = useQueryClient();
@@ -15,7 +16,7 @@ export default function ModelsPage() {
   const [repoId, setRepoId] = useState('Qwen/Qwen2.5-7B-Instruct');
   const [name, setName] = useState('Qwen 2.5 7B Instruct');
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
-  const [quantizeMethod, setQuantizeMethod] = useState('awq');
+  const [isQuantizeModalOpen, setIsQuantizeModalOpen] = useState(false);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -210,19 +211,12 @@ export default function ModelsPage() {
                     <div className="mt-4 border-t border-slate-800 pt-4" onClick={(e) => e.stopPropagation()}>
                       <div className="text-xs font-medium text-slate-400 mb-2">Quantize Model</div>
                       <div className="flex gap-2">
-                        <select
-                          value={quantizeMethod}
-                          onChange={(e) => setQuantizeMethod(e.target.value)}
-                          className="h-8 rounded-md border border-slate-700 bg-slate-900 px-2 text-xs text-white"
-                        >
-                          <option value="awq">AWQ (4-bit)</option>
-                        </select>
                         <Button
-                          onClick={() => quantizeMutation.mutate({ modelId: item.id, method: quantizeMethod })}
+                          onClick={() => setIsQuantizeModalOpen(true)}
                           disabled={quantizeMutation.isPending}
                           className="h-8 px-3 text-xs bg-amber-700 hover:bg-amber-600"
                         >
-                          {quantizeMutation.isPending ? 'Starting…' : 'Run Quantization'}
+                          {quantizeMutation.isPending ? 'Starting…' : 'Open Quantize Wizard'}
                         </Button>
                       </div>
                     </div>
@@ -274,6 +268,19 @@ export default function ModelsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {isQuantizeModalOpen && selectedModelId && (
+        <QuantizeModelModal
+          modelId={selectedModelId}
+          modelName={modelsQuery.data?.find(m => m.id === selectedModelId)?.name || ''}
+          onClose={() => setIsQuantizeModalOpen(false)}
+          onQuantize={(params) => {
+            quantizeMutation.mutate(params);
+            setIsQuantizeModalOpen(false);
+          }}
+          isPending={quantizeMutation.isPending}
+        />
+      )}
     </div>
   );
 }

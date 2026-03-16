@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type SyntheticGenType, type Job } from '../../lib/api';
+import { Tooltip } from '../../components/ui/tooltip';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
@@ -237,7 +238,10 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Generation Type</label>
+              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+                Generation Type
+                <Tooltip content="Выберите тип генерируемых данных: вопрос-ответ (QA) или другие варианты (например, инструкции, суммаризация)." />
+              </label>
               <select
                 value={type}
                 onChange={(e) => setType(e.target.value as SyntheticGenType)}
@@ -250,15 +254,24 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
               </select>
             </div>
             <div>
-              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Target Samples</label>
+              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+                Target Samples
+                <Tooltip content="Желаемое количество примеров для генерации. Фактическое число может быть меньше из-за фильтрации качества." />
+              </label>
               <Input type="number" value={numPairs} onChange={(e) => setNumPairs(Number(e.target.value))} />
             </div>
             <div>
-              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Chunk Size</label>
+              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+                Chunk Size
+                <Tooltip content="Размер фрагмента текста в токенах, на которые разбивается исходный документ. Больший размер увеличивает контекст, но требует больше памяти. Рекомендуется 2000–4000." />
+              </label>
               <Input type="number" value={chunkSize} onChange={(e) => setChunkSize(Number(e.target.value))} />
             </div>
             <div>
-              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Chunk Overlap</label>
+              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+                Chunk Overlap
+                <Tooltip content="Перекрытие между соседними фрагментами (в токенах), чтобы не терять информацию на границах. Обычно 10–20% от chunk size." />
+              </label>
               <Input type="number" value={chunkOverlap} onChange={(e) => setChunkOverlap(Number(e.target.value))} />
             </div>
           </div>
@@ -270,13 +283,17 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
               onChange={(e) => setCurate(e.target.checked)}
               className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600"
             />
-            <label htmlFor="curate" className="text-sm text-white">
+            <label htmlFor="curate" className="flex items-center text-sm text-white">
               Enable Quality Curation (Llama-as-a-Judge)
+              <Tooltip content="Если включено, каждый сгенерированный пример оценивается моделью Llama; непрошедшие порог отбрасываются. Повышает качество, но увеличивает время." />
             </label>
           </div>
           {curate && (
             <div>
-              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">Curation Threshold (1-10)</label>
+              <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+                Curation Threshold (1-10)
+                <Tooltip content="Минимальная оценка качества (от 1 до 10), при которой пример сохраняется в датасете. Чем выше порог, тем строже отбор." />
+              </label>
               <Input
                 type="number"
                 step="0.1"

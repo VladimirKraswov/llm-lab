@@ -124,6 +124,15 @@ function validateQLoraParams(params) {
   if (params.maxSeqLength !== undefined && (!Number.isInteger(params.maxSeqLength) || params.maxSeqLength < 1)) {
     throw new Error('maxSeqLength must be an integer >= 1');
   }
+  if (params.useLora !== undefined && typeof params.useLora !== 'boolean') {
+    throw new Error('useLora must be a boolean');
+  }
+  if (params.loadIn4bit !== undefined && typeof params.loadIn4bit !== 'boolean') {
+    throw new Error('loadIn4bit must be a boolean');
+  }
+  if (params.targetModules !== undefined && !Array.isArray(params.targetModules)) {
+    throw new Error('targetModules must be an array of strings');
+  }
 }
 
 function buildTrainingEnv(settings) {
@@ -330,7 +339,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
       });
     }
 
-    if (code === 0) {
+    if (code === 0 && current.qlora?.useLora !== false) {
       try {
         await registerLoraFromJob(jobId);
       } catch (err) {

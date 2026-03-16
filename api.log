@@ -1,0 +1,11 @@
+
+> llm-lab-service@0.2.0 dev
+> node --watch src/server.js
+
+Initializing workspace...
+Recovering state...
+Starting Express app...
+LLM Lab Service listening on http://0.0.0.0:8787
+Workspace: /home/jules/workspace
+Python: /opt/deepseek-workspace/environments/ml_env/bin/python
+Web UI origin: http://127.0.0.1:5173

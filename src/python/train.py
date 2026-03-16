@@ -53,15 +53,18 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=cfg["qlora"]["loraR"],
-        target_modules=cfg["qlora"]["targetModules"],
-        lora_alpha=cfg["qlora"]["loraAlpha"],
-        lora_dropout=cfg["qlora"]["loraDropout"],
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-    )
+    use_lora = cfg["qlora"].get("useLora", True)
+
+    if use_lora:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=cfg["qlora"]["loraR"],
+            target_modules=cfg["qlora"]["targetModules"],
+            lora_alpha=cfg["qlora"]["loraAlpha"],
+            lora_dropout=cfg["qlora"]["loraDropout"],
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+        )
 
     if torch.cuda.is_available():
         model = model.to("cuda")
@@ -119,7 +122,11 @@ def main():
     train_result = trainer.train()
     end_time = time.time()
 
-    trainer.save_model(cfg["outputDir"])
+    if use_lora:
+        model.save_pretrained_lora(cfg["outputDir"])
+    else:
+        trainer.save_model(cfg["outputDir"])
+
     tokenizer.save_pretrained(cfg["outputDir"])
 
     duration = end_time - start_time

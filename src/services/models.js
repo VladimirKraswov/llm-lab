@@ -169,13 +169,18 @@ async function deleteModel(modelId) {
   return { ok: true };
 }
 
-async function quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize }) {
+async function quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize, sym }) {
   const source = await getModelById(modelId);
   if (!source) throw new Error('source model not found');
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
   const existing = (await getModels()).find(m =>
-    m.sourceModelId === modelId && m.quantization === method && m.status === 'ready' && (!bits || m.bits === bits)
+    m.sourceModelId === modelId &&
+    m.quantization === method &&
+    m.status === 'ready' &&
+    (!bits || m.bits === bits) &&
+    (!groupSize || m.groupSize === groupSize) &&
+    (sym === undefined || m.sym === sym)
   );
   if (existing) return existing;
 
@@ -197,6 +202,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     error: null,
     quantization: method,
     bits: bits || (method === 'fp8' ? 8 : 4),
+    groupSize: groupSize || 128,
+    sym: sym !== undefined ? sym : true,
     sourceModelId: modelId,
     configPath: null,
   });
@@ -217,6 +224,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     maxSeqLen,
     bits,
     groupSize,
+    sym: sym !== undefined ? sym : true,
     trustRemoteCode: true,
   };
 

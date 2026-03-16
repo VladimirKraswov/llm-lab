@@ -23,6 +23,9 @@ def main():
     dataset_path = cfg.get("datasetPath")
     num_samples = cfg.get("numSamples", 128)
     max_seq_len = cfg.get("maxSeqLen", 2048)
+    bits = cfg.get("bits", 4)
+    group_size = cfg.get("groupSize", 128)
+    sym = cfg.get("sym", True)
     trust_remote_code = bool(cfg.get("trustRemoteCode", True))
 
     os.makedirs(output_dir, exist_ok=True)
@@ -30,7 +33,7 @@ def main():
 
     # Resolve quantization scheme based on method
     if method == "awq":
-        scheme = "W4A16"
+        scheme = f"W{bits}A16"
     elif method == "fp8":
         scheme = "FP8"
     elif method == "int8":
@@ -72,7 +75,13 @@ def main():
         model=model,
         tokenizer=tokenizer,
         dataset=dataset if dataset else "open-platypus",
-        recipe=f"quantization: {scheme}",
+        recipe={
+            "quantization": {
+                "scheme": scheme,
+                "group_size": group_size,
+                "symmetric": sym,
+            }
+        },
         num_samples=num_samples,
         max_seq_len=max_seq_len,
         output_dir=output_dir,

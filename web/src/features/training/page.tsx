@@ -27,9 +27,12 @@ export default function TrainingPage() {
   const [loraR, setLoraR] = useState('16');
   const [loraAlpha, setLoraAlpha] = useState('16');
   const [loraDropout, setLoraDropout] = useState('0');
+  const [trainingType, setTrainingType] = useState<'standard' | 'lora' | 'qlora'>('qlora');
+  const [targetModules, setTargetModules] = useState('q_proj, v_proj, k_proj, o_proj, gate_proj, up_proj, down_proj');
+  const [loadIn4bit, setLoadIn4bit] = useState(true);
 
   useEffect(() => {
-    if (settingsQuery.data) {
+    if (settingsQuery.data?.qlora) {
       setEpochs(String(settingsQuery.data.qlora.numTrainEpochs));
       setLr(String(settingsQuery.data.qlora.learningRate));
       setBatchSize(String(settingsQuery.data.qlora.perDeviceTrainBatchSize));
@@ -38,24 +41,40 @@ export default function TrainingPage() {
       setLoraR(String(settingsQuery.data.qlora.loraR));
       setLoraAlpha(String(settingsQuery.data.qlora.loraAlpha));
       setLoraDropout(String(settingsQuery.data.qlora.loraDropout));
+      setTargetModules((settingsQuery.data.qlora.targetModules || []).join(', '));
+      setLoadIn4bit(!!settingsQuery.data.qlora.loadIn4bit);
     }
   }, [settingsQuery.data]);
 
   useEffect(() => {
-    if (!datasetId && datasetsQuery.data?.[0]?.id) setDatasetId(datasetsQuery.data[0].id);
+    const data = datasetsQuery.data;
+    if (Array.isArray(data) && !datasetId && data[0]?.id) {
+      setDatasetId(data[0].id);
+    }
   }, [datasetsQuery.data, datasetId]);
 
   useEffect(() => {
-    const firstReadyModel = modelsQuery.data?.find((m) => m.status === 'ready');
-    if (!modelId && firstReadyModel?.id) setModelId(firstReadyModel.id);
+    const data = modelsQuery.data;
+    if (Array.isArray(data)) {
+      const firstReadyModel = data.find((m) => m.status === 'ready');
+      if (!modelId && firstReadyModel?.id) setModelId(firstReadyModel.id);
+    }
   }, [modelsQuery.data, modelId]);
 
   const filteredLoras = useMemo(() => {
-    return (lorasQuery.data || []).filter((x) => x.baseModelId === modelId);
+    const data = lorasQuery.data;
+    if (Array.isArray(data)) {
+      return data.filter((x) => x.baseModelId === modelId);
+    }
+    return [];
   }, [lorasQuery.data, modelId]);
 
   const selectedModel = useMemo(() => {
-    return (modelsQuery.data || []).find((x) => x.id === modelId) || null;
+    const data = modelsQuery.data;
+    if (Array.isArray(data)) {
+      return data.find((x) => x.id === modelId) || null;
+    }
+    return null;
   }, [modelsQuery.data, modelId]);
 
   const startMutation = useMutation({
@@ -79,7 +98,7 @@ export default function TrainingPage() {
               <label className="mb-2 block text-sm text-slate-400">Base model</label>
               <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
                 <option value="">Select model</option>
-                {(modelsQuery.data || []).map((m) => (
+                {Array.isArray(modelsQuery.data) && modelsQuery.data.map((m) => (
                   <option key={m.id} value={m.id} disabled={m.status !== 'ready'}>
                     {m.name} {m.status !== 'ready' ? `(${m.status})` : ''}
                   </option>
@@ -94,7 +113,7 @@ export default function TrainingPage() {
               <label className="mb-2 block text-sm text-slate-400">Dataset</label>
               <Select value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
                 <option value="">Select dataset</option>
-                {(datasetsQuery.data || []).map((ds) => (
+                {Array.isArray(datasetsQuery.data) && datasetsQuery.data.map((ds) => (
                   <option key={ds.id} value={ds.id}>
                     {ds.name} ({ds.rows})
                   </option>
@@ -108,6 +127,36 @@ export default function TrainingPage() {
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Training Type</label>
+                <Select value={trainingType} onChange={(e) => {
+                  const val = e.target.value as any;
+                  setTrainingType(val);
+                  if (val === 'qlora') setLoadIn4bit(true);
+                  if (val === 'standard') setLoadIn4bit(false);
+                }}>
+                  <option value="standard">Standard (Full Fine-tune)</option>
+                  <option value="lora">LoRA</option>
+                  <option value="qlora">QLoRA (4-bit)</option>
+                </Select>
+              </div>
+
+              <div>
+                <div className="mb-2 block text-sm text-slate-400">Options</div>
+                <div className="flex items-center gap-4 h-10">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={loadIn4bit}
+                      onChange={(e) => setLoadIn4bit(e.target.checked)}
+                      disabled={trainingType === 'qlora'}
+                      className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600"
+                    />
+                    <span className="text-sm text-slate-300">4-bit loading</span>
+                  </label>
+                </div>
+              </div>
+
               <div>
                 <label className="mb-2 block text-sm text-slate-400">Epochs</label>
                 <Input value={epochs} onChange={(e) => setEpochs(e.target.value)} />
@@ -138,8 +187,18 @@ export default function TrainingPage() {
               </div>
               <div>
                 <label className="mb-2 block text-sm text-slate-400">LoRA Dropout</label>
-                <Input value={loraDropout} onChange={(e) => setLoraDropout(e.target.value)} />
+                <Input value={loraDropout} onChange={(e) => setLoraDropout(e.target.value)} disabled={trainingType === 'standard'} />
               </div>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Target modules (comma separated)</label>
+              <Input
+                value={targetModules}
+                onChange={(e) => setTargetModules(e.target.value)}
+                placeholder="q_proj, v_proj, k_proj, o_proj"
+                disabled={trainingType === 'standard'}
+              />
             </div>
 
             <div className="rounded-xl bg-slate-950/50 p-3 text-sm text-slate-400">
@@ -158,9 +217,12 @@ export default function TrainingPage() {
                     perDeviceTrainBatchSize: Number(batchSize),
                     gradientAccumulationSteps: Number(gradAcc),
                     maxSeqLength: Number(maxSeqLength),
+                    useLora: trainingType !== 'standard',
+                    loadIn4bit: loadIn4bit,
                     loraR: Number(loraR),
                     loraAlpha: Number(loraAlpha),
                     loraDropout: Number(loraDropout),
+                    targetModules: targetModules.split(',').map(s => s.trim()).filter(Boolean),
                   },
                 })
               }

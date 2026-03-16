@@ -54,8 +54,8 @@ router.post('/download', async (req, res) => {
 
 router.post('/quantize', async (req, res) => {
   try {
-    const { modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize } = req.body || {};
-    res.json(await quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize }));
+    const { modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize, sym } = req.body || {};
+    res.json(await quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize, sym }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }

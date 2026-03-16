@@ -116,7 +116,7 @@ function hasOwn(obj, key) {
 }
 
 function resolveQuantization(params, inf, detected) {
-  if (hasOwn(params, 'quantization')) return params.quantization;
+  if (hasOwn(params, 'quantization') && params.quantization !== null) return params.quantization;
   if (inf.quantization !== undefined && inf.quantization !== null && inf.quantization !== '') {
     return inf.quantization;
   }
