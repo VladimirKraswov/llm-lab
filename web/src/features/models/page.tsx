@@ -187,7 +187,8 @@ export default function ModelsPage() {
               modelsQuery.data.map((item) => {
                 const tooLarge =
                   !!(item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024);
-                const canAwq = item.status === 'ready' && !item.quantization;
+                const isQuantized = !!item.quantization && String(item.quantization).toLowerCase() !== 'none';
+                const canAwq = item.status === 'ready' && !isQuantized;
 
                 return (
                   <div
@@ -211,7 +212,7 @@ export default function ModelsPage() {
                               Size: <span className="text-slate-200">{item.sizeHuman}</span>
                             </div>
                           )}
-                          {item.quantization && (
+                          {item.quantization && String(item.quantization).toLowerCase() !== 'none' && (
                             <div className="text-slate-400">
                               Quant: <span className="text-slate-200">{item.quantization}</span>
                             </div>
