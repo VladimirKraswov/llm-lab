@@ -79,6 +79,14 @@ export type Settings = {
   };
 };
 
+export type QuantizationCapability = {
+  supported: boolean;
+  methods: string[];
+  runner?: 'ml_env' | 'quant_env';
+  experimental?: boolean;
+  reason?: string | null;
+};
+
 export type ModelItem = {
   id: string;
   name: string;
@@ -93,7 +101,10 @@ export type ModelItem = {
   sizeHuman?: string;
   quantization?: string | null;
   vramEstimate?: string;
-  jobId?: string;
+  runner?: string;
+  envName?: string;
+
+  quantizationCapability?: QuantizationCapability;
 };
 
 export type LoraItem = {
@@ -227,6 +238,7 @@ export type Job = {
   notes?: string;
   artifacts?: Array<{ name: string; size: number; path: string }>;
   progressStep?: string;
+  runner?: string;
   summaryMetrics?: SummaryMetrics;
   resultDatasetId?: string | null;
   syntheticMeta?: SyntheticMeta;
@@ -328,6 +340,8 @@ export type DashboardSummary = {
     python: boolean;
     vllmBin: boolean;
     transformersPython?: boolean;
+    quantizePython?: boolean;
+    quantizeEnvOk?: boolean;
     time: string;
   };
   settings: {
@@ -425,6 +439,7 @@ export const api = {
     bits?: number;
     groupSize?: number;
     sym?: boolean;
+    runner?: 'ml_env' | 'quant_env';
   }) =>
     request<ModelItem>('/models/quantize', {
       method: 'POST',

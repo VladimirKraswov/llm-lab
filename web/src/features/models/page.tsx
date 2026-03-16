@@ -1,360 +1,661 @@
-import { useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
-import { Wand2 } from 'lucide-react';
-import { PageHeader } from '../../components/page-header';
-import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
-import { Button } from '../../components/ui/button';
-import { Input } from '../../components/ui/input';
-import { api, apiBase } from '../../lib/api';
-import { fmtDate } from '../../lib/utils';
-import { StatusBadge } from '../../components/status-badge';
-import { QuantizeModelModal } from './quantize-modal';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 
-export default function ModelsPage() {
-  const qc = useQueryClient();
-  const navigate = useNavigate();
-  const [repoId, setRepoId] = useState('Qwen/Qwen2.5-7B-Instruct');
-  const [name, setName] = useState('Qwen 2.5 7B Instruct');
-  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
-  const [isQuantizeModalOpen, setIsQuantizeModalOpen] = useState(false);
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = { ...(init?.headers || {}) } as Record<string, string>;
 
-  const modelsQuery = useQuery({
-    queryKey: ['models'],
-    queryFn: api.getModels,
-    refetchInterval: 5000,
+  if (!headers['Content-Type'] && !(init?.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers,
   });
 
-  const statsQuery = useQuery({
-    queryKey: ['monitor-stats'],
-    queryFn: api.getMonitorStats,
-    refetchInterval: 10000,
-  });
+  const text = await res.text();
+  let data: unknown = null;
 
-  const lorasQuery = useQuery({
-    queryKey: ['loras'],
-    queryFn: api.getLoras,
-    refetchInterval: 5000,
-  });
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
 
-  const downloadMutation = useMutation({
-    mutationFn: api.downloadModel,
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ['models'] });
-    },
-  });
+  if (!res.ok) {
+    const message =
+      typeof data === 'object' && data && 'error' in data
+        ? String((data as { error?: unknown }).error)
+        : `HTTP ${res.status}`;
+    throw new Error(message);
+  }
 
-  const quantizeMutation = useMutation({
-    mutationFn: api.quantizeModel,
-    onSuccess: async (data) => {
-      await qc.invalidateQueries({ queryKey: ['models'] });
-      await qc.invalidateQueries({ queryKey: ['jobs'] });
-
-      if (data.jobId) {
-        navigate(`/app/jobs?selected=${encodeURIComponent(data.jobId)}`);
-      }
-    },
-  });
-
-  const activateMutation = useMutation({
-    mutationFn: ({ id }: { id: string }) => api.activateModel(id),
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ['runtime'] });
-      await qc.invalidateQueries({ queryKey: ['runtime-health'] });
-      navigate('/app/runtime');
-    },
-  });
-
-  const activateLoraMutation = useMutation({
-    mutationFn: (id: string) => api.activateLora(id),
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ['runtime'] });
-      await qc.invalidateQueries({ queryKey: ['runtime-health'] });
-      navigate('/app/runtime');
-    },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: api.deleteModel,
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ['models'] });
-    },
-  });
-
-  const filteredLoras = useMemo(() => {
-    if (!selectedModelId) return [];
-    const model = modelsQuery.data?.find((m) => m.id === selectedModelId);
-    if (!model) return [];
-    return (lorasQuery.data || []).filter(
-      (l) => l.baseModelId === model.id || l.baseModelRef === model.repoId,
-    );
-  }, [selectedModelId, modelsQuery.data, lorasQuery.data]);
-
-  const maxVram = useMemo(() => {
-    const gpus = statsQuery.data?.gpus || [];
-    if (!gpus.length) return 0;
-    return Math.max(...gpus.map((g) => g.vram));
-  }, [statsQuery.data]);
-
-  const selectedModel = useMemo(
-    () => modelsQuery.data?.find((m) => m.id === selectedModelId) || null,
-    [modelsQuery.data, selectedModelId],
-  );
-
-  const hasActiveBuild = quantizeMutation.isPending;
-
-  const runQuickAwq = (modelId: string, modelName: string) => {
-    quantizeMutation.mutate({
-      modelId,
-      method: 'awq',
-      name: `${modelName} AWQ`,
-      bits: 4,
-      groupSize: 128,
-      numSamples: 128,
-      maxSeqLen: 2048,
-      sym: true,
-    });
-  };
-
-  return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Models Library"
-        description="Библиотека моделей, быстрый запуск AWQ и выбор LoRA под каждую базовую модель."
-      />
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Add new base model</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="mb-2 block text-sm text-slate-400">Hugging Face repo id</label>
-              <Input
-                value={repoId}
-                onChange={(e) => setRepoId(e.target.value)}
-                placeholder="Qwen/Qwen2.5-7B-Instruct"
-              />
-            </div>
-            <div>
-              <label className="mb-2 block text-sm text-slate-400">Display name</label>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Qwen 2.5 7B Instruct"
-              />
-            </div>
-          </div>
-          <Button
-            onClick={() => downloadMutation.mutate({ repoId, name })}
-            disabled={!repoId.trim() || downloadMutation.isPending}
-          >
-            {downloadMutation.isPending ? 'Starting download…' : 'Download base model'}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card className="border-amber-500/20 bg-amber-500/5">
-        <CardContent className="flex flex-col gap-3 p-5 md:flex-row md:items-center md:justify-between">
-          <div>
-            <div className="flex items-center gap-2 text-white">
-              <Wand2 size={16} className="text-amber-300" />
-              <span className="font-medium">AWQ conversion</span>
-            </div>
-            <div className="mt-1 text-sm text-slate-300">
-              Quick AWQ запускает рекомендуемые параметры сразу. Кнопка AWQ… открывает расширенную настройку.
-            </div>
-          </div>
-
-          <div className="text-xs text-slate-400">
-            Recommended default: 4-bit · group 128 · 128 samples · seq 2048
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-6 xl:grid-cols-2">
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle>Base Models</CardTitle>
-          </CardHeader>
-          <CardContent className="flex-1 space-y-3">
-            {modelsQuery.isLoading ? (
-              <div className="text-sm text-slate-500">Loading models…</div>
-            ) : !Array.isArray(modelsQuery.data) || !modelsQuery.data.length ? (
-              <div className="text-sm text-slate-500">No models yet.</div>
-            ) : (
-              modelsQuery.data.map((item) => {
-                const tooLarge =
-                  !!(item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024);
-                const isQuantized = !!item.quantization && String(item.quantization).toLowerCase() !== 'none';
-                const canAwq = item.status === 'ready' && !isQuantized;
-
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => setSelectedModelId(item.id)}
-                    className={`cursor-pointer rounded-2xl border p-4 transition ${
-                      selectedModelId === item.id
-                        ? tooLarge
-                          ? 'border-rose-500 bg-rose-500/10'
-                          : 'border-blue-500 bg-blue-500/10'
-                        : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3 text-sm">
-                      <div className="min-w-0">
-                        <div className="font-semibold text-white truncate">{item.name}</div>
-                        <div className="mt-1 text-xs text-slate-400 truncate">{item.repoId}</div>
-                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
-                          {item.sizeHuman && (
-                            <div className="text-slate-400">
-                              Size: <span className="text-slate-200">{item.sizeHuman}</span>
-                            </div>
-                          )}
-                          {item.quantization && String(item.quantization).toLowerCase() !== 'none' && (
-                            <div className="text-slate-400">
-                              Quant: <span className="text-slate-200">{item.quantization}</span>
-                            </div>
-                          )}
-                          {item.vramEstimate && (
-                            <div className={tooLarge ? 'text-rose-400 font-bold' : 'text-slate-400'}>
-                              VRAM:{' '}
-                              <span className={tooLarge ? 'text-rose-300' : 'text-slate-200'}>
-                                ~{item.vramEstimate}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      <StatusBadge value={item.status === 'ready' ? 'ready' : item.status} />
-                    </div>
-
-                    {selectedModelId === item.id ? (
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            activateMutation.mutate({ id: item.id });
-                          }}
-                          disabled={item.status !== 'ready' || activateMutation.isPending}
-                          className="h-8 px-3 text-xs bg-blue-600 hover:bg-blue-500"
-                        >
-                          Use in runtime
-                        </Button>
-
-                        <a
-                          href={`${apiBase}/models/${item.id}/download`}
-                          className="inline-flex h-8 items-center justify-center rounded-xl bg-slate-800 px-3 text-xs font-medium text-white hover:bg-slate-700"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          Download
-                        </a>
-
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteMutation.mutate(item.id);
-                          }}
-                          disabled={deleteMutation.isPending}
-                          className="h-8 px-3 text-xs bg-rose-700 hover:bg-rose-600"
-                        >
-                          Delete
-                        </Button>
-
-                        {canAwq ? (
-                          <>
-                            <Button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                runQuickAwq(item.id, item.name);
-                              }}
-                              disabled={hasActiveBuild}
-                              className="h-8 px-3 text-xs bg-amber-600 hover:bg-amber-500"
-                            >
-                              Quick AWQ
-                            </Button>
-
-                            <Button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedModelId(item.id);
-                                setIsQuantizeModalOpen(true);
-                              }}
-                              disabled={hasActiveBuild}
-                              className="h-8 px-3 text-xs bg-slate-800 hover:bg-slate-700"
-                            >
-                              AWQ…
-                            </Button>
-                          </>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle>LoRA Adapters</CardTitle>
-          </CardHeader>
-          <CardContent className="flex-1 space-y-3">
-            {!selectedModelId ? (
-              <div className="text-sm text-slate-500">Select a base model to see its LoRAs.</div>
-            ) : !filteredLoras.length ? (
-              <div className="text-sm text-slate-500">No LoRAs found for this model.</div>
-            ) : (
-              filteredLoras.map((lora) => (
-                <div
-                  key={lora.id}
-                  className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4"
-                >
-                  <div className="flex items-start justify-between gap-3 text-sm">
-                    <div className="min-w-0">
-                      <div className="font-semibold text-white truncate">{lora.name}</div>
-                      <div className="mt-1 text-xs text-slate-500">
-                        Created {fmtDate(lora.createdAt)}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-[10px] uppercase tracking-wider text-slate-500">
-                        Merge status
-                      </div>
-                      <div className="text-xs font-medium text-white">{lora.mergeStatus}</div>
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <Button
-                      onClick={() => activateLoraMutation.mutate(lora.id)}
-                      disabled={activateLoraMutation.isPending}
-                      className="h-8 w-full px-3 text-xs bg-emerald-600 hover:bg-emerald-500"
-                    >
-                      {activateLoraMutation.isPending ? 'Activating…' : 'Use with this LoRA'}
-                    </Button>
-                  </div>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {isQuantizeModalOpen && selectedModel ? (
-        <QuantizeModelModal
-          modelId={selectedModel.id}
-          modelName={selectedModel.name}
-          onClose={() => setIsQuantizeModalOpen(false)}
-          onQuantize={(params) => {
-            quantizeMutation.mutate(params);
-            setIsQuantizeModalOpen(false);
-          }}
-          isPending={quantizeMutation.isPending}
-        />
-      ) : null}
-    </div>
-  );
+  return data as T;
 }
+
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
+
+export type Settings = {
+  baseModel: string;
+  qlora: {
+    loadIn4bit: boolean;
+    maxSeqLength: number;
+    perDeviceTrainBatchSize: number;
+    gradientAccumulationSteps: number;
+    learningRate: number;
+    numTrainEpochs: number;
+    warmupRatio: number;
+    loraR: number;
+    loraAlpha: number;
+    loraDropout: number;
+    targetModules: string[];
+    useLora?: boolean;
+  };
+  inference: {
+    provider: string;
+    model: string;
+    host: string;
+    port: number;
+    gpuMemoryUtilization: number;
+    tensorParallelSize: number;
+    maxModelLen: number;
+    maxNumSeqs: number;
+    swapSpace: number;
+    quantization: string | null;
+    dtype: string;
+    trustRemoteCode: boolean;
+    enforceEager: boolean;
+    kvCacheDtype: string;
+  };
+  wandb?: {
+    enabled: boolean;
+    mode: 'online' | 'offline' | 'disabled';
+    apiKey: string;
+    project: string;
+    entity: string;
+    baseUrl?: string;
+    httpProxy?: string;
+    httpsProxy?: string;
+    noProxy?: string;
+  };
+};
+
+export type QuantizationCapability = {
+  supported: boolean;
+  methods: string[];
+  runner?: 'ml_env' | 'quant_env';
+  experimental?: boolean;
+  reason?: string | null;
+};
+
+export type ModelItem = {
+  id: string;
+  name: string;
+  repoId: string;
+  createdAt: string;
+  status: 'downloading' | 'ready' | 'failed' | 'building';
+  path: string;
+  logFile: string;
+  pid: number | null;
+  error: string | null;
+  size?: number;
+  sizeHuman?: string;
+  quantization?: string | null;
+  vramEstimate?: string;
+  runner?: string;
+  envName?: string;
+
+  quantizationCapability?: QuantizationCapability;
+};
+
+export type LoraItem = {
+  id: string;
+  name: string;
+  jobId: string;
+  baseModelId: string | null;
+  baseModelName: string;
+  baseModelRef: string;
+  adapterPath: string;
+  mergedPath: string | null;
+  packagePath: string | null;
+  createdAt: string;
+  status: string;
+  mergeStatus: string;
+  mergeProgress?: number;
+  packageStatus: string;
+  error: string | null;
+  size?: number;
+  sizeHuman?: string;
+};
+
+export type Dataset = {
+  id: string;
+  name: string;
+  createdAt: string;
+  format: string;
+  rawPath?: string;
+  processedPath: string;
+  rows: number;
+};
+
+export type DatasetPreviewResponse = {
+  id: string;
+  name: string;
+  totalRows: number;
+  preview: Array<{ messages: Array<{ role: string; content: string }> }>;
+};
+
+export type DatasetValidationResponse = {
+  ok: boolean;
+  detectedFormat: string;
+  totalLines?: number;
+  totalItems?: number;
+  validCount: number;
+  invalidCount: number;
+  preview: Array<{ messages: Array<{ role: string; content: string }> }>;
+  errors: Array<{ line?: number; index?: number; error: string; raw: unknown }>;
+};
+
+export type SyntheticGenType = 'qa' | 'summary' | 'cot' | 'cot-enhance';
+
+export type SyntheticGenConfig = {
+  name: string;
+  type: SyntheticGenType;
+  model: string;
+  numPairs: number;
+  chunkSize: number;
+  chunkOverlap: number;
+  curate: boolean;
+  curateThreshold: number;
+  sourceFiles: string[];
+};
+
+export type SummaryMetrics = {
+  rows?: number;
+  final_loss?: number;
+  duration_human?: string;
+  bf16?: boolean;
+  fp16?: boolean;
+  sizeHuman?: string;
+  validCount?: number;
+  invalidCount?: number;
+};
+
+export type SyntheticInvalidSample = {
+  line: number;
+  error: string;
+  raw: string;
+};
+
+export type SyntheticImportMeta = {
+  sampleLine?: string | null;
+  sampleParsed?: unknown;
+  invalidSamples?: SyntheticInvalidSample[];
+  detectedFormats?: string[];
+  totalLines?: number;
+  validCount?: number;
+  invalidCount?: number;
+};
+
+export type SyntheticMeta = {
+  progressStep?: string | null;
+  finalPath?: string | null;
+  import?: SyntheticImportMeta;
+};
+
+export type Job = {
+  id: string;
+  type: string;
+  name: string;
+  status: JobStatus;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  datasetId?: string;
+  datasetPath?: string;
+  modelId?: string | null;
+  baseModel?: string;
+  qlora?: Partial<Settings['qlora']>;
+  outputDir: string;
+  logFile: string;
+  pid: number | null;
+  error: string | null;
+  paramsSnapshot?: any;
+  modelPath?: string;
+  datasetSnapshot?: {
+    path: string;
+    size: number;
+    mtime: string | null;
+    hash?: string | null;
+  };
+  modelSnapshot?: any;
+  envSnapshot?: {
+    python: string;
+    torch: string;
+    transformers: string;
+    unsloth: string;
+  };
+  tags?: string[];
+  notes?: string;
+  artifacts?: Array<{ name: string; size: number; path: string }>;
+  progressStep?: string;
+  runner?: string;
+  summaryMetrics?: SummaryMetrics;
+  resultDatasetId?: string | null;
+  syntheticMeta?: SyntheticMeta;
+};
+
+export type SyntheticPreviewRow = {
+  line: number;
+  sourceFormat: string;
+  original: unknown;
+  normalized: {
+    messages: Array<{ role: string; content: string }>;
+  };
+};
+
+export type SyntheticJobPreviewResponse = {
+  ok: boolean;
+  jobId: string;
+  status: JobStatus;
+  progressStep: string | null;
+  path: string;
+  totalLines: number;
+  validCount: number;
+  invalidCount: number;
+  detectedFormats: string[];
+  sampleLine: string | null;
+  sampleParsed: unknown;
+  preview: SyntheticPreviewRow[];
+  invalidSamples: SyntheticInvalidSample[];
+};
+
+export type RuntimeProbe = {
+  ok: boolean;
+  status: string;
+  checkedAt: string | null;
+  error: string | null;
+};
+
+export type RuntimeCapabilities = {
+  experimental: boolean;
+  supportsStreaming: boolean;
+  supportsLora: boolean;
+  supportsAwq: boolean;
+};
+
+export type InferenceRuntime = {
+  pid: number | null;
+  model: string | null;
+  startedAt: string | null;
+  port: number;
+  logFile?: string;
+  baseModel?: string | null;
+  activeModelId?: string | null;
+  activeModelName?: string | null;
+  activeLoraId?: string | null;
+  activeLoraName?: string | null;
+  providerRequested?: string;
+  providerResolved?: string | null;
+  compatibilityRisk?: 'low' | 'medium' | 'high' | null;
+  compatibilityWarning?: string | null;
+  capabilities?: RuntimeCapabilities;
+  probe?: RuntimeProbe;
+};
+
+export type RuntimeState = {
+  inference: InferenceRuntime;
+  vllm?: InferenceRuntime;
+};
+
+export type ProviderItem = {
+  id: string;
+  label: string;
+  description: string;
+  available: boolean;
+  reason: string | null;
+};
+
+export type ProvidersResponse = {
+  available: ProviderItem[];
+  selected: string;
+  active: string | null;
+};
+
+export type RuntimeHealth = {
+  ok: boolean;
+  raw?: string;
+  port?: number;
+};
+
+export type LogEntry = {
+  timestamp: string;
+  level: 'info' | 'warn' | 'error' | 'debug';
+  message: string;
+  [key: string]: any;
+};
+
+export type DashboardSummary = {
+  health: {
+    ok: boolean;
+    python: boolean;
+    vllmBin: boolean;
+    transformersPython?: boolean;
+    quantizePython?: boolean;
+    quantizeEnvOk?: boolean;
+    time: string;
+  };
+  settings: {
+    baseModel: string;
+    inferenceModel: string;
+    inferencePort: number;
+  };
+  runtime: RuntimeState;
+  counts: {
+    datasets: number;
+    jobs: number;
+    runningJobs: number;
+    completedJobs: number;
+    failedJobs: number;
+  };
+  recentJobs: Job[];
+};
+
+export type ChatResponse = {
+  choices?: Array<{
+    message?: {
+      role?: string;
+      content?: string;
+    };
+  }>;
+};
+
+export type ManagedProcess = {
+  pid: number;
+  type: string;
+  label: string | null;
+  meta: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type ManagedProcessesCleanupResponse = {
+  ok: boolean;
+  killedCount: number;
+  failed?: Array<{
+    pid: number;
+    type: string;
+    error: string;
+  }>;
+  remaining?: number;
+};
+
+type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends Array<infer U>
+    ? U[]
+    : T[K] extends object
+      ? DeepPartial<T[K]>
+      : T[K];
+};
+
+export function createEventsSource() {
+  return new EventSource(`${API_BASE}/events`);
+}
+
+export const api = {
+  health: () => request<{ ok: boolean; service?: string; time?: string }>('/health'),
+  getDashboardSummary: () => request<DashboardSummary>('/dashboard/summary'),
+
+  getSettings: () => request<Settings>('/settings'),
+  updateSettings: (payload: DeepPartial<Settings>) =>
+    request<Settings>('/settings', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  getModels: () => request<ModelItem[]>('/models'),
+  getModel: (id: string) => request<ModelItem>(`/models/${id}`),
+  getModelLogs: (id: string, tail = 200) =>
+    request<{ id: string; logFile: string; content: string }>(`/models/${id}/logs?tail=${tail}`),
+  downloadModel: (payload: { repoId: string; name?: string }) =>
+    request<ModelItem>('/models/download', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  activateModel: (id: string, payload?: Partial<Settings['inference']>) =>
+    request<{ ok: boolean; model: ModelItem; runtime: InferenceRuntime }>(`/models/${id}/activate`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  deleteModel: (id: string) =>
+    request<{ ok: boolean }>(`/models/${id}`, {
+      method: 'DELETE',
+    }),
+  quantizeModel: (payload: {
+    modelId: string;
+    method: string;
+    name?: string;
+    datasetPath?: string;
+    numSamples?: number;
+    maxSeqLen?: number;
+    bits?: number;
+    groupSize?: number;
+    sym?: boolean;
+    runner?: 'ml_env' | 'quant_env';
+  }) =>
+    request<ModelItem>('/models/quantize', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getLoras: () => request<LoraItem[]>('/loras'),
+  getLora: (id: string) => request<LoraItem>(`/loras/${id}`),
+  registerLoraFromJob: (payload: { jobId: string; name?: string }) =>
+    request<LoraItem>('/loras/from-job', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  renameLora: (id: string, payload: { name: string }) =>
+    request<LoraItem>(`/loras/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  buildMergedLora: (id: string) =>
+    request<LoraItem>(`/loras/${id}/build-merged`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  packageLora: (id: string) =>
+    request<{ ok: boolean; lora: LoraItem; downloadPath: string }>(`/loras/${id}/package`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  activateLora: (id: string, payload?: Partial<Settings['inference']>) =>
+    request<{ ok: boolean; lora: LoraItem; runtime: InferenceRuntime }>(`/loras/${id}/activate`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  deactivateLora: () =>
+    request<{ ok: boolean; runtime: InferenceRuntime }>('/loras/deactivate', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  deleteLora: (id: string) =>
+    request<{ ok: boolean }>(`/loras/${id}`, {
+      method: 'DELETE',
+    }),
+
+  getDatasets: () => request<Dataset[]>('/datasets'),
+  validateDatasetJsonl: (payload: { jsonl: string }) =>
+    request<DatasetValidationResponse>('/datasets/validate-jsonl', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  createDatasetFromJsonl: (payload: { name: string; jsonl: string }) =>
+    request<Dataset>('/datasets/from-jsonl', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  createDatasetFromItems: (payload: {
+    name: string;
+    items: Array<{ messages: Array<{ role: string; content: string }> }>;
+  }) =>
+    request<Dataset>('/datasets/from-items', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getDatasetPreview: (id: string, limit = 20) =>
+    request<DatasetPreviewResponse>(`/datasets/${id}/preview?limit=${limit}`),
+  deleteDataset: (id: string) =>
+    request<{ ok: boolean }>(`/datasets/${id}`, {
+      method: 'DELETE',
+    }),
+
+  getJobs: () => request<Job[]>('/jobs'),
+  getJob: (id: string) => request<Job>(`/jobs/${id}`),
+  getJobLogs: (id: string, tail = 200) =>
+    request<{ id: string; logFile: string; content: string }>(`/jobs/${id}/logs?tail=${tail}`),
+  startFineTune: (payload: {
+    datasetId: string;
+    name?: string;
+    modelId?: string;
+    baseModel?: string;
+    qlora?: Partial<Settings['qlora']>;
+  }) =>
+    request<{ ok: boolean; jobId: string; logFile: string; outputDir: string }>('/jobs/fine-tune', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  startSyntheticGen: (payload: SyntheticGenConfig) =>
+    request<{ ok: boolean; jobId: string; logFile: string; outputDir: string }>('/jobs/synthetic-gen', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  stopJob: (id: string) =>
+    request<{ ok: boolean }>(`/jobs/${id}/stop`, {
+      method: 'POST',
+    }),
+  updateJobMetadata: (id: string, payload: { tags?: string[]; notes?: string }) =>
+    request<Job>(`/jobs/${id}/metadata`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  getSyntheticJobPreview: (jobId: string, limit = 20) =>
+    request<SyntheticJobPreviewResponse>(`/synthetic/jobs/${jobId}/preview?limit=${limit}`),
+
+  getRuntime: () => request<RuntimeState>('/runtime'),
+  getRuntimeProviders: () => request<ProvidersResponse>('/runtime/providers'),
+  getRuntimeHealth: () => request<RuntimeHealth>('/runtime/health'),
+  startVllm: (payload: {
+    model: string;
+    port: number;
+    maxModelLen: number;
+    gpuMemoryUtilization: number;
+    tensorParallelSize: number;
+    maxNumSeqs?: number;
+    swapSpace?: number;
+    quantization?: string | null;
+    dtype?: string;
+    trustRemoteCode?: boolean;
+    enforceEager?: boolean;
+    kvCacheDtype?: string;
+    provider?: string;
+  }) =>
+    request<{ ok: boolean; runtime: InferenceRuntime }>('/runtime/vllm/start', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  stopVllm: () =>
+    request<{ ok: boolean; runtime: InferenceRuntime }>('/runtime/vllm/stop', {
+      method: 'POST',
+    }),
+  getRuntimeLogs: (tail = 200) =>
+    request<{ logFile: string; content: string }>(`/runtime/logs?tail=${tail}`),
+
+  getLogs: (params: { level?: string; q?: string; limit?: number }) => {
+    const search = new URLSearchParams();
+    if (params.level) search.append('level', params.level);
+    if (params.q) search.append('q', params.q);
+    if (params.limit) search.append('limit', String(params.limit));
+    return request<LogEntry[]>(`/logs?${search.toString()}`);
+  },
+
+  getMonitorStats: () => request<{
+    cpu: { load: number; cores: number[] };
+    memory: { total: number; used: number; free: number; active: number; swaptotal: number; swapused: number };
+    gpus: Array<{ model: string; vendor: string; vram: number; vramUsed: number; utilizationGpu: number; temperatureGpu: number }>;
+    disks: Array<{ fs: string; type: string; size: number; used: number; available: number; use: number; mount: string }>;
+    network: Array<{ iface: string; operstate: string; rx_sec: number; tx_sec: number }>;
+    gpuProcesses: Array<{ pid: number; name: string; cpu: number; mem: number; user: string; command: string }>;
+  }>('/monitor/stats'),
+
+  getManagedProcesses: () =>
+    request<ManagedProcess[]>('/monitor/managed-processes'),
+
+  cleanupManagedProcesses: (payload?: { types?: string[] }) =>
+    request<ManagedProcessesCleanupResponse>('/monitor/managed-processes/cleanup', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+
+  killProcess: (pid: number) =>
+    request<{ ok: boolean }>('/monitor/kill', {
+      method: 'POST',
+      body: JSON.stringify({ pid }),
+    }),
+
+  clearGpu: () =>
+    request<{ ok: boolean; killedCount: number }>('/monitor/clear-gpu', {
+      method: 'POST',
+    }),
+
+  chat: (payload: {
+    model?: string;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    temperature?: number;
+    max_tokens?: number;
+    stream?: boolean;
+  }) =>
+    request<ChatResponse>('/runtime/chat', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  chatStream: async (payload: {
+    model?: string;
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+    temperature?: number;
+    max_tokens?: number;
+  }) => {
+    const res = await fetch(`${API_BASE}/runtime/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, stream: true }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+
+    return res.body;
+  },
+
+  useJobOutput: (jobId: string) =>
+    request<{ ok: boolean; runtime: InferenceRuntime; job: Job }>('/runtime/use-job-output', {
+      method: 'POST',
+      body: JSON.stringify({ jobId }),
+    }),
+
+  uploadSyntheticSource: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request<{ ok: boolean; filename: string; path: string }>('/synthetic/upload', {
+      method: 'POST',
+      body: formData,
+      headers: {},
+    });
+  },
+};
+
+export type Api = typeof api;
+export const apiBase = API_BASE;

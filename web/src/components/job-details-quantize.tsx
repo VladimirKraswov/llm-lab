@@ -31,6 +31,20 @@ export function JobDetailsQuantize({ job }: { job: Job }) {
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Runner</div>
+            <div className="mt-1 text-white">
+              {job.runner || job.paramsSnapshot?.runner || '—'}
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Method</div>
+            <div className="mt-1 text-white">
+              {job.paramsSnapshot?.effectiveMethod || job.paramsSnapshot?.method || '—'}
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Created</div>
             <div className="mt-1 text-white">{fmtDate(job.createdAt)}</div>
           </div>

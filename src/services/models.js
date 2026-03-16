@@ -21,6 +21,50 @@ function safeSlug(value) {
     .slice(0, 80);
 }
 
+function resolveQuantizePythonBin(runner) {
+  if (runner === 'ml_env') return CONFIG.pythonBin;
+  return CONFIG.quantizePythonBin || CONFIG.pythonBin;
+}
+
+function normalizeQuantizationValue(value) {
+  if (value == null) return null;
+  const v = String(value).trim().toLowerCase();
+  if (!v || v === 'none' || v === 'null' || v === 'false') return null;
+  return v;
+}
+
+function detectModelCapability(model) {
+  const quantized = !!normalizeQuantizationValue(model.quantization);
+
+  if (model.status !== 'ready') {
+    return {
+      supported: false,
+      methods: [],
+      runner: 'quant_env',
+      experimental: true,
+      reason: 'Model is not ready',
+    };
+  }
+
+  if (quantized) {
+    return {
+      supported: false,
+      methods: [],
+      runner: 'quant_env',
+      experimental: false,
+      reason: 'Model is already quantized',
+    };
+  }
+
+  return {
+    supported: true,
+    methods: ['awq'],
+    runner: 'quant_env',
+    experimental: true,
+    reason: null,
+  };
+}
+
 async function downloadModel({ repoId, name, tryQuantized }) {
   if (!repoId) throw new Error('repoId is required');
 
@@ -169,18 +213,31 @@ async function deleteModel(modelId) {
   return { ok: true };
 }
 
-async function quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize, sym }) {
+async function quantizeModel({
+  modelId,
+  method,
+  name,
+  datasetPath,
+  numSamples,
+  maxSeqLen,
+  bits,
+  groupSize,
+  sym,
+  runner,
+}) {
   const source = await getModelById(modelId);
   if (!source) throw new Error('source model not found');
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
   const requestedMethod = method;
   const effectiveMethod = requestedMethod;
+  const effectiveRunner = runner || 'quant_env';
 
   const existing = (await getModels()).find(m =>
     m.sourceModelId === modelId &&
     m.quantization === effectiveMethod &&
     m.status === 'ready' &&
+    m.runner === effectiveRunner &&
     (!bits || m.bits === bits) &&
     (!groupSize || m.groupSize === groupSize) &&
     (sym === undefined || m.sym === sym)
@@ -214,6 +271,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     sym: sym !== undefined ? sym : true,
     sourceModelId: modelId,
     configPath: null,
+    runner: effectiveRunner,
+    envName: effectiveRunner,
   });
 
   emitEvent('model_updated', item);
@@ -232,6 +291,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     maxSeqLen,
     bits,
     groupSize,
+    sym,
     trustRemoteCode: true,
   };
 
@@ -254,7 +314,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
   const outFd = fs.openSync(logFile, 'a');
 
   const { child, configPath } = await spawnPythonJsonScript({
-    pythonBin: CONFIG.pythonBin,
+    pythonBin: resolveQuantizePythonBin(effectiveRunner),
     scriptPath,
     payload,
     cwd: CONFIG.workspace,
@@ -277,6 +337,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       sourceModelId: modelId,
       method: effectiveMethod,
       requestedMethod,
+      runner: effectiveRunner,
       modelPath,
       logFile,
     },
@@ -301,8 +362,10 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     outputDir: modelPath,
     logFile: logFile,
     pid: child.pid,
+    runner: effectiveRunner,
     paramsSnapshot: {
       ...payload,
+      runner: effectiveRunner,
       requestedMethod,
       effectiveMethod,
     },
@@ -318,6 +381,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       code,
       method: effectiveMethod,
       requestedMethod,
+      runner: effectiveRunner,
       configPath,
     });
 
@@ -330,6 +394,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       error: isOk ? null : `quantization exited with code ${code}`,
       pid: null,
       configPath,
+      runner: effectiveRunner,
+      envName: effectiveRunner,
     });
 
     const { upsertJob: upsertJobSync } = require('./state');
@@ -339,6 +405,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       finishedAt: nowIso(),
       error: isOk ? null : `quantization exited with code ${code}`,
       pid: null,
+      runner: effectiveRunner,
       summaryMetrics: {
         size: meta.size,
         sizeHuman: meta.sizeHuman,
@@ -352,6 +419,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
         sourceModelId: modelId,
         method: effectiveMethod,
         requestedMethod,
+        runner: effectiveRunner,
         configPath,
       });
     } else {
@@ -360,6 +428,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
         sourceModelId: modelId,
         method: effectiveMethod,
         requestedMethod,
+        runner: effectiveRunner,
         error: next.error,
         configPath,
       });
@@ -374,6 +443,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       sourceModelId: modelId,
       method: effectiveMethod,
       requestedMethod,
+      runner: effectiveRunner,
       configPath,
       error: String(err.message || err),
     });
@@ -384,6 +454,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       error: String(err.message || err),
       pid: null,
       configPath,
+      runner: effectiveRunner,
+      envName: effectiveRunner,
     });
 
     const { upsertJob: upsertJobErr } = require('./state');
@@ -393,6 +465,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       finishedAt: nowIso(),
       error: String(err.message || err),
       pid: null,
+      runner: effectiveRunner,
     });
     emitEvent('model_updated', next);
   });
@@ -421,4 +494,5 @@ module.exports = {
   deleteModel,
   getModelLogs,
   quantizeModel,
+  detectModelCapability,
 };

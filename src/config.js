@@ -24,6 +24,9 @@ const CONFIG = {
   workspace: process.env.WORKSPACE || '/opt/deepseek-workspace',
 
   mlEnv: process.env.ML_ENV || '/opt/deepseek-workspace/environments/ml_env',
+  quantizeEnv:
+    process.env.QUANTIZE_ENV || '/opt/deepseek-workspace/environments/quant_env',
+
   transformersEnv:
     process.env.TRANSFORMERS_ENV ||
     process.env.ML_ENV ||
@@ -35,10 +38,6 @@ const CONFIG = {
   maxJsonMb: toNumber(process.env.MAX_JSON_MB, 25),
   webUiOrigin: normalizeOrigin(process.env.WEB_UI_ORIGIN || '*'),
 
-  // Явный путь до synthetic-data-kit CLI.
-  // Примеры:
-  // SYNTHETIC_DATA_KIT_BIN=/usr/local/bin/synthetic-data-kit
-  // SYNTHETIC_DATA_KIT_BIN=/opt/deepseek-workspace/environments/ml_env/bin/synthetic-data-kit
   syntheticDataKitBin:
     process.env.SYNTHETIC_DATA_KIT_BIN ||
     path.join(
@@ -77,6 +76,7 @@ CONFIG.vllmPidFile = path.join(CONFIG.logsDir, 'vllm.pid');
 CONFIG.vllmLogFile = path.join(CONFIG.logsDir, 'vllm.log');
 
 CONFIG.pythonBin = path.join(CONFIG.mlEnv, 'bin', 'python');
+CONFIG.quantizePythonBin = path.join(CONFIG.quantizeEnv, 'bin', 'python');
 CONFIG.vllmBin = path.join(CONFIG.mlEnv, 'bin', 'vllm');
 
 CONFIG.transformersPythonBin = path.join(CONFIG.transformersEnv, 'bin', 'python');

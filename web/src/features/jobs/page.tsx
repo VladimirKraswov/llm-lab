@@ -95,6 +95,12 @@ function JobListCard({
             ) : (
               <div className="mt-2 text-xs text-slate-400 break-all">{job.baseModel || '—'}</div>
             )}
+
+            {job.runner ? (
+              <div className="mt-1 text-[10px] text-slate-500">
+                Runner: {job.runner}
+              </div>
+            ) : null}
           </div>
 
           <StatusBadge value={job.status} />
@@ -355,6 +361,13 @@ export default function JobsPage() {
                         >
                           {job.baseModel?.split('/').pop() || '—'}
                         </td>
+                      ))}
+                    </tr>
+
+                    <tr className="hover:bg-slate-800/20">
+                      <td className="py-3 pr-4 text-slate-400">Runner</td>
+                      {sortedCompareJobs.map((job) => (
+                        <td key={job.id} className="py-3 pr-4 text-white">{job.runner || '—'}</td>
                       ))}
                     </tr>
 

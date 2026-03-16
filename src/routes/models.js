@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { getModels, getModelById, getSettings } = require('../services/state');
-const { downloadModel, deleteModel, getModelLogs, quantizeModel } = require('../services/models');
+const { downloadModel, deleteModel, getModelLogs, quantizeModel, detectModelCapability } = require('../services/models');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { runBenchmark } = require('../services/benchmarks');
 const { CONFIG } = require('../config');
@@ -18,11 +18,17 @@ router.get('/', async (_req, res) => {
   const { upsertModel } = require('../services/state');
 
   const updatedModels = await Promise.all(models.map(async (m) => {
+    let next = m;
+
     if (m.status === 'ready' && (!m.sizeHuman || !m.vramEstimate)) {
       const meta = getModelMetadata(m.path);
-      return await upsertModel({ ...m, ...meta });
+      next = await upsertModel({ ...m, ...meta });
     }
-    return m;
+
+    return {
+      ...next,
+      quantizationCapability: detectModelCapability(next),
+    };
   }));
 
   res.json(updatedModels);
@@ -31,7 +37,11 @@ router.get('/', async (_req, res) => {
 router.get('/:id', async (req, res) => {
   const item = await getModelById(req.params.id);
   if (!item) return res.status(404).json({ error: 'model not found' });
-  res.json(item);
+
+  res.json({
+    ...item,
+    quantizationCapability: detectModelCapability(item),
+  });
 });
 
 router.get('/:id/logs', async (req, res) => {
@@ -54,8 +64,31 @@ router.post('/download', async (req, res) => {
 
 router.post('/quantize', async (req, res) => {
   try {
-    const { modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize, sym } = req.body || {};
-    res.json(await quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize, sym }));
+    const {
+      modelId,
+      method,
+      name,
+      datasetPath,
+      numSamples,
+      maxSeqLen,
+      bits,
+      groupSize,
+      sym,
+      runner,
+    } = req.body || {};
+
+    res.json(await quantizeModel({
+      modelId,
+      method,
+      name,
+      datasetPath,
+      numSamples,
+      maxSeqLen,
+      bits,
+      groupSize,
+      sym,
+      runner,
+    }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }

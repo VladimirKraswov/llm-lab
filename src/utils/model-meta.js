@@ -27,6 +27,15 @@ function formatSize(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+function readJsonIfExists(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 function getModelMetadata(modelPath) {
   const metadata = {
     size: 0,
@@ -43,24 +52,40 @@ function getModelMetadata(modelPath) {
     metadata.sizeHuman = formatSize(metadata.size);
 
     const configPath = path.join(modelPath, 'config.json');
-    if (fs.existsSync(configPath)) {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const config = readJsonIfExists(configPath);
 
-      // Try to detect quantization
-      if (config.quantization_config) {
-        metadata.quantization = config.quantization_config.quant_method || 'unknown';
+    if (config) {
+      const qcfg = config.quantization_config || null;
+      const compression = config.compression_config || null;
+
+      if (qcfg?.quant_method) {
+        metadata.quantization = String(qcfg.quant_method).toLowerCase();
+      } else if (compression?.format) {
+        metadata.quantization = String(compression.format).toLowerCase();
+      } else if (compression?.quantization_status) {
+        metadata.quantization = 'compressed';
       } else if (modelPath.toLowerCase().includes('gptq')) {
         metadata.quantization = 'gptq';
       } else if (modelPath.toLowerCase().includes('awq')) {
         metadata.quantization = 'awq';
       } else if (modelPath.toLowerCase().includes('gguf')) {
         metadata.quantization = 'gguf';
+      } else {
+        metadata.quantization = 'none';
       }
 
       // Parameters
       if (config.num_hidden_layers && config.hidden_size) {
         // Very rough estimate: 12 * layers * hidden^2
         // Better to use actual file sizes or specific config fields if available
+      }
+    } else {
+      if (modelPath.toLowerCase().includes('gptq')) {
+        metadata.quantization = 'gptq';
+      } else if (modelPath.toLowerCase().includes('awq')) {
+        metadata.quantization = 'awq';
+      } else if (modelPath.toLowerCase().includes('gguf')) {
+        metadata.quantization = 'gguf';
       }
     }
 

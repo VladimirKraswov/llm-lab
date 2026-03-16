@@ -51,6 +51,7 @@ export default function DashboardPage() {
                   {data.recentJobs.length ? (
                     data.recentJobs.map((job) => {
                       const isSynthetic = job.type === 'synthetic-gen';
+                      const isQuantize = job.type === 'model-quantize';
 
                       return (
                         <div
@@ -58,7 +59,9 @@ export default function DashboardPage() {
                           className={`flex flex-col gap-2 rounded-2xl border p-4 md:flex-row md:items-center md:justify-between ${
                             isSynthetic
                               ? 'border-cyan-500/20 bg-cyan-500/5'
-                              : 'border-purple-500/20 bg-purple-500/5'
+                              : isQuantize
+                                ? 'border-amber-500/20 bg-amber-500/5'
+                                : 'border-purple-500/20 bg-purple-500/5'
                           }`}
                         >
                           <div className="min-w-0">
@@ -75,6 +78,7 @@ export default function DashboardPage() {
 
                             <div className="mt-1 text-xs text-slate-500">
                               Started: {fmtDate(job.startedAt || job.createdAt)}
+                              {job.runner ? ` · Runner: ${job.runner}` : ''}
                             </div>
                           </div>
 
@@ -97,6 +101,11 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Python</span>
                   <StatusBadge value={data.health.python ? 'healthy' : 'failed'} />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Quant env</span>
+                  <StatusBadge value={data.health.quantizeEnvOk ? 'healthy' : 'failed'} />
                 </div>
 
                 <div className="flex items-center justify-between">

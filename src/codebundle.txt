@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-16T12:51:24.277Z
+generated: 2026-03-16T15:02:21.647Z
 
 
 
@@ -293,6 +293,9 @@ const CONFIG = {
   workspace: process.env.WORKSPACE || '/opt/deepseek-workspace',
 
   mlEnv: process.env.ML_ENV || '/opt/deepseek-workspace/environments/ml_env',
+  quantizeEnv:
+    process.env.QUANTIZE_ENV || '/opt/deepseek-workspace/environments/quant_env',
+
   transformersEnv:
     process.env.TRANSFORMERS_ENV ||
     process.env.ML_ENV ||
@@ -304,10 +307,6 @@ const CONFIG = {
   maxJsonMb: toNumber(process.env.MAX_JSON_MB, 25),
   webUiOrigin: normalizeOrigin(process.env.WEB_UI_ORIGIN || '*'),
 
-  // Явный путь до synthetic-data-kit CLI.
-  // Примеры:
-  // SYNTHETIC_DATA_KIT_BIN=/usr/local/bin/synthetic-data-kit
-  // SYNTHETIC_DATA_KIT_BIN=/opt/deepseek-workspace/environments/ml_env/bin/synthetic-data-kit
   syntheticDataKitBin:
     process.env.SYNTHETIC_DATA_KIT_BIN ||
     path.join(
@@ -346,6 +345,7 @@ CONFIG.vllmPidFile = path.join(CONFIG.logsDir, 'vllm.pid');
 CONFIG.vllmLogFile = path.join(CONFIG.logsDir, 'vllm.log');
 
 CONFIG.pythonBin = path.join(CONFIG.mlEnv, 'bin', 'python');
+CONFIG.quantizePythonBin = path.join(CONFIG.quantizeEnv, 'bin', 'python');
 CONFIG.vllmBin = path.join(CONFIG.mlEnv, 'bin', 'vllm');
 
 CONFIG.transformersPythonBin = path.join(CONFIG.transformersEnv, 'bin', 'python');
@@ -512,13 +512,70 @@ path: /python/quantize_llm_compressor.py
 import json
 import os
 import sys
-import torch
-from llmcompressor.transformers import SparseAutoModelForCausalLM, oneshot
-from transformers import AutoTokenizer
+import traceback
+
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from llmcompressor import oneshot
+from llmcompressor.modifiers.awq import AWQModifier
 
 
-def report(p):
+def report(p: int):
     print(f"__PROGRESS__:{p}", flush=True)
+
+
+def build_local_text_dataset(dataset_path: str | None, num_samples: int):
+    if not dataset_path or not os.path.exists(dataset_path):
+        return "open_platypus"
+
+    rows: list[str] = []
+    with open(dataset_path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if i >= num_samples:
+                break
+
+            line = line.strip()
+            if not line:
+                continue
+
+            item = json.loads(line)
+
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    rows.append(text)
+                    continue
+
+                messages = item.get("messages")
+                if isinstance(messages, list):
+                    parts = []
+                    for msg in messages:
+                        if not isinstance(msg, dict):
+                            continue
+                        role = str(msg.get("role", "")).strip()
+                        content = str(msg.get("content", "")).strip()
+                        if content:
+                            parts.append(f"{role}: {content}" if role else content)
+                    if parts:
+                        rows.append("\n".join(parts))
+                        continue
+
+                if "instruction" in item and "output" in item:
+                    rows.append(f"{item.get('instruction', '')}\n\n{item.get('output', '')}")
+                    continue
+
+                if "prompt" in item and "completion" in item:
+                    rows.append(f"{item.get('prompt', '')}\n\n{item.get('completion', '')}")
+                    continue
+
+            rows.append(str(item))
+
+    return rows if rows else "open_platypus"
+
+
+def resolve_scheme(bits: int, sym: bool):
+    if bits != 4:
+        raise ValueError("Current AWQ implementation supports 4-bit only")
+    return "W4A16" if sym else "W4A16_ASYM"
 
 
 def main():
@@ -530,76 +587,66 @@ def main():
 
     model_path = cfg["modelPath"]
     output_dir = cfg["outputDir"]
-    method = cfg.get("method", "awq")  # awq, fp8, int8
+    method = str(cfg.get("method", "awq")).lower()
     dataset_path = cfg.get("datasetPath")
-    num_samples = cfg.get("numSamples", 128)
-    max_seq_len = cfg.get("maxSeqLen", 2048)
-    bits = cfg.get("bits", 4)
-    group_size = cfg.get("groupSize", 128)
-    sym = cfg.get("sym", True)
+    num_samples = int(cfg.get("numSamples", 128))
+    max_seq_len = int(cfg.get("maxSeqLen", 2048))
+    bits = int(cfg.get("bits", 4))
+    group_size = int(cfg.get("groupSize", 128))
+    sym = bool(cfg.get("sym", False))
     trust_remote_code = bool(cfg.get("trustRemoteCode", True))
+
+    if method != "awq":
+        raise ValueError(f"quantize_llm_compressor.py currently supports only method='awq', got: {method}")
 
     os.makedirs(output_dir, exist_ok=True)
     report(5)
 
-    # Resolve quantization scheme based on method
-    if method == "awq":
-        scheme = f"W{bits}A16"
-    elif method == "fp8":
-        scheme = "FP8"
-    elif method == "int8":
-        scheme = "W8A8"
-    else:
-        scheme = method
-
-    report(10)
-
-    device_map = "auto" if torch.cuda.is_available() else "cpu"
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        trust_remote_code=trust_remote_code,
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     report(15)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=trust_remote_code)
-    model = SparseAutoModelForCausalLM.from_pretrained(
+
+    model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        device_map=device_map,
         torch_dtype="auto",
-        trust_remote_code=trust_remote_code
+        trust_remote_code=trust_remote_code,
     )
-    report(40)
 
-    dataset = None
-    if dataset_path and os.path.exists(dataset_path):
-        with open(dataset_path, "r", encoding="utf-8") as f:
-            data = [json.loads(line) for line in f]
+    report(35)
 
-        dataset = []
-        for item in data[:num_samples]:
-            if "text" in item:
-                dataset.append(item["text"])
-            elif "instruction" in item and "output" in item:
-                dataset.append(f"{item['instruction']}\n\n{item['output']}")
-            else:
-                dataset.append(str(item))
+    dataset = build_local_text_dataset(dataset_path, num_samples)
 
     report(50)
 
+    scheme = resolve_scheme(bits, sym)
+
+    recipe = [
+        AWQModifier(
+            targets=["Linear"],
+            ignore=["lm_head"],
+            scheme=scheme,
+            group_size=group_size,
+        )
+    ]
+
+    report(65)
+
     oneshot(
         model=model,
-        tokenizer=tokenizer,
-        dataset=dataset if dataset else "open-platypus",
-        recipe={
-            "quantization": {
-                "scheme": scheme,
-                "group_size": group_size,
-                "symmetric": sym,
-            }
-        },
-        num_samples=num_samples,
-        max_seq_len=max_seq_len,
+        dataset=dataset,
+        recipe=recipe,
         output_dir=output_dir,
+        max_seq_length=max_seq_len,
+        num_calibration_samples=num_samples,
     )
+
     report(95)
 
-    model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
 
     report(100)
@@ -609,10 +656,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
-        import traceback
+    except Exception:
         traceback.print_exc()
-        print(str(e), file=sys.stderr)
         sys.exit(1)
 
 
@@ -1250,6 +1295,7 @@ router.get('/', (_req, res) => {
     service: 'llm-lab-service',
     time: new Date().toISOString(),
     python: exists(CONFIG.pythonBin),
+    quantizePython: exists(CONFIG.quantizePythonBin),
     transformersPython: exists(CONFIG.transformersPythonBin),
     vllmBin: exists(CONFIG.vllmBin),
     openWebUiPort: CONFIG.openWebUiPort,
@@ -3817,14 +3863,14 @@ async function downloadModel({ repoId, name, tryQuantized }) {
   if (existing) return existing;
 
   const modelId = uid('model');
-  const slug = safeSlug(name || repoId.split('/').pop() || modelId);
+  const slug = safeSlug(name || targetRepoId.split('/').pop() || modelId);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${modelId}`);
   const logFile = path.join(CONFIG.logsDir, `${modelId}.log`);
 
   const item = await addModel({
     id: modelId,
-    name: name || repoId.split('/').pop() || modelId,
-    repoId,
+    name: name || targetRepoId.split('/').pop() || modelId,
+    repoId: targetRepoId,
     createdAt: nowIso(),
     status: 'downloading',
     path: modelPath,
@@ -3842,7 +3888,7 @@ async function downloadModel({ repoId, name, tryQuantized }) {
 
   const scriptPath = path.join(__dirname, '..', 'python', 'download_model.py');
   const payload = {
-    repoId,
+    repoId: targetRepoId,
     localDir: modelPath,
   };
 
@@ -3868,7 +3914,7 @@ async function downloadModel({ repoId, name, tryQuantized }) {
     label: `download-model:${modelId}`,
     meta: {
       modelId,
-      repoId,
+      repoId: targetRepoId,
       modelPath,
       logFile,
     },
@@ -3958,18 +4004,26 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
   if (!source) throw new Error('source model not found');
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
+  const requestedMethod = method;
+  const effectiveMethod = requestedMethod;
+
   const existing = (await getModels()).find(m =>
     m.sourceModelId === modelId &&
-    m.quantization === method &&
+    m.quantization === effectiveMethod &&
     m.status === 'ready' &&
     (!bits || m.bits === bits) &&
     (!groupSize || m.groupSize === groupSize) &&
     (sym === undefined || m.sym === sym)
   );
-  if (existing) return existing;
+  if (existing) {
+    return {
+      ...existing,
+      jobId: existing.id,
+    };
+  }
 
   const newId = uid('model');
-  const methodLabel = method === 'awq' ? `awq-${bits || 4}bit` : method;
+  const methodLabel = effectiveMethod === 'awq-legacy' ? `awq-${bits || 4}bit` : effectiveMethod;
   const slug = safeSlug(name || `${source.name}-${methodLabel}`);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${newId}`);
   const logFile = path.join(CONFIG.logsDir, `${newId}.log`);
@@ -3984,8 +4038,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     logFile,
     pid: null,
     error: null,
-    quantization: method,
-    bits: bits || (method === 'fp8' ? 8 : 4),
+    quantization: effectiveMethod,
+    bits: bits || (effectiveMethod === 'fp8' ? 8 : 4),
     groupSize: groupSize || 128,
     sym: sym !== undefined ? sym : true,
     sourceModelId: modelId,
@@ -4002,7 +4056,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
   let payload = {
     modelPath: source.path,
     outputDir: modelPath,
-    method,
+    method: effectiveMethod,
     datasetPath,
     numSamples,
     maxSeqLen,
@@ -4011,7 +4065,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     trustRemoteCode: true,
   };
 
-  if (method === 'awq-legacy') {
+  if (effectiveMethod === 'awq-legacy') {
     scriptFile = 'quantize_awq.py';
     payload = {
       modelPath: source.path,
@@ -4051,7 +4105,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     meta: {
       modelId: newId,
       sourceModelId: modelId,
-      method,
+      method: effectiveMethod,
+      requestedMethod,
       modelPath,
       logFile,
     },
@@ -4063,7 +4118,6 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     configPath,
   });
 
-  // Also create a job record for tracking in Jobs page
   const { upsertJob } = require('./state');
   await upsertJob({
     id: newId,
@@ -4077,7 +4131,11 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     outputDir: modelPath,
     logFile: logFile,
     pid: child.pid,
-    paramsSnapshot: payload,
+    paramsSnapshot: {
+      ...payload,
+      requestedMethod,
+      effectiveMethod,
+    },
   });
   emitEvent('model_updated', running);
 
@@ -4088,7 +4146,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       modelId: newId,
       sourceModelId: modelId,
       code,
-      method,
+      method: effectiveMethod,
+      requestedMethod,
       configPath,
     });
 
@@ -4121,14 +4180,16 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       logger.info('Model quantization completed', {
         modelId: newId,
         sourceModelId: modelId,
-        method,
+        method: effectiveMethod,
+        requestedMethod,
         configPath,
       });
     } else {
       logger.error('Model quantization failed', {
         modelId: newId,
         sourceModelId: modelId,
-        method,
+        method: effectiveMethod,
+        requestedMethod,
         error: next.error,
         configPath,
       });
@@ -4141,7 +4202,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     logger.error('Model quantization process error', {
       modelId: newId,
       sourceModelId: modelId,
-      method,
+      method: effectiveMethod,
+      requestedMethod,
       configPath,
       error: String(err.message || err),
     });
@@ -4165,7 +4227,10 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     emitEvent('model_updated', next);
   });
 
-  return running;
+  return {
+    ...running,
+    jobId: newId,
+  };
 }
 
 async function getModelLogs(id, tail = 200) {
@@ -6757,4 +6822,4 @@ included: 44
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 177913
+totalBytes(approx): 179770

@@ -8,6 +8,7 @@ import { api } from '../../lib/api';
 interface QuantizeModelModalProps {
   modelId: string;
   modelName: string;
+  defaultRunner?: 'ml_env' | 'quant_env';
   onClose: () => void;
   onQuantize: (params: {
     modelId: string;
@@ -19,6 +20,7 @@ interface QuantizeModelModalProps {
     bits?: number;
     groupSize?: number;
     sym?: boolean;
+    runner?: 'ml_env' | 'quant_env';
   }) => void;
   isPending: boolean;
 }
@@ -56,6 +58,7 @@ function presetMeta(preset: Preset) {
 export function QuantizeModelModal({
   modelId,
   modelName,
+  defaultRunner = 'quant_env',
   onClose,
   onQuantize,
   isPending,
@@ -74,6 +77,7 @@ export function QuantizeModelModal({
   const [groupSize, setGroupSize] = useState(128);
   const [sym, setSym] = useState(true);
   const [advanced, setAdvanced] = useState(false);
+  const [runner, setRunner] = useState<'ml_env' | 'quant_env'>(defaultRunner);
 
   useEffect(() => {
     const values = PRESET_VALUES[preset];
@@ -106,6 +110,7 @@ export function QuantizeModelModal({
       bits,
       groupSize,
       sym,
+      runner,
     });
   };
 
@@ -130,6 +135,23 @@ export function QuantizeModelModal({
             />
             <p className="mt-2 text-xs text-slate-500">
               Будет создана новая модель: <span className="text-slate-300">{finalName}</span>
+            </p>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-slate-500">
+              Quantization runner
+            </label>
+            <select
+              value={runner}
+              onChange={(e) => setRunner(e.target.value as 'ml_env' | 'quant_env')}
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+            >
+              <option value="quant_env">quant_env (isolated, recommended)</option>
+              <option value="ml_env">ml_env</option>
+            </select>
+            <p className="mt-2 text-xs text-slate-500">
+              quant_env позволяет позже подключить рабочий квантизатор без ломания основного ml_env.
             </p>
           </div>
 
@@ -199,6 +221,10 @@ export function QuantizeModelModal({
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Method</span>
                   <span className="text-white">AWQ</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Runner</span>
+                  <span className="text-white">{runner}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Bits</span>
