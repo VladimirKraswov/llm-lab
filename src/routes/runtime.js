@@ -16,14 +16,15 @@ router.get('/providers', async (_req, res) => {
     const available = await providers.getAvailableProviders();
     const runtime = await getRuntime();
     const settings = await getSettings();
+    const state = runtime.inference || runtime.vllm || null;
 
     res.json({
       available,
       selected: settings.inference.provider || 'auto',
-      active: runtime.inference?.providerResolved || null,
+      active: state?.providerResolved || null,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: String(err.message || err) });
   }
 });
 
@@ -31,8 +32,10 @@ router.get('/health', async (_req, res) => {
   try {
     const runtime = await getRuntime();
     const settings = await getSettings();
-    const port = runtime.inference?.port || settings.inference.port || CONFIG.vllmPort;
-    const providerId = runtime.inference?.providerResolved || 'vllm';
+    const state = runtime.inference || runtime.vllm || null;
+
+    const port = state?.port || settings.inference.port || CONFIG.vllmPort;
+    const providerId = state?.providerResolved || settings.inference.provider || 'vllm';
     const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
 
     const h = await provider.health({ port });
@@ -174,13 +177,13 @@ router.post('/use-job-output', async (req, res) => {
 router.post('/chat', async (req, res) => {
   try {
     const runtime = await getRuntime();
-    const state = runtime.inference;
+    const state = runtime.inference || runtime.vllm;
 
     if (!state?.pid) {
       return res.status(400).json({ error: 'Runtime is not running' });
     }
 
-    const providerId = state.providerResolved;
+    const providerId = state.providerResolved || 'vllm';
     const provider = providers.PROVIDERS[providerId];
     if (!provider) {
       return res.status(500).json({ error: `Active provider ${providerId} not found` });
@@ -195,21 +198,29 @@ router.post('/chat', async (req, res) => {
     const requestedStream = !!req.body?.stream;
     const stream = supportsStreaming ? requestedStream : false;
 
+    // ВАЖНО:
+    // Для vLLM LoRA, загруженной через --lora-modules, нужно выбирать адаптер
+    // через поле "model", передавая имя адаптера.
+    // Нельзя слать lora_name в /v1/chat/completions — vLLM его игнорирует.
+    const requestedModel = req.body?.model;
+    const effectiveModel =
+      typeof requestedModel === 'string' && requestedModel.trim()
+        ? requestedModel.trim()
+        : (state.activeLoraName || state.model);
+
     const payload = {
-      model: req.body?.model || state.model,
-      messages: req.body?.messages,
+      model: effectiveModel,
+      messages,
       temperature: req.body?.temperature ?? 0.7,
       max_tokens: req.body?.max_tokens ?? 512,
-      stream: !!req.body?.stream,
+      stream,
     };
-
-    if (state.activeLoraName) {
-      payload.lora_name = state.activeLoraName;
-    }
 
     logger.info('Routing chat request', {
       provider: providerId,
       model: payload.model,
+      baseModel: state.activeModelName || state.baseModel || state.model,
+      activeLoraName: state.activeLoraName || null,
       stream,
       requestedStream,
       supportsStreaming,
@@ -256,7 +267,8 @@ router.post('/chat', async (req, res) => {
 
 router.get('/ui', async (_req, res) => {
   const runtime = await getRuntime();
-  const port = runtime.inference?.port || CONFIG.vllmPort;
+  const state = runtime.inference || runtime.vllm || {};
+  const port = state.port || CONFIG.vllmPort;
 
   res.json({
     openWebUI: `http://127.0.0.1:${CONFIG.openWebUiPort}`,
