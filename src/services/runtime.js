@@ -203,13 +203,16 @@ async function startRuntime(params = {}) {
   }
 
   const modelCfg = resolveModelConfig(requestedModel);
+  const { getGpuInfo } = require('../utils/gpu_info');
+  const gpuInfo = await getGpuInfo();
+  const numGpus = gpuInfo.length || 1;
 
   const merged = {
     model: requestedModel,
     port: Number(params.port ?? inf.port ?? CONFIG.vllmPort),
     maxModelLen: resolveMaxModelLen(params, inf, modelCfg.detected),
     gpuMemoryUtilization: Number(params.gpuMemoryUtilization ?? inf.gpuMemoryUtilization ?? 0.9),
-    tensorParallelSize: Number(params.tensorParallelSize ?? inf.tensorParallelSize ?? 1),
+    tensorParallelSize: Number(params.tensorParallelSize ?? inf.tensorParallelSize ?? numGpus),
     maxNumSeqs: Number(params.maxNumSeqs ?? inf.maxNumSeqs ?? 256),
     swapSpace: Number(params.swapSpace ?? inf.swapSpace ?? 4),
     quantization: resolveQuantization(params, inf, modelCfg.detected),
@@ -314,6 +317,14 @@ async function startRuntime(params = {}) {
     await provider.stop({ pid }).catch(() => {});
     await unregisterManagedProcess(pid).catch(() => {});
     await removeFile(CONFIG.vllmPidFile).catch(() => {});
+
+    const isOom = String(err).includes('CUDA out of memory') || String(err).includes('Out of memory');
+    if (isOom && merged.maxModelLen > 2048) {
+      return await startRuntime({ ...params, maxModelLen: 2048 });
+    } else if (isOom && merged.gpuMemoryUtilization > 0.7) {
+      return await startRuntime({ ...params, gpuMemoryUtilization: 0.7 });
+    }
+
     throw err;
   }
 
