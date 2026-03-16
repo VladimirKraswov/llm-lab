@@ -131,13 +131,13 @@ export function QuantizeModelModal({
           <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-slate-800">
             <Button
               type="button"
-              variant="outline"
               onClick={onClose}
               disabled={isPending}
               className="bg-transparent border-slate-700 text-slate-300 hover:bg-slate-800"
             >
               Cancel
             </Button>
+
             <Button
               type="submit"
               disabled={isPending}

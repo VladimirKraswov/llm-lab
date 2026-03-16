@@ -48,6 +48,7 @@ export type Settings = {
     loraAlpha: number;
     loraDropout: number;
     targetModules: string[];
+    useLora?: boolean;
   };
   inference: {
     provider: string;
