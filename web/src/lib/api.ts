@@ -88,6 +88,7 @@ export type QuantizationCapability = {
 };
 
 export type ModelItem = {
+  jobId: string;
   id: string;
   name: string;
   repoId: string;
