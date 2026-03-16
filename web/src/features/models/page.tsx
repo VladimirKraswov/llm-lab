@@ -127,7 +127,7 @@ export default function ModelsPage() {
           <CardContent className="flex-1 space-y-3">
             {modelsQuery.isLoading ? (
               <div className="text-sm text-slate-500">Loading models…</div>
-            ) : !modelsQuery.data?.length ? (
+            ) : !Array.isArray(modelsQuery.data) || !modelsQuery.data.length ? (
               <div className="text-sm text-slate-500">No models yet.</div>
             ) : (
               modelsQuery.data.map((item) => (
@@ -204,21 +204,20 @@ export default function ModelsPage() {
                       >
                         Delete
                       </Button>
-                    </div>
-                  )}
 
-                  {selectedModelId === item.id && item.status === 'ready' && !item.quantization && (
-                    <div className="mt-4 border-t border-slate-800 pt-4" onClick={(e) => e.stopPropagation()}>
-                      <div className="text-xs font-medium text-slate-400 mb-2">Quantize Model</div>
-                      <div className="flex gap-2">
+                      {item.status === 'ready' && !item.quantization && (
                         <Button
-                          onClick={() => setIsQuantizeModalOpen(true)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedModelId(item.id);
+                            setIsQuantizeModalOpen(true);
+                          }}
                           disabled={quantizeMutation.isPending}
                           className="h-8 px-3 text-xs bg-amber-700 hover:bg-amber-600"
                         >
-                          {quantizeMutation.isPending ? 'Starting…' : 'Open Quantize Wizard'}
+                          AWQ
                         </Button>
-                      </div>
+                      )}
                     </div>
                   )}
                 </div>
