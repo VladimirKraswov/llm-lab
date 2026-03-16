@@ -197,11 +197,15 @@ router.post('/chat', async (req, res) => {
 
     const payload = {
       model: req.body?.model || state.model,
-      messages,
+      messages: req.body?.messages,
       temperature: req.body?.temperature ?? 0.7,
       max_tokens: req.body?.max_tokens ?? 512,
-      stream,
+      stream: !!req.body?.stream,
     };
+
+    if (state.activeLoraName) {
+      payload.lora = state.activeLoraName;
+    }
 
     logger.info('Routing chat request', {
       provider: providerId,

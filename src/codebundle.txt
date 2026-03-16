@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-16T05:46:38.376Z
+generated: 2026-03-16T10:40:03.601Z
 
 
 
@@ -303,6 +303,18 @@ const CONFIG = {
   defaultBaseModel: process.env.DEFAULT_BASE_MODEL || 'Qwen/Qwen2.5-7B-Instruct',
   maxJsonMb: toNumber(process.env.MAX_JSON_MB, 25),
   webUiOrigin: normalizeOrigin(process.env.WEB_UI_ORIGIN || '*'),
+
+  // Явный путь до synthetic-data-kit CLI.
+  // Примеры:
+  // SYNTHETIC_DATA_KIT_BIN=/usr/local/bin/synthetic-data-kit
+  // SYNTHETIC_DATA_KIT_BIN=/opt/deepseek-workspace/environments/ml_env/bin/synthetic-data-kit
+  syntheticDataKitBin:
+    process.env.SYNTHETIC_DATA_KIT_BIN ||
+    path.join(
+      process.env.ML_ENV || '/opt/deepseek-workspace/environments/ml_env',
+      'bin',
+      'synthetic-data-kit',
+    ),
 };
 
 CONFIG.stateDir = path.join(CONFIG.workspace, '.llm-lab');
@@ -522,6 +534,9 @@ def main():
     dataset_path = cfg.get("datasetPath")
     num_samples = cfg.get("numSamples", 128)
     max_seq_len = cfg.get("maxSeqLen", 2048)
+    bits = cfg.get("bits", 4)
+    group_size = cfg.get("groupSize", 128)
+    sym = cfg.get("sym", True)
     trust_remote_code = bool(cfg.get("trustRemoteCode", True))
 
     os.makedirs(output_dir, exist_ok=True)
@@ -529,7 +544,7 @@ def main():
 
     # Resolve quantization scheme based on method
     if method == "awq":
-        scheme = "W4A16"
+        scheme = f"W{bits}A16"
     elif method == "fp8":
         scheme = "FP8"
     elif method == "int8":
@@ -571,7 +586,13 @@ def main():
         model=model,
         tokenizer=tokenizer,
         dataset=dataset if dataset else "open-platypus",
-        recipe=f"quantization: {scheme}",
+        recipe={
+            "quantization": {
+                "scheme": scheme,
+                "group_size": group_size,
+                "symmetric": sym,
+            }
+        },
         num_samples=num_samples,
         max_seq_len=max_seq_len,
         output_dir=output_dir,
@@ -930,15 +951,18 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=cfg["qlora"]["loraR"],
-        target_modules=cfg["qlora"]["targetModules"],
-        lora_alpha=cfg["qlora"]["loraAlpha"],
-        lora_dropout=cfg["qlora"]["loraDropout"],
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-    )
+    use_lora = cfg["qlora"].get("useLora", True)
+
+    if use_lora:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=cfg["qlora"]["loraR"],
+            target_modules=cfg["qlora"]["targetModules"],
+            lora_alpha=cfg["qlora"]["loraAlpha"],
+            lora_dropout=cfg["qlora"]["loraDropout"],
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+        )
 
     if torch.cuda.is_available():
         model = model.to("cuda")
@@ -996,7 +1020,11 @@ def main():
     train_result = trainer.train()
     end_time = time.time()
 
-    trainer.save_model(cfg["outputDir"])
+    if use_lora:
+        model.save_pretrained_lora(cfg["outputDir"])
+    else:
+        trainer.save_model(cfg["outputDir"])
+
     tokenizer.save_pretrained(cfg["outputDir"])
 
     duration = end_time - start_time
@@ -1627,8 +1655,8 @@ router.post('/download', async (req, res) => {
 
 router.post('/quantize', async (req, res) => {
   try {
-    const { modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize } = req.body || {};
-    res.json(await quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize }));
+    const { modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize, sym } = req.body || {};
+    res.json(await quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize, sym }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
@@ -2859,6 +2887,15 @@ function validateQLoraParams(params) {
   if (params.maxSeqLength !== undefined && (!Number.isInteger(params.maxSeqLength) || params.maxSeqLength < 1)) {
     throw new Error('maxSeqLength must be an integer >= 1');
   }
+  if (params.useLora !== undefined && typeof params.useLora !== 'boolean') {
+    throw new Error('useLora must be a boolean');
+  }
+  if (params.loadIn4bit !== undefined && typeof params.loadIn4bit !== 'boolean') {
+    throw new Error('loadIn4bit must be a boolean');
+  }
+  if (params.targetModules !== undefined && !Array.isArray(params.targetModules)) {
+    throw new Error('targetModules must be an array of strings');
+  }
 }
 
 function buildTrainingEnv(settings) {
@@ -3065,7 +3102,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
       });
     }
 
-    if (code === 0) {
+    if (code === 0 && current.qlora?.useLora !== false) {
       try {
         await registerLoraFromJob(jobId);
       } catch (err) {
@@ -3900,13 +3937,18 @@ async function deleteModel(modelId) {
   return { ok: true };
 }
 
-async function quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize }) {
+async function quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize, sym }) {
   const source = await getModelById(modelId);
   if (!source) throw new Error('source model not found');
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
   const existing = (await getModels()).find(m =>
-    m.sourceModelId === modelId && m.quantization === method && m.status === 'ready' && (!bits || m.bits === bits)
+    m.sourceModelId === modelId &&
+    m.quantization === method &&
+    m.status === 'ready' &&
+    (!bits || m.bits === bits) &&
+    (!groupSize || m.groupSize === groupSize) &&
+    (sym === undefined || m.sym === sym)
   );
   if (existing) return existing;
 
@@ -3928,6 +3970,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     error: null,
     quantization: method,
     bits: bits || (method === 'fp8' ? 8 : 4),
+    groupSize: groupSize || 128,
+    sym: sym !== undefined ? sym : true,
     sourceModelId: modelId,
     configPath: null,
   });
@@ -3948,6 +3992,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     maxSeqLen,
     bits,
     groupSize,
+    sym: sym !== undefined ? sym : true,
     trustRemoteCode: true,
   };
 
@@ -4658,7 +4703,7 @@ function hasOwn(obj, key) {
 }
 
 function resolveQuantization(params, inf, detected) {
-  if (hasOwn(params, 'quantization')) return params.quantization;
+  if (hasOwn(params, 'quantization') && params.quantization !== null) return params.quantization;
   if (inf.quantization !== undefined && inf.quantization !== null && inf.quantization !== '') {
     return inf.quantization;
   }
@@ -5824,17 +5869,57 @@ path: /services/synthetic.js
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { CONFIG } = require('../config');
 const logger = require('../utils/logger');
-const { uid } = require('../utils/ids');
+
+function resolveSyntheticDataKitBin() {
+  const candidates = [];
+
+  if (CONFIG.syntheticDataKitBin) {
+    candidates.push(CONFIG.syntheticDataKitBin);
+  }
+
+  candidates.push('synthetic-data-kit');
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+
+    if (candidate.includes('/') || path.isAbsolute(candidate)) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+      continue;
+    }
+
+    const probe = spawnSync(candidate, ['--help'], {
+      stdio: 'ignore',
+      env: process.env,
+    });
+
+    if (!probe.error) {
+      return candidate;
+    }
+  }
+
+  const configured = CONFIG.syntheticDataKitBin || 'synthetic-data-kit';
+  throw new Error(
+    `synthetic-data-kit CLI not found. Set SYNTHETIC_DATA_KIT_BIN or install the binary. Tried: ${configured}, synthetic-data-kit`
+  );
+}
 
 async function runSyntheticCommand(args, { logFile, cwd, env }) {
+  const bin = resolveSyntheticDataKitBin();
   const outFd = fs.openSync(logFile, 'a');
 
   return new Promise((resolve, reject) => {
-    logger.info(`Running synthetic-data-kit ${args.join(' ')}`);
-    const child = spawn('synthetic-data-kit', args, {
+    logger.info('Running synthetic-data-kit command', {
+      bin,
+      args,
+      cwd,
+    });
+
+    const child = spawn(bin, args, {
       cwd,
       env: { ...process.env, ...env },
       stdio: ['ignore', outFd, outFd],
@@ -5842,6 +5927,7 @@ async function runSyntheticCommand(args, { logFile, cwd, env }) {
 
     child.on('exit', (code) => {
       fs.closeSync(outFd);
+
       if (code === 0) {
         resolve();
       } else {
@@ -5851,16 +5937,26 @@ async function runSyntheticCommand(args, { logFile, cwd, env }) {
 
     child.on('error', (err) => {
       fs.closeSync(outFd);
+
+      if (err && err.code === 'ENOENT') {
+        reject(
+          new Error(
+            `synthetic-data-kit CLI not found: ${bin}. Set SYNTHETIC_DATA_KIT_BIN to the full binary path.`
+          )
+        );
+        return;
+      }
+
       reject(err);
     });
   });
 }
 
 async function runSyntheticGenJob(job, updateStatus) {
-  const { id, paramsSnapshot: cfg, logFile, outputDir } = job;
+  const { paramsSnapshot: cfg, logFile, outputDir } = job;
+
   const env = {
-    // Ensure we use the correct LLM provider/model if needed,
-    // although synthetic-data-kit CLI prefers config or flags.
+    // при необходимости можно пробросить доп. env для CLI
   };
 
   const jobDir = outputDir;
@@ -5880,67 +5976,80 @@ async function runSyntheticGenJob(job, updateStatus) {
     fsp.mkdir(finalDir, { recursive: true }),
   ]);
 
-  // 1. Copy source files to job input dir
   for (const src of cfg.sourceFiles) {
     const filename = path.basename(src);
     await fsp.copyFile(src, path.join(inputDir, filename));
   }
 
   const commonArgs = [
-    '--api-base', cfg.apiBase || `http://localhost:${CONFIG.vllmPort}/v1`,
-    '--model', cfg.model,
+    '--api-base',
+    cfg.apiBase || `http://localhost:${CONFIG.vllmPort}/v1`,
+    '--model',
+    cfg.model,
   ];
 
-  // 2. Ingest
   await updateStatus('ingesting');
-  await runSyntheticCommand(['ingest', inputDir, '-o', parsedDir], { logFile, cwd: jobDir, env });
+  await runSyntheticCommand(['ingest', inputDir, '-o', parsedDir], {
+    logFile,
+    cwd: jobDir,
+    env,
+  });
 
-  // 3. Create
   await updateStatus('generating');
-  await runSyntheticCommand([
-    'create', parsedDir,
-    '--type', cfg.type,
-    '-o', generatedDir,
-    '--num-pairs', String(cfg.numPairs),
-    '--chunk-size', String(cfg.chunkSize),
-    '--chunk-overlap', String(cfg.chunkOverlap),
-    ...commonArgs
-  ], { logFile, cwd: jobDir, env });
+  await runSyntheticCommand(
+    [
+      'create',
+      parsedDir,
+      '--type',
+      cfg.type,
+      '-o',
+      generatedDir,
+      '--num-pairs',
+      String(cfg.numPairs),
+      '--chunk-size',
+      String(cfg.chunkSize),
+      '--chunk-overlap',
+      String(cfg.chunkOverlap),
+      ...commonArgs,
+    ],
+    { logFile, cwd: jobDir, env },
+  );
 
   let resultDir = generatedDir;
 
-  // 4. Curate (optional)
   if (cfg.curate) {
     await updateStatus('curating');
-    await runSyntheticCommand([
-      'curate', generatedDir,
-      '-o', curatedDir,
-      '--threshold', String(cfg.curateThreshold),
-      ...commonArgs
-    ], { logFile, cwd: jobDir, env });
+    await runSyntheticCommand(
+      [
+        'curate',
+        generatedDir,
+        '-o',
+        curatedDir,
+        '--threshold',
+        String(cfg.curateThreshold),
+        ...commonArgs,
+      ],
+      { logFile, cwd: jobDir, env },
+    );
     resultDir = curatedDir;
   }
 
-  // 5. Save-as
   await updateStatus('saving');
-  await runSyntheticCommand([
-    'save-as', resultDir,
-    '-o', finalDir,
-    '--format', 'jsonl'
-  ], { logFile, cwd: jobDir, env });
+  await runSyntheticCommand(
+    ['save-as', resultDir, '-o', finalDir, '--format', 'jsonl'],
+    { logFile, cwd: jobDir, env },
+  );
 
-  // 6. Identify the final file
   const files = await fsp.readdir(finalDir);
-  const finalFile = files.find(f => f.endsWith('.jsonl'));
+  const finalFile = files.find((f) => f.endsWith('.jsonl'));
+
   if (!finalFile) {
     throw new Error('No final jsonl file generated');
   }
 
   return {
     finalPath: path.join(finalDir, finalFile),
-    stats: {
-      // Could parse the final file to get row count
-    }
+    stats: {},
   };
 }
 
@@ -6594,4 +6703,4 @@ included: 44
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 173503
+totalBytes(approx): 176105
