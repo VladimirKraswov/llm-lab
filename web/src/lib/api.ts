@@ -207,6 +207,7 @@ export type Job = {
   pid: number | null;
   error: string | null;
   paramsSnapshot?: any;
+  modelPath?: string;
   datasetSnapshot?: {
     path: string;
     size: number;

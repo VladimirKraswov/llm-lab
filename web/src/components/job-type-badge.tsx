@@ -1,4 +1,4 @@
-import { BrainCircuit, Database } from 'lucide-react';
+import { Boxes, BrainCircuit, Database } from 'lucide-react';
 
 export function JobTypeBadge({ type }: { type: string }) {
   if (type === 'synthetic-gen') {
