@@ -413,7 +413,17 @@ export const api = {
     request<{ ok: boolean }>(`/models/${id}`, {
       method: 'DELETE',
     }),
-  quantizeModel: (payload: { modelId: string; method: string; name?: string }) =>
+  quantizeModel: (payload: {
+    modelId: string;
+    method: string;
+    name?: string;
+    datasetPath?: string;
+    numSamples?: number;
+    maxSeqLen?: number;
+    bits?: number;
+    groupSize?: number;
+    sym?: boolean;
+  }) =>
     request<ModelItem>('/models/quantize', {
       method: 'POST',
       body: JSON.stringify(payload),

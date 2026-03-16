@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
+import { Wand2 } from 'lucide-react';
 import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -47,6 +48,7 @@ export default function ModelsPage() {
     mutationFn: api.quantizeModel,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['models'] });
+      await qc.invalidateQueries({ queryKey: ['jobs'] });
     },
   });
 
@@ -77,22 +79,44 @@ export default function ModelsPage() {
 
   const filteredLoras = useMemo(() => {
     if (!selectedModelId) return [];
-    const model = modelsQuery.data?.find(m => m.id === selectedModelId);
+    const model = modelsQuery.data?.find((m) => m.id === selectedModelId);
     if (!model) return [];
-    return (lorasQuery.data || []).filter(l => l.baseModelId === model.id || l.baseModelRef === model.repoId);
+    return (lorasQuery.data || []).filter(
+      (l) => l.baseModelId === model.id || l.baseModelRef === model.repoId,
+    );
   }, [selectedModelId, modelsQuery.data, lorasQuery.data]);
 
   const maxVram = useMemo(() => {
     const gpus = statsQuery.data?.gpus || [];
     if (!gpus.length) return 0;
-    return Math.max(...gpus.map(g => g.vram));
+    return Math.max(...gpus.map((g) => g.vram));
   }, [statsQuery.data]);
+
+  const selectedModel = useMemo(
+    () => modelsQuery.data?.find((m) => m.id === selectedModelId) || null,
+    [modelsQuery.data, selectedModelId],
+  );
+
+  const hasActiveBuild = quantizeMutation.isPending;
+
+  const runQuickAwq = (modelId: string, modelName: string) => {
+    quantizeMutation.mutate({
+      modelId,
+      method: 'awq',
+      name: `${modelName} AWQ`,
+      bits: 4,
+      groupSize: 128,
+      numSamples: 128,
+      maxSeqLen: 2048,
+      sym: true,
+    });
+  };
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Models Library"
-        description="Библиотека моделей и их LoRA адаптеров. Выбирай модель и используй её с нужной LoRA."
+        description="Библиотека моделей, быстрый запуск AWQ и выбор LoRA под каждую базовую модель."
       />
 
       <Card>
@@ -103,11 +127,19 @@ export default function ModelsPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <label className="mb-2 block text-sm text-slate-400">Hugging Face repo id</label>
-              <Input value={repoId} onChange={(e) => setRepoId(e.target.value)} placeholder="Qwen/Qwen2.5-7B-Instruct" />
+              <Input
+                value={repoId}
+                onChange={(e) => setRepoId(e.target.value)}
+                placeholder="Qwen/Qwen2.5-7B-Instruct"
+              />
             </div>
             <div>
               <label className="mb-2 block text-sm text-slate-400">Display name</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Qwen 2.5 7B Instruct" />
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Qwen 2.5 7B Instruct"
+              />
             </div>
           </div>
           <Button
@@ -116,6 +148,24 @@ export default function ModelsPage() {
           >
             {downloadMutation.isPending ? 'Starting download…' : 'Download base model'}
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="border-amber-500/20 bg-amber-500/5">
+        <CardContent className="flex flex-col gap-3 p-5 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-white">
+              <Wand2 size={16} className="text-amber-300" />
+              <span className="font-medium">AWQ conversion</span>
+            </div>
+            <div className="mt-1 text-sm text-slate-300">
+              Quick AWQ запускает рекомендуемые параметры сразу. Кнопка AWQ… открывает расширенную настройку.
+            </div>
+          </div>
+
+          <div className="text-xs text-slate-400">
+            Recommended default: 4-bit · group 128 · 128 samples · seq 2048
+          </div>
         </CardContent>
       </Card>
 
@@ -130,98 +180,114 @@ export default function ModelsPage() {
             ) : !Array.isArray(modelsQuery.data) || !modelsQuery.data.length ? (
               <div className="text-sm text-slate-500">No models yet.</div>
             ) : (
-              modelsQuery.data.map((item) => (
-                <div
-                  key={item.id}
-                  onClick={() => setSelectedModelId(item.id)}
-                  className={`cursor-pointer rounded-2xl border p-4 transition ${
-                    selectedModelId === item.id
-                      ? (item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024)
-                        ? 'border-rose-500 bg-rose-500/10'
-                        : 'border-blue-500 bg-blue-500/10'
-                      : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3 text-sm">
-                    <div className="min-w-0">
-                      <div className="font-semibold text-white truncate">{item.name}</div>
-                      <div className="mt-1 text-xs text-slate-400 truncate">{item.repoId}</div>
-                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
-                        {item.sizeHuman && (
-                          <div className="text-slate-400">
-                            Size: <span className="text-slate-200">{item.sizeHuman}</span>
-                          </div>
-                        )}
-                        {item.quantization && (
-                          <div className="text-slate-400">
-                            Quant: <span className="text-slate-200">{item.quantization}</span>
-                          </div>
-                        )}
-                        {item.vramEstimate && (
-                          <div className={
-                            (item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024)
-                              ? "text-rose-400 font-bold"
-                              : "text-slate-400"
-                          }>
-                            VRAM: <span className={
-                              (item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024)
-                                ? "text-rose-300"
-                                : "text-slate-200"
-                            }>~{item.vramEstimate}</span>
-                          </div>
-                        )}
+              modelsQuery.data.map((item) => {
+                const tooLarge =
+                  !!(item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024);
+                const canAwq = item.status === 'ready' && !item.quantization;
+
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => setSelectedModelId(item.id)}
+                    className={`cursor-pointer rounded-2xl border p-4 transition ${
+                      selectedModelId === item.id
+                        ? tooLarge
+                          ? 'border-rose-500 bg-rose-500/10'
+                          : 'border-blue-500 bg-blue-500/10'
+                        : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 text-sm">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-white truncate">{item.name}</div>
+                        <div className="mt-1 text-xs text-slate-400 truncate">{item.repoId}</div>
+                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+                          {item.sizeHuman && (
+                            <div className="text-slate-400">
+                              Size: <span className="text-slate-200">{item.sizeHuman}</span>
+                            </div>
+                          )}
+                          {item.quantization && (
+                            <div className="text-slate-400">
+                              Quant: <span className="text-slate-200">{item.quantization}</span>
+                            </div>
+                          )}
+                          {item.vramEstimate && (
+                            <div className={tooLarge ? 'text-rose-400 font-bold' : 'text-slate-400'}>
+                              VRAM:{' '}
+                              <span className={tooLarge ? 'text-rose-300' : 'text-slate-200'}>
+                                ~{item.vramEstimate}
+                              </span>
+                            </div>
+                          )}
+                        </div>
                       </div>
+                      <StatusBadge value={item.status === 'ready' ? 'ready' : item.status} />
                     </div>
-                    <StatusBadge value={item.status === 'ready' ? 'ready' : item.status} />
-                  </div>
 
-                  {selectedModelId === item.id && (
-                    <div className="mt-4 flex gap-2">
-                      <Button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          activateMutation.mutate({ id: item.id });
-                        }}
-                        disabled={item.status !== 'ready' || activateMutation.isPending}
-                        className="h-8 px-3 text-xs bg-blue-600 hover:bg-blue-500"
-                      >
-                        Use in runtime
-                      </Button>
-                      <a
-                        href={`${apiBase}/models/${item.id}/download`}
-                        className="inline-flex h-8 items-center justify-center rounded-xl bg-slate-800 px-3 text-xs font-medium text-white hover:bg-slate-700"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        Download
-                      </a>
-                      <Button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteMutation.mutate(item.id);
-                        }}
-                        disabled={deleteMutation.isPending}
-                        className="h-8 px-3 text-xs bg-rose-700 hover:bg-rose-600"
-                      >
-                        Delete
-                      </Button>
-
-                      {item.status === 'ready' && !item.quantization && (
+                    {selectedModelId === item.id ? (
+                      <div className="mt-4 flex flex-wrap gap-2">
                         <Button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedModelId(item.id);
-                            setIsQuantizeModalOpen(true);
+                            activateMutation.mutate({ id: item.id });
                           }}
-                          disabled={quantizeMutation.isPending}
-                          className="h-8 px-3 text-xs bg-amber-700 hover:bg-amber-600"
+                          disabled={item.status !== 'ready' || activateMutation.isPending}
+                          className="h-8 px-3 text-xs bg-blue-600 hover:bg-blue-500"
                         >
-                          AWQ
+                          Use in runtime
                         </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))
+
+                        <a
+                          href={`${apiBase}/models/${item.id}/download`}
+                          className="inline-flex h-8 items-center justify-center rounded-xl bg-slate-800 px-3 text-xs font-medium text-white hover:bg-slate-700"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          Download
+                        </a>
+
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteMutation.mutate(item.id);
+                          }}
+                          disabled={deleteMutation.isPending}
+                          className="h-8 px-3 text-xs bg-rose-700 hover:bg-rose-600"
+                        >
+                          Delete
+                        </Button>
+
+                        {canAwq ? (
+                          <>
+                            <Button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                runQuickAwq(item.id, item.name);
+                              }}
+                              disabled={hasActiveBuild}
+                              className="h-8 px-3 text-xs bg-amber-600 hover:bg-amber-500"
+                            >
+                              Quick AWQ
+                            </Button>
+
+                            <Button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedModelId(item.id);
+                                setIsQuantizeModalOpen(true);
+                              }}
+                              disabled={hasActiveBuild}
+                              className="h-8 px-3 text-xs bg-slate-800 hover:bg-slate-700"
+                            >
+                              AWQ…
+                            </Button>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })
             )}
           </CardContent>
         </Card>
@@ -244,10 +310,14 @@ export default function ModelsPage() {
                   <div className="flex items-start justify-between gap-3 text-sm">
                     <div className="min-w-0">
                       <div className="font-semibold text-white truncate">{lora.name}</div>
-                      <div className="mt-1 text-xs text-slate-500">Created {fmtDate(lora.createdAt)}</div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        Created {fmtDate(lora.createdAt)}
+                      </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-[10px] uppercase tracking-wider text-slate-500">Merge status</div>
+                      <div className="text-[10px] uppercase tracking-wider text-slate-500">
+                        Merge status
+                      </div>
                       <div className="text-xs font-medium text-white">{lora.mergeStatus}</div>
                     </div>
                   </div>
@@ -268,10 +338,10 @@ export default function ModelsPage() {
         </Card>
       </div>
 
-      {isQuantizeModalOpen && selectedModelId && (
+      {isQuantizeModalOpen && selectedModel ? (
         <QuantizeModelModal
-          modelId={selectedModelId}
-          modelName={modelsQuery.data?.find(m => m.id === selectedModelId)?.name || ''}
+          modelId={selectedModel.id}
+          modelName={selectedModel.name}
           onClose={() => setIsQuantizeModalOpen(false)}
           onQuantize={(params) => {
             quantizeMutation.mutate(params);
@@ -279,7 +349,7 @@ export default function ModelsPage() {
           }}
           isPending={quantizeMutation.isPending}
         />
-      )}
+      ) : null}
     </div>
   );
 }

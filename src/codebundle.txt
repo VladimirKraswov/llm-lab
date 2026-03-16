@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-16T10:40:03.601Z
+generated: 2026-03-16T12:51:24.277Z
 
 
 
@@ -1021,7 +1021,7 @@ def main():
     end_time = time.time()
 
     if use_lora:
-        model.save_pretrained_lora(cfg["outputDir"])
+        model.save_pretrained(cfg["outputDir"])
     else:
         trainer.save_model(cfg["outputDir"])
 
@@ -1892,14 +1892,15 @@ router.get('/providers', async (_req, res) => {
     const available = await providers.getAvailableProviders();
     const runtime = await getRuntime();
     const settings = await getSettings();
+    const state = runtime.inference || runtime.vllm || null;
 
     res.json({
       available,
       selected: settings.inference.provider || 'auto',
-      active: runtime.inference?.providerResolved || null,
+      active: state?.providerResolved || null,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: String(err.message || err) });
   }
 });
 
@@ -1907,8 +1908,10 @@ router.get('/health', async (_req, res) => {
   try {
     const runtime = await getRuntime();
     const settings = await getSettings();
-    const port = runtime.inference?.port || settings.inference.port || CONFIG.vllmPort;
-    const providerId = runtime.inference?.providerResolved || 'vllm';
+    const state = runtime.inference || runtime.vllm || null;
+
+    const port = state?.port || settings.inference.port || CONFIG.vllmPort;
+    const providerId = state?.providerResolved || settings.inference.provider || 'vllm';
     const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
 
     const h = await provider.health({ port });
@@ -2050,13 +2053,13 @@ router.post('/use-job-output', async (req, res) => {
 router.post('/chat', async (req, res) => {
   try {
     const runtime = await getRuntime();
-    const state = runtime.inference;
+    const state = runtime.inference || runtime.vllm;
 
     if (!state?.pid) {
       return res.status(400).json({ error: 'Runtime is not running' });
     }
 
-    const providerId = state.providerResolved;
+    const providerId = state.providerResolved || 'vllm';
     const provider = providers.PROVIDERS[providerId];
     if (!provider) {
       return res.status(500).json({ error: `Active provider ${providerId} not found` });
@@ -2071,8 +2074,18 @@ router.post('/chat', async (req, res) => {
     const requestedStream = !!req.body?.stream;
     const stream = supportsStreaming ? requestedStream : false;
 
+    // ВАЖНО:
+    // Для vLLM LoRA, загруженной через --lora-modules, нужно выбирать адаптер
+    // через поле "model", передавая имя адаптера.
+    // Нельзя слать lora_name в /v1/chat/completions — vLLM его игнорирует.
+    const requestedModel = req.body?.model;
+    const effectiveModel =
+      typeof requestedModel === 'string' && requestedModel.trim()
+        ? requestedModel.trim()
+        : (state.activeLoraName || state.model);
+
     const payload = {
-      model: req.body?.model || state.model,
+      model: effectiveModel,
       messages,
       temperature: req.body?.temperature ?? 0.7,
       max_tokens: req.body?.max_tokens ?? 512,
@@ -2082,6 +2095,8 @@ router.post('/chat', async (req, res) => {
     logger.info('Routing chat request', {
       provider: providerId,
       model: payload.model,
+      baseModel: state.activeModelName || state.baseModel || state.model,
+      activeLoraName: state.activeLoraName || null,
       stream,
       requestedStream,
       supportsStreaming,
@@ -2128,7 +2143,8 @@ router.post('/chat', async (req, res) => {
 
 router.get('/ui', async (_req, res) => {
   const runtime = await getRuntime();
-  const port = runtime.inference?.port || CONFIG.vllmPort;
+  const state = runtime.inference || runtime.vllm || {};
+  const port = state.port || CONFIG.vllmPort;
 
   res.json({
     openWebUI: `http://127.0.0.1:${CONFIG.openWebUiPort}`,
@@ -3992,7 +4008,6 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     maxSeqLen,
     bits,
     groupSize,
-    sym: sym !== undefined ? sym : true,
     trustRemoteCode: true,
   };
 
@@ -4047,6 +4062,23 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     pid: child.pid,
     configPath,
   });
+
+  // Also create a job record for tracking in Jobs page
+  const { upsertJob } = require('./state');
+  await upsertJob({
+    id: newId,
+    type: 'model-quantize',
+    name: item.name,
+    status: 'running',
+    createdAt: item.createdAt,
+    startedAt: nowIso(),
+    modelId: modelId,
+    modelPath: source.path,
+    outputDir: modelPath,
+    logFile: logFile,
+    pid: child.pid,
+    paramsSnapshot: payload,
+  });
   emitEvent('model_updated', running);
 
   child.on('exit', async (code) => {
@@ -4069,6 +4101,19 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       error: isOk ? null : `quantization exited with code ${code}`,
       pid: null,
       configPath,
+    });
+
+    const { upsertJob: upsertJobSync } = require('./state');
+    await upsertJobSync({
+      id: newId,
+      status: isOk ? 'completed' : 'failed',
+      finishedAt: nowIso(),
+      error: isOk ? null : `quantization exited with code ${code}`,
+      pid: null,
+      summaryMetrics: {
+        size: meta.size,
+        sizeHuman: meta.sizeHuman,
+      },
     });
     emitEvent('model_updated', next);
 
@@ -4107,6 +4152,15 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       error: String(err.message || err),
       pid: null,
       configPath,
+    });
+
+    const { upsertJob: upsertJobErr } = require('./state');
+    await upsertJobErr({
+      id: newId,
+      status: 'failed',
+      finishedAt: nowIso(),
+      error: String(err.message || err),
+      pid: null,
     });
     emitEvent('model_updated', next);
   });
@@ -6703,4 +6757,4 @@ included: 44
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 176105
+totalBytes(approx): 177913
