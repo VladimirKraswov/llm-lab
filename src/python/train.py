@@ -123,7 +123,7 @@ def main():
     end_time = time.time()
 
     if use_lora:
-        model.save_pretrained_lora(cfg["outputDir"])
+        model.save_pretrained(cfg["outputDir"])
     else:
         trainer.save_model(cfg["outputDir"])
 
