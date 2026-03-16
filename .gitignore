@@ -5,3 +5,8 @@
 /web/build
 /web/dist
 /web/node_modules
+
+artifacts/
+.cache/
+**/__pycache__/
+**/.DS_Store

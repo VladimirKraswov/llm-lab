@@ -1,0 +1,59 @@
+{
+  "job_name": "qwen25-05b-demo",
+  "base_model": {
+    "repo_id": "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit",
+    "revision": "main",
+    "trust_remote_code": false,
+    "load_in_4bit": true,
+    "dtype": "bfloat16",
+    "max_seq_length": 4096
+  },
+  "dataset": {
+    "train_path": "/data/train.json",
+    "val_path": "/data/val.json",
+    "input_field": "input",
+    "output_field": "output"
+  },
+  "training": {
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 4,
+    "num_train_epochs": 1,
+    "learning_rate": 0.0001,
+    "warmup_ratio": 0.03,
+    "logging_steps": 1,
+    "save_steps": 50,
+    "packing": true,
+    "bf16": true,
+    "output_dir": "/output/checkpoints"
+  },
+  "lora": {
+    "r": 32,
+    "lora_alpha": 64,
+    "lora_dropout": 0.0,
+    "bias": "none",
+    "use_gradient_checkpointing": "unsloth",
+    "random_state": 3407,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "artifacts": {
+    "output_dir": "/output",
+    "lora_subdir": "lora",
+    "merged_subdir": "merged",
+    "save_merged_16bit": true
+  },
+  "huggingface": {
+    "push_lora": true,
+    "push_merged": true,
+    "repo_id_lora": "your-org/qwen25-05b-demo-lora",
+    "repo_id_merged": "your-org/qwen25-05b-demo-merged",
+    "private": true
+  }
+}

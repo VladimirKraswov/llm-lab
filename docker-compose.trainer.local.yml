@@ -1,0 +1,22 @@
+services:
+  trainer:
+    container_name: itk-ai-trainer
+    build:
+      context: ./services/trainer-service
+      dockerfile: docker/Dockerfile
+    image: itk-ai-trainer:local
+    runtime: nvidia
+    environment:
+      CONFIG_PATH: /workspace/configs/trainer/job.json
+      PYTHONUNBUFFERED: "1"
+      WANDB_DISABLED: "true"
+      HF_HOME: /workspace/.cache/huggingface
+      TRANSFORMERS_CACHE: /workspace/.cache/huggingface
+      HUGGINGFACE_HUB_CACHE: /workspace/.cache/huggingface
+      NVIDIA_VISIBLE_DEVICES: all
+    volumes:
+      - ./:/workspace
+      - /opt/deepseek-workspace/models/base:/models/base:ro
+    working_dir: /workspace
+    tty: true
+    stdin_open: true
