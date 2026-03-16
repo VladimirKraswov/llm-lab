@@ -174,9 +174,12 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
   if (!source) throw new Error('source model not found');
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
+  const requestedMethod = method;
+  const effectiveMethod = requestedMethod === 'awq' ? 'awq-legacy' : requestedMethod;
+
   const existing = (await getModels()).find(m =>
     m.sourceModelId === modelId &&
-    m.quantization === method &&
+    m.quantization === effectiveMethod &&
     m.status === 'ready' &&
     (!bits || m.bits === bits) &&
     (!groupSize || m.groupSize === groupSize) &&
@@ -190,7 +193,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
   }
 
   const newId = uid('model');
-  const methodLabel = method === 'awq' ? `awq-${bits || 4}bit` : method;
+  const methodLabel = effectiveMethod === 'awq-legacy' ? `awq-${bits || 4}bit` : effectiveMethod;
   const slug = safeSlug(name || `${source.name}-${methodLabel}`);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${newId}`);
   const logFile = path.join(CONFIG.logsDir, `${newId}.log`);
@@ -205,8 +208,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     logFile,
     pid: null,
     error: null,
-    quantization: method,
-    bits: bits || (method === 'fp8' ? 8 : 4),
+    quantization: effectiveMethod,
+    bits: bits || (effectiveMethod === 'fp8' ? 8 : 4),
     groupSize: groupSize || 128,
     sym: sym !== undefined ? sym : true,
     sourceModelId: modelId,
@@ -223,7 +226,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
   let payload = {
     modelPath: source.path,
     outputDir: modelPath,
-    method,
+    method: effectiveMethod,
     datasetPath,
     numSamples,
     maxSeqLen,
@@ -232,7 +235,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     trustRemoteCode: true,
   };
 
-  if (method === 'awq-legacy') {
+  if (effectiveMethod === 'awq-legacy') {
     scriptFile = 'quantize_awq.py';
     payload = {
       modelPath: source.path,
@@ -272,7 +275,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     meta: {
       modelId: newId,
       sourceModelId: modelId,
-      method,
+      method: effectiveMethod,
+      requestedMethod,
       modelPath,
       logFile,
     },
@@ -297,7 +301,11 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     outputDir: modelPath,
     logFile: logFile,
     pid: child.pid,
-    paramsSnapshot: payload,
+    paramsSnapshot: {
+      ...payload,
+      requestedMethod,
+      effectiveMethod,
+    },
   });
   emitEvent('model_updated', running);
 
@@ -308,7 +316,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       modelId: newId,
       sourceModelId: modelId,
       code,
-      method,
+      method: effectiveMethod,
+      requestedMethod,
       configPath,
     });
 
@@ -341,14 +350,16 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
       logger.info('Model quantization completed', {
         modelId: newId,
         sourceModelId: modelId,
-        method,
+        method: effectiveMethod,
+        requestedMethod,
         configPath,
       });
     } else {
       logger.error('Model quantization failed', {
         modelId: newId,
         sourceModelId: modelId,
-        method,
+        method: effectiveMethod,
+        requestedMethod,
         error: next.error,
         configPath,
       });
@@ -361,7 +372,8 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     logger.error('Model quantization process error', {
       modelId: newId,
       sourceModelId: modelId,
-      method,
+      method: effectiveMethod,
+      requestedMethod,
       configPath,
       error: String(err.message || err),
     });
