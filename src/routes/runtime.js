@@ -204,7 +204,7 @@ router.post('/chat', async (req, res) => {
     };
 
     if (state.activeLoraName) {
-      payload.lora = state.activeLoraName;
+      payload.lora_name = state.activeLoraName;
     }
 
     logger.info('Routing chat request', {
