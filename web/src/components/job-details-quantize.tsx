@@ -20,7 +20,9 @@ export function JobDetailsQuantize({ job }: { job: Job }) {
         <CardContent className="grid gap-3 md:grid-cols-2 text-sm">
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Source Model</div>
-            <div className="mt-1 break-all text-white">{job.paramsSnapshot?.modelPath || job.modelPath || '—'}</div>
+            <div className="mt-1 break-all text-white">
+              {job.paramsSnapshot?.modelPath || job.modelPath || '—'}
+            </div>
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
@@ -36,6 +38,25 @@ export function JobDetailsQuantize({ job }: { job: Job }) {
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Finished</div>
             <div className="mt-1 text-white">{fmtDate(job.finishedAt)}</div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Result</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-2 text-sm">
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Output size</div>
+            <div className="mt-1 text-lg font-semibold text-white">
+              {job.summaryMetrics?.sizeHuman || '—'}
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Status</div>
+            <div className="mt-1 text-lg font-semibold text-white">{job.status || '—'}</div>
           </div>
         </CardContent>
       </Card>

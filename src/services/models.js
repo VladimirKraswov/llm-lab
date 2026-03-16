@@ -33,14 +33,14 @@ async function downloadModel({ repoId, name, tryQuantized }) {
   if (existing) return existing;
 
   const modelId = uid('model');
-  const slug = safeSlug(name || repoId.split('/').pop() || modelId);
+  const slug = safeSlug(name || targetRepoId.split('/').pop() || modelId);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${modelId}`);
   const logFile = path.join(CONFIG.logsDir, `${modelId}.log`);
 
   const item = await addModel({
     id: modelId,
-    name: name || repoId.split('/').pop() || modelId,
-    repoId,
+    name: name || targetRepoId.split('/').pop() || modelId,
+    repoId: targetRepoId,
     createdAt: nowIso(),
     status: 'downloading',
     path: modelPath,
@@ -58,7 +58,7 @@ async function downloadModel({ repoId, name, tryQuantized }) {
 
   const scriptPath = path.join(__dirname, '..', 'python', 'download_model.py');
   const payload = {
-    repoId,
+    repoId: targetRepoId,
     localDir: modelPath,
   };
 
@@ -84,7 +84,7 @@ async function downloadModel({ repoId, name, tryQuantized }) {
     label: `download-model:${modelId}`,
     meta: {
       modelId,
-      repoId,
+      repoId: targetRepoId,
       modelPath,
       logFile,
     },
@@ -182,7 +182,12 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     (!groupSize || m.groupSize === groupSize) &&
     (sym === undefined || m.sym === sym)
   );
-  if (existing) return existing;
+  if (existing) {
+    return {
+      ...existing,
+      jobId: existing.id,
+    };
+  }
 
   const newId = uid('model');
   const methodLabel = method === 'awq' ? `awq-${bits || 4}bit` : method;
@@ -279,7 +284,6 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     configPath,
   });
 
-  // Also create a job record for tracking in Jobs page
   const { upsertJob } = require('./state');
   await upsertJob({
     id: newId,
@@ -381,7 +385,10 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
     emitEvent('model_updated', next);
   });
 
-  return running;
+  return {
+    ...running,
+    jobId: newId,
+  };
 }
 
 async function getModelLogs(id, tail = 200) {

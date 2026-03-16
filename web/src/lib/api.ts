@@ -93,6 +93,7 @@ export type ModelItem = {
   sizeHuman?: string;
   quantization?: string | null;
   vramEstimate?: string;
+  jobId?: string;
 };
 
 export type LoraItem = {
@@ -163,6 +164,7 @@ export type SummaryMetrics = {
   duration_human?: string;
   bf16?: boolean;
   fp16?: boolean;
+  sizeHuman?: string;
   validCount?: number;
   invalidCount?: number;
 };

@@ -46,9 +46,13 @@ export default function ModelsPage() {
 
   const quantizeMutation = useMutation({
     mutationFn: api.quantizeModel,
-    onSuccess: async () => {
+    onSuccess: async (data) => {
       await qc.invalidateQueries({ queryKey: ['models'] });
       await qc.invalidateQueries({ queryKey: ['jobs'] });
+
+      if (data.jobId) {
+        navigate(`/app/jobs?selected=${encodeURIComponent(data.jobId)}`);
+      }
     },
   });
 
