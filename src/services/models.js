@@ -95,6 +95,23 @@ async function downloadModel({ repoId, name, tryQuantized }) {
     pid: child.pid,
     configPath,
   });
+
+  // Also create a job record for tracking in Jobs page
+  const { upsertJob } = require('./state');
+  await upsertJob({
+    id: newId,
+    type: 'model-quantize',
+    name: item.name,
+    status: 'running',
+    createdAt: item.createdAt,
+    startedAt: nowIso(),
+    modelId: modelId,
+    modelPath: source.path,
+    outputDir: modelPath,
+    logFile: logFile,
+    pid: child.pid,
+    paramsSnapshot: payload,
+  });
   emitEvent('model_updated', running);
 
   child.on('exit', async (code) => {
@@ -112,6 +129,19 @@ async function downloadModel({ repoId, name, tryQuantized }) {
       error: code === 0 ? null : `download exited with code ${code}`,
       pid: null,
       configPath,
+    });
+
+    const { upsertJob } = require('./state');
+    await upsertJob({
+      id: newId,
+      status: isOk ? 'completed' : 'failed',
+      finishedAt: nowIso(),
+      error: isOk ? null : `quantization exited with code ${code}`,
+      pid: null,
+      summaryMetrics: {
+        size: meta.size,
+        sizeHuman: meta.sizeHuman,
+      },
     });
     emitEvent('model_updated', next);
 
@@ -147,6 +177,15 @@ async function downloadModel({ repoId, name, tryQuantized }) {
       error: String(err.message || err),
       pid: null,
       configPath,
+    });
+
+    const { upsertJob } = require('./state');
+    await upsertJob({
+      id: newId,
+      status: 'failed',
+      finishedAt: nowIso(),
+      error: String(err.message || err),
+      pid: null,
     });
     emitEvent('model_updated', next);
   });

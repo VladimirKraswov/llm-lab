@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/ca
 import { JobTypeBadge } from '../../components/job-type-badge';
 import { JobDetailsFineTune } from '../../components/job-details-fine-tune';
 import { JobDetailsSynthetic } from '../../components/job-details-synthetic';
+import { JobDetailsQuantize } from '../../components/job-details-quantize';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
@@ -188,6 +189,7 @@ export default function JobsPage() {
 
   const selectedJob = jobQuery.data;
   const isSynthetic = selectedJob?.type === 'synthetic-gen';
+  const isQuantize = selectedJob?.type === 'model-quantize';
 
   const selectedLora = useMemo(() => {
     if (!selectedJob) return null;
@@ -507,13 +509,15 @@ export default function JobsPage() {
                     <div className="text-sm text-slate-500">Select a job to view details.</div>
                   ) : isSynthetic ? (
                     <JobDetailsSynthetic job={selectedJob} />
+                  ) : isQuantize ? (
+                    <JobDetailsQuantize job={selectedJob} />
                   ) : (
                     <JobDetailsFineTune job={selectedJob} />
                   )}
                 </CardContent>
               </Card>
 
-              {!isSynthetic && selectedJob ? (
+              {!isSynthetic && !isQuantize && selectedJob ? (
                 <>
                   <Card>
                     <CardHeader>
@@ -690,6 +694,7 @@ export default function JobsPage() {
                         disabled={
                           selectedJob.status !== 'completed' ||
                           isSynthetic ||
+                          isQuantize ||
                           useOutputMutation.isPending
                         }
                         className="bg-emerald-600 hover:bg-emerald-500"

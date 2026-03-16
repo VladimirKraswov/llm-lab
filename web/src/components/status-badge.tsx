@@ -5,6 +5,7 @@ const styles: Record<string, string> = {
   completed: 'bg-blue-500/15 text-blue-300 ring-blue-500/30',
   failed: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
   queued: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
+  building: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
   stopped: 'bg-slate-500/15 text-slate-300 ring-slate-500/30',
   healthy: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
 };

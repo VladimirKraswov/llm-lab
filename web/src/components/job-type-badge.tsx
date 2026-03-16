@@ -10,6 +10,15 @@ export function JobTypeBadge({ type }: { type: string }) {
     );
   }
 
+  if (type === 'model-quantize') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+        <Boxes size={12} />
+        Quantization
+      </span>
+    );
+  }
+
   if (type === 'fine-tune') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-1 text-xs text-purple-300">
