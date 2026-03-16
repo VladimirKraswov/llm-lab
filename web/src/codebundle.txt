@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/web/src
 ignore: .codebundleignore
-generated: 2026-03-16T15:10:08.952Z
+generated: 2026-03-16T21:25:09.671Z
 
 
 
@@ -545,6 +545,20 @@ export function JobDetailsQuantize({ job }: { job: Job }) {
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Output Directory</div>
             <div className="mt-1 break-all text-white">{job.outputDir || '—'}</div>
+          </div>
+
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Runner</div>
+            <div className="mt-1 text-white">
+              {job.runner || job.paramsSnapshot?.runner || '—'}
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Method</div>
+            <div className="mt-1 text-white">
+              {job.paramsSnapshot?.effectiveMethod || job.paramsSnapshot?.method || '—'}
+            </div>
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
@@ -1212,6 +1226,7 @@ export default function DashboardPage() {
                   {data.recentJobs.length ? (
                     data.recentJobs.map((job) => {
                       const isSynthetic = job.type === 'synthetic-gen';
+                      const isQuantize = job.type === 'model-quantize';
 
                       return (
                         <div
@@ -1219,7 +1234,9 @@ export default function DashboardPage() {
                           className={`flex flex-col gap-2 rounded-2xl border p-4 md:flex-row md:items-center md:justify-between ${
                             isSynthetic
                               ? 'border-cyan-500/20 bg-cyan-500/5'
-                              : 'border-purple-500/20 bg-purple-500/5'
+                              : isQuantize
+                                ? 'border-amber-500/20 bg-amber-500/5'
+                                : 'border-purple-500/20 bg-purple-500/5'
                           }`}
                         >
                           <div className="min-w-0">
@@ -1236,6 +1253,7 @@ export default function DashboardPage() {
 
                             <div className="mt-1 text-xs text-slate-500">
                               Started: {fmtDate(job.startedAt || job.createdAt)}
+                              {job.runner ? ` · Runner: ${job.runner}` : ''}
                             </div>
                           </div>
 
@@ -1258,6 +1276,11 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Python</span>
                   <StatusBadge value={data.health.python ? 'healthy' : 'failed'} />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Quant env</span>
+                  <StatusBadge value={data.health.quantizeEnvOk ? 'healthy' : 'failed'} />
                 </div>
 
                 <div className="flex items-center justify-between">
@@ -2340,6 +2363,12 @@ function JobListCard({
             ) : (
               <div className="mt-2 text-xs text-slate-400 break-all">{job.baseModel || '—'}</div>
             )}
+
+            {job.runner ? (
+              <div className="mt-1 text-[10px] text-slate-500">
+                Runner: {job.runner}
+              </div>
+            ) : null}
           </div>
 
           <StatusBadge value={job.status} />
@@ -2600,6 +2629,13 @@ export default function JobsPage() {
                         >
                           {job.baseModel?.split('/').pop() || '—'}
                         </td>
+                      ))}
+                    </tr>
+
+                    <tr className="hover:bg-slate-800/20">
+                      <td className="py-3 pr-4 text-slate-400">Runner</td>
+                      {sortedCompareJobs.map((job) => (
+                        <td key={job.id} className="py-3 pr-4 text-white">{job.runner || '—'}</td>
                       ))}
                     </tr>
 
@@ -3402,6 +3438,7 @@ export default function ModelsPage() {
       numSamples: 128,
       maxSeqLen: 2048,
       sym: true,
+      runner: 'quant_env',
     });
   };
 
@@ -3452,7 +3489,7 @@ export default function ModelsPage() {
               <span className="font-medium">AWQ conversion</span>
             </div>
             <div className="mt-1 text-sm text-slate-300">
-              Quick AWQ запускает рекомендуемые параметры сразу. Кнопка AWQ… открывает расширенную настройку.
+              Quick AWQ запускает рекомендуемые параметры сразу через isolated quant_env. Кнопка AWQ… открывает расширенную настройку.
             </div>
           </div>
 
@@ -3476,8 +3513,13 @@ export default function ModelsPage() {
               modelsQuery.data.map((item) => {
                 const tooLarge =
                   !!(item.size && maxVram && item.size > maxVram * 1024 * 1024 * 1024);
-                const isQuantized = !!item.quantization && String(item.quantization).toLowerCase() !== 'none';
-                const canAwq = item.status === 'ready' && !isQuantized;
+                const isQuantized = hasRealQuantization(item.quantization);
+                const capability = item.quantizationCapability;
+                const canAwq =
+                  item.status === 'ready' &&
+                  !isQuantized &&
+                  capability?.supported &&
+                  capability.methods.includes('awq');
 
                 return (
                   <div
@@ -3514,7 +3556,24 @@ export default function ModelsPage() {
                               </span>
                             </div>
                           )}
+                          {item.runner && (
+                            <div className="text-slate-400">
+                              Runner: <span className="text-slate-200">{item.runner}</span>
+                            </div>
+                          )}
                         </div>
+
+                        {capability?.reason ? (
+                          <div className="mt-2 text-[11px] text-slate-500">
+                            {capability.reason}
+                          </div>
+                        ) : null}
+
+                        {capability?.experimental ? (
+                          <div className="mt-1 text-[11px] text-amber-300">
+                            Experimental quantization path
+                          </div>
+                        ) : null}
                       </div>
                       <StatusBadge value={item.status === 'ready' ? 'ready' : item.status} />
                     </div>
@@ -3636,6 +3695,7 @@ export default function ModelsPage() {
         <QuantizeModelModal
           modelId={selectedModel.id}
           modelName={selectedModel.name}
+          defaultRunner={(selectedModel.quantizationCapability?.runner as 'ml_env' | 'quant_env' | undefined) || 'quant_env'}
           onClose={() => setIsQuantizeModalOpen(false)}
           onQuantize={(params) => {
             quantizeMutation.mutate(params);
@@ -3661,6 +3721,7 @@ import { api } from '../../lib/api';
 interface QuantizeModelModalProps {
   modelId: string;
   modelName: string;
+  defaultRunner?: 'ml_env' | 'quant_env';
   onClose: () => void;
   onQuantize: (params: {
     modelId: string;
@@ -3672,6 +3733,7 @@ interface QuantizeModelModalProps {
     bits?: number;
     groupSize?: number;
     sym?: boolean;
+    runner?: 'ml_env' | 'quant_env';
   }) => void;
   isPending: boolean;
 }
@@ -3709,6 +3771,7 @@ function presetMeta(preset: Preset) {
 export function QuantizeModelModal({
   modelId,
   modelName,
+  defaultRunner = 'quant_env',
   onClose,
   onQuantize,
   isPending,
@@ -3727,6 +3790,7 @@ export function QuantizeModelModal({
   const [groupSize, setGroupSize] = useState(128);
   const [sym, setSym] = useState(true);
   const [advanced, setAdvanced] = useState(false);
+  const [runner, setRunner] = useState<'ml_env' | 'quant_env'>(defaultRunner);
 
   useEffect(() => {
     const values = PRESET_VALUES[preset];
@@ -3759,6 +3823,7 @@ export function QuantizeModelModal({
       bits,
       groupSize,
       sym,
+      runner,
     });
   };
 
@@ -3783,6 +3848,23 @@ export function QuantizeModelModal({
             />
             <p className="mt-2 text-xs text-slate-500">
               Будет создана новая модель: <span className="text-slate-300">{finalName}</span>
+            </p>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-slate-500">
+              Quantization runner
+            </label>
+            <select
+              value={runner}
+              onChange={(e) => setRunner(e.target.value as 'ml_env' | 'quant_env')}
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+            >
+              <option value="quant_env">quant_env (isolated, recommended)</option>
+              <option value="ml_env">ml_env</option>
+            </select>
+            <p className="mt-2 text-xs text-slate-500">
+              quant_env позволяет позже подключить рабочий квантизатор без ломания основного ml_env.
             </p>
           </div>
 
@@ -3852,6 +3934,10 @@ export function QuantizeModelModal({
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Method</span>
                   <span className="text-white">AWQ</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Runner</span>
+                  <span className="text-white">{runner}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Bits</span>
@@ -6019,6 +6105,7 @@ export type QuantizationCapability = {
 };
 
 export type ModelItem = {
+  jobId: string;
   id: string;
   name: string;
   repoId: string;
@@ -6032,6 +6119,8 @@ export type ModelItem = {
   sizeHuman?: string;
   quantization?: string | null;
   vramEstimate?: string;
+  runner?: string;
+  envName?: string;
 
   quantizationCapability?: QuantizationCapability;
 };
@@ -6167,6 +6256,7 @@ export type Job = {
   notes?: string;
   artifacts?: Array<{ name: string; size: number; path: string }>;
   progressStep?: string;
+  runner?: string;
   summaryMetrics?: SummaryMetrics;
   resultDatasetId?: string | null;
   syntheticMeta?: SyntheticMeta;
@@ -6268,6 +6358,8 @@ export type DashboardSummary = {
     python: boolean;
     vllmBin: boolean;
     transformersPython?: boolean;
+    quantizePython?: boolean;
+    quantizeEnvOk?: boolean;
     time: string;
   };
   settings: {
@@ -6365,6 +6457,7 @@ export const api = {
     bits?: number;
     groupSize?: number;
     sym?: boolean;
+    runner?: 'ml_env' | 'quant_env';
   }) =>
     request<ModelItem>('/models/quantize', {
       method: 'POST',
@@ -6653,4 +6746,4 @@ included: 38
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 252800
+totalBytes(approx): 256944

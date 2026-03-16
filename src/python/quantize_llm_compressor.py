@@ -61,10 +61,33 @@ def build_local_text_dataset(dataset_path: str | None, num_samples: int):
     return rows if rows else "open_platypus"
 
 
-def resolve_scheme(bits: int, sym: bool):
+def validate_awq_params(bits: int, group_size: int):
     if bits != 4:
         raise ValueError("Current AWQ implementation supports 4-bit only")
-    return "W4A16" if sym else "W4A16_ASYM"
+    if group_size <= 0:
+        raise ValueError("group_size must be > 0")
+
+
+def build_awq_recipe(bits: int, group_size: int, sym: bool):
+    return [
+        AWQModifier(
+            ignore=["lm_head"],
+            config_groups={
+                "group_0": {
+                    "targets": ["Linear"],
+                    "weights": {
+                        "num_bits": bits,
+                        "type": "int",
+                        "symmetric": sym,
+                        "strategy": "group",
+                        "group_size": group_size,
+                    },
+                    "input_activations": None,
+                    "output_activations": None,
+                }
+            },
+        )
+    ]
 
 
 def main():
@@ -86,7 +109,11 @@ def main():
     trust_remote_code = bool(cfg.get("trustRemoteCode", True))
 
     if method != "awq":
-        raise ValueError(f"quantize_llm_compressor.py currently supports only method='awq', got: {method}")
+        raise ValueError(
+            f"quantize_llm_compressor.py currently supports only method='awq', got: {method}"
+        )
+
+    validate_awq_params(bits, group_size)
 
     os.makedirs(output_dir, exist_ok=True)
     report(5)
@@ -102,7 +129,7 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype="auto",
+        dtype="auto",
         trust_remote_code=trust_remote_code,
     )
 
@@ -112,16 +139,7 @@ def main():
 
     report(50)
 
-    scheme = resolve_scheme(bits, sym)
-
-    recipe = [
-        AWQModifier(
-            targets=["Linear"],
-            ignore=["lm_head"],
-            scheme=scheme,
-            group_size=group_size,
-        )
-    ]
+    recipe = build_awq_recipe(bits=bits, group_size=group_size, sym=sym)
 
     report(65)
 
