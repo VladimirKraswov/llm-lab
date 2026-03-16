@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const { getModels, getModelById, getSettings } = require('../services/state');
 const { downloadModel, deleteModel, getModelLogs, quantizeModel } = require('../services/models');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
+const { runBenchmark } = require('../services/benchmarks');
 const { CONFIG } = require('../config');
 
 const router = express.Router();
@@ -44,8 +45,8 @@ router.get('/:id/logs', async (req, res) => {
 
 router.post('/download', async (req, res) => {
   try {
-    const { repoId, name } = req.body || {};
-    res.json(await downloadModel({ repoId, name }));
+    const { repoId, name, tryQuantized } = req.body || {};
+    res.json(await downloadModel({ repoId, name, tryQuantized }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
@@ -53,10 +54,18 @@ router.post('/download', async (req, res) => {
 
 router.post('/quantize', async (req, res) => {
   try {
-    const { modelId, method, name } = req.body || {};
-    res.json(await quantizeModel({ modelId, method, name }));
+    const { modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize } = req.body || {};
+    res.json(await quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/benchmark', async (req, res) => {
+  try {
+    res.json(await runBenchmark(req.params.id));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
   }
 });
 

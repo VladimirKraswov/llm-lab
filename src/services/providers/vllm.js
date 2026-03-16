@@ -137,7 +137,7 @@ class VllmProvider {
       if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
-      const tokens = data.usage?.completion_tokens || 0;
+      const tokens = (data.usage?.completion_tokens || data.usage?.total_tokens) || 0;
 
       if (tokens > 0 && !content.trim()) {
         return { ok: false, error: 'Empty response despite token generation' };

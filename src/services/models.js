@@ -21,10 +21,15 @@ function safeSlug(value) {
     .slice(0, 80);
 }
 
-async function downloadModel({ repoId, name }) {
+async function downloadModel({ repoId, name, tryQuantized }) {
   if (!repoId) throw new Error('repoId is required');
 
-  const existing = (await getModels()).find((x) => x.repoId === repoId && x.status !== 'deleted');
+  let targetRepoId = repoId;
+  if (tryQuantized && !repoId.toLowerCase().endsWith('-awq')) {
+    targetRepoId = `${repoId}-AWQ`;
+  }
+
+  const existing = (await getModels()).find((x) => x.repoId === targetRepoId && x.status !== 'deleted');
   if (existing) return existing;
 
   const modelId = uid('model');
@@ -164,19 +169,25 @@ async function deleteModel(modelId) {
   return { ok: true };
 }
 
-async function quantizeModel({ modelId, method, name }) {
+async function quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize }) {
   const source = await getModelById(modelId);
   if (!source) throw new Error('source model not found');
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
+  const existing = (await getModels()).find(m =>
+    m.sourceModelId === modelId && m.quantization === method && m.status === 'ready' && (!bits || m.bits === bits)
+  );
+  if (existing) return existing;
+
   const newId = uid('model');
-  const slug = safeSlug(name || `${source.name}-${method}`);
+  const methodLabel = method === 'awq' ? `awq-${bits || 4}bit` : method;
+  const slug = safeSlug(name || `${source.name}-${methodLabel}`);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${newId}`);
   const logFile = path.join(CONFIG.logsDir, `${newId}.log`);
 
   const item = await addModel({
     id: newId,
-    name: name || `${source.name} (${method})`,
+    name: name || `${source.name} (${methodLabel})`,
     repoId: `local/quantized/${source.id}`,
     createdAt: nowIso(),
     status: 'building',
@@ -185,6 +196,7 @@ async function quantizeModel({ modelId, method, name }) {
     pid: null,
     error: null,
     quantization: method,
+    bits: bits || (method === 'fp8' ? 8 : 4),
     sourceModelId: modelId,
     configPath: null,
   });
@@ -195,24 +207,32 @@ async function quantizeModel({ modelId, method, name }) {
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  let scriptFile = null;
-  let payload = null;
+  let scriptFile = 'quantize_llm_compressor.py';
+  let payload = {
+    modelPath: source.path,
+    outputDir: modelPath,
+    method,
+    datasetPath,
+    numSamples,
+    maxSeqLen,
+    bits,
+    groupSize,
+    trustRemoteCode: true,
+  };
 
-  if (method === 'awq') {
+  if (method === 'awq-legacy') {
     scriptFile = 'quantize_awq.py';
     payload = {
       modelPath: source.path,
       outputDir: modelPath,
       quantConfig: {
         zero_point: true,
-        q_group_size: 128,
-        w_bit: 4,
+        q_group_size: groupSize || 128,
+        w_bit: bits || 4,
         version: 'GEMM',
       },
       trustRemoteCode: true,
     };
-  } else {
-    throw new Error(`Quantization method ${method} not implemented in this version`);
   }
 
   const scriptPath = path.join(__dirname, '..', 'python', scriptFile);
