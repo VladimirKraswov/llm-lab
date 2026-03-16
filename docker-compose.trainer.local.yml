@@ -5,7 +5,7 @@ services:
       context: ./services/trainer-service
       dockerfile: docker/Dockerfile
     image: itk-ai-trainer:local
-    runtime: nvidia
+    gpus: all
     environment:
       CONFIG_PATH: /workspace/configs/trainer/job.json
       PYTHONUNBUFFERED: "1"
