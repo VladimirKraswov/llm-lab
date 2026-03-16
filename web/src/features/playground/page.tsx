@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { ResponseRenderer } from '../../components/response-renderer';
@@ -44,6 +44,11 @@ export default function PlaygroundPage() {
     refetchInterval: 3000,
   });
 
+  const activeRuntime = useMemo(
+    () => runtimeQuery.data?.inference || runtimeQuery.data?.vllm,
+    [runtimeQuery.data]
+  );
+
   const [input, setInput] = useState(
     'Напиши пример на Python с fibonacci, потом покажи SQL запрос и кратко объясни оба блока.'
   );
@@ -65,8 +70,11 @@ export default function PlaygroundPage() {
     setError(null);
 
     try {
+      // Не передаём model принудительно.
+      // Бэкенд сам выберет:
+      // activeLoraName -> если LoRA активна
+      // иначе base model.
       const stream = await api.chatStream({
-        model: runtimeQuery.data?.vllm?.model || undefined,
         messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
         temperature: Number(temperature),
         max_tokens: Number(maxTokens),
@@ -78,6 +86,7 @@ export default function PlaygroundPage() {
       const decoder = new TextDecoder();
       let assistantText = '';
       let buffer = '';
+      let doneReceived = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -89,15 +98,21 @@ export default function PlaygroundPage() {
 
         for (const line of lines) {
           const trimmed = line.trim();
-          if (!trimmed || trimmed.includes(': ping')) continue;
+          if (!trimmed || trimmed.startsWith(':')) continue;
 
           if (trimmed.startsWith('data: ')) {
             const data = trimmed.slice(6);
-            if (data === '[DONE]') break;
+
+            if (data === '[DONE]') {
+              doneReceived = true;
+              break;
+            }
 
             try {
               const parsed = JSON.parse(data);
               const content = parsed.choices?.[0]?.delta?.content || '';
+              if (!content) continue;
+
               assistantText += content;
 
               setMessages((prev) => {
@@ -113,10 +128,14 @@ export default function PlaygroundPage() {
             }
           }
         }
+
+        if (doneReceived) break;
       }
 
       if (!assistantText) {
-        setError('Model returned an empty response. This might be a compatibility issue with the current quantization or vLLM version.');
+        setError(
+          'Model returned an empty response. Check that the active runtime is healthy and that the selected LoRA is actually loaded into vLLM.'
+        );
       }
     } catch (err) {
       const errMsg = String((err as Error)?.message || err);
@@ -142,84 +161,127 @@ export default function PlaygroundPage() {
 
           <div className="flex gap-2">
             <div className="flex-1 rounded-xl bg-slate-950/40 p-3">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Health</div>
+              <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Health
+              </div>
               <div className={`text-sm font-medium ${healthQuery.data?.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {healthQuery.data?.ok ? 'Healthy' : (runtimeQuery.data?.vllm?.pid ? 'Starting...' : 'Offline')}
+                {healthQuery.data?.ok ? 'Healthy' : (activeRuntime?.pid ? 'Starting...' : 'Offline')}
               </div>
             </div>
+
             <div className="flex-1 rounded-xl bg-slate-950/40 p-3">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Provider</div>
-              <div className="text-sm font-medium text-white capitalize">{runtimeQuery.data?.vllm?.providerResolved || '—'}</div>
+              <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Provider
+              </div>
+              <div className="text-sm font-medium capitalize text-white">
+                {activeRuntime?.providerResolved || '—'}
+              </div>
             </div>
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Active model</div>
-            <div className="text-sm text-white break-words">{runtimeQuery.data?.vllm?.activeModelName || '—'}</div>
-            {runtimeQuery.data?.vllm?.activeLoraName && (
-               <div className="mt-1 text-xs text-blue-400 font-medium">+ {runtimeQuery.data.vllm.activeLoraName}</div>
+            <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              Active model
+            </div>
+            <div className="break-words text-sm text-white">
+              {activeRuntime?.activeModelName || activeRuntime?.baseModel || '—'}
+            </div>
+            {activeRuntime?.activeLoraName && (
+              <div className="mt-1 text-xs font-medium text-blue-400">
+                + {activeRuntime.activeLoraName}
+              </div>
             )}
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Serving path</div>
+            <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              Serving path
+            </div>
             <div className="mt-1 break-all text-[11px] font-mono text-slate-400">
-              {runtimeQuery.data?.vllm?.model || 'None'}
+              {activeRuntime?.model || 'None'}
             </div>
           </div>
 
-          {runtimeQuery.data?.vllm?.probe && (
-            <div className={`rounded-xl p-3 border ${runtimeQuery.data.vllm.probe.ok ? 'bg-emerald-950/20 border-emerald-900/50' : 'bg-rose-950/20 border-rose-900/50'}`}>
-               <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Model Probe</span>
-                  {runtimeQuery.data.vllm.probe.ok ? <CheckCircle2 size={12} className="text-emerald-500" /> : <AlertCircle size={12} className="text-rose-500" />}
-               </div>
-               <div className="text-sm text-white font-medium">
-                 {runtimeQuery.data.vllm.probe.status === 'checking' ? 'Checking...' : (runtimeQuery.data.vllm.probe.ok ? 'Verified' : 'Failed')}
-               </div>
-               {runtimeQuery.data.vllm.probe.error && <div className="mt-1 text-[10px] text-rose-400 leading-tight">{runtimeQuery.data.vllm.probe.error}</div>}
+          {activeRuntime?.probe && (
+            <div
+              className={`rounded-xl border p-3 ${
+                activeRuntime.probe.ok
+                  ? 'border-emerald-900/50 bg-emerald-950/20'
+                  : 'border-rose-900/50 bg-rose-950/20'
+              }`}
+            >
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  Model Probe
+                </span>
+                {activeRuntime.probe.ok ? (
+                  <CheckCircle2 size={12} className="text-emerald-500" />
+                ) : (
+                  <AlertCircle size={12} className="text-rose-500" />
+                )}
+              </div>
+
+              <div className="text-sm font-medium text-white">
+                {activeRuntime.probe.status === 'checking'
+                  ? 'Checking...'
+                  : activeRuntime.probe.ok
+                    ? 'Verified'
+                    : 'Failed'}
+              </div>
+
+              {activeRuntime.probe.error && (
+                <div className="mt-1 text-[10px] leading-tight text-rose-400">
+                  {activeRuntime.probe.error}
+                </div>
+              )}
             </div>
           )}
 
           <div className="pt-2">
-            <label className="mb-2 block text-[10px] uppercase tracking-wider font-bold text-slate-500">
+            <label className="mb-2 block text-[10px] font-bold uppercase tracking-wider text-slate-500">
               Temperature
             </label>
             <input
               value={temperature}
               onChange={(e) => setTemperature(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none"
+              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-[10px] uppercase tracking-wider font-bold text-slate-500">
+            <label className="mb-2 block text-[10px] font-bold uppercase tracking-wider text-slate-500">
               Max tokens
             </label>
             <input
               value={maxTokens}
               onChange={(e) => setMaxTokens(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:ring-1 focus:ring-blue-500 outline-none"
+              className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
 
-          <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-xs text-slate-400 leading-relaxed">
-            <span className="text-slate-500 font-semibold mb-1 block">Test prompts:</span>
-            • Create a profile card component in React<br/>
-            • Write a Dockerfile for a Python app<br/>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-xs leading-relaxed text-slate-400">
+            <span className="mb-1 block font-semibold text-slate-500">Test prompts:</span>
+            • Create a profile card component in React
+            <br />
+            • Write a Dockerfile for a Python app
+            <br />
             • Explain Fibonacci in 3 sentences
           </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 flex flex-col">
+        <div className="flex flex-col rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="mb-4 flex items-center justify-between">
             <div className="text-sm font-semibold text-white">Chat</div>
-            {error && <div className="text-xs font-medium text-rose-400 flex items-center gap-1"><AlertCircle size={14}/> {error}</div>}
+            {error && (
+              <div className="flex items-center gap-1 text-xs font-medium text-rose-400">
+                <AlertCircle size={14} /> {error}
+              </div>
+            )}
           </div>
 
-          <div className="mb-4 flex-1 h-[560px] overflow-auto rounded-2xl bg-slate-950 p-4 border border-slate-900 shadow-inner">
+          <div className="mb-4 h-[560px] flex-1 overflow-auto rounded-2xl border border-slate-900 bg-slate-950 p-4 shadow-inner">
             {!messages.length ? (
-              <div className="h-full flex items-center justify-center text-sm text-slate-600 italic">
+              <div className="flex h-full items-center justify-center text-sm italic text-slate-600">
                 No messages yet. Send a prompt to start.
               </div>
             ) : (
@@ -227,7 +289,7 @@ export default function PlaygroundPage() {
                 {messages.map((m, idx) => (
                   <div key={idx} className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
                     {m.role === 'user' ? (
-                      <div className="inline-block max-w-[85%] rounded-2xl bg-blue-600 px-4 py-3 text-sm whitespace-pre-wrap text-white shadow-md">
+                      <div className="inline-block max-w-[85%] whitespace-pre-wrap rounded-2xl bg-blue-600 px-4 py-3 text-sm text-white shadow-md">
                         {m.content}
                       </div>
                     ) : (
@@ -254,13 +316,19 @@ export default function PlaygroundPage() {
               }}
             />
             <div className="flex gap-3">
-              <Button onClick={sendMessage} disabled={!runtimeQuery.data?.vllm?.pid || isStreaming}>
+              <Button onClick={sendMessage} disabled={!activeRuntime?.pid || isStreaming}>
                 {isStreaming ? 'Generating…' : 'Send Message'}
               </Button>
-              <Button className="bg-slate-800 hover:bg-slate-700" onClick={() => setMessages([])} disabled={!messages.length}>
+
+              <Button
+                className="bg-slate-800 hover:bg-slate-700"
+                onClick={() => setMessages([])}
+                disabled={!messages.length}
+              >
                 Clear Chat
               </Button>
-              <span className="text-[10px] text-slate-600 self-center ml-auto hidden md:block">
+
+              <span className="ml-auto hidden self-center text-[10px] text-slate-600 md:block">
                 Press Ctrl + Enter to send
               </span>
             </div>
