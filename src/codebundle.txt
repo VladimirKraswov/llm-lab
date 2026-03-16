@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
-ignore: .codebundleignore
-generated: 2026-03-15T20:48:39.934Z
+ignore: .codebun)dleignore
+generated: 2026-03-16T05:46:38.376Z
 
 
 
@@ -18,10 +18,10 @@ path: /bundle-code.js
 
 const  fs = require("fs");
 const  fsp = require("fs/promises");
-const  path = require("path");
+const  path = require("path")
 
 const PROJECT_ROOT = process.cwd();
-const IGNORE_FILE_NAME = ".codebundleignore";
+const IGNORE_FILE_NAME = ".codebun)dleignore";
 const OUTPUT_FILE = path.join(PROJECT_ROOT, "codebundle.txt");
 
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
@@ -491,6 +491,106 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+
+path: /python/quantize_llm_compressor.py
+----------------------------------------
+import json
+import os
+import sys
+import torch
+from llmcompressor.transformers import SparseAutoModelForCausalLM, oneshot
+from transformers import AutoTokenizer
+
+
+def report(p):
+    print(f"__PROGRESS__:{p}", flush=True)
+
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: quantize_llm_compressor.py <config.json>")
+
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    model_path = cfg["modelPath"]
+    output_dir = cfg["outputDir"]
+    method = cfg.get("method", "awq")  # awq, fp8, int8
+    dataset_path = cfg.get("datasetPath")
+    num_samples = cfg.get("numSamples", 128)
+    max_seq_len = cfg.get("maxSeqLen", 2048)
+    trust_remote_code = bool(cfg.get("trustRemoteCode", True))
+
+    os.makedirs(output_dir, exist_ok=True)
+    report(5)
+
+    # Resolve quantization scheme based on method
+    if method == "awq":
+        scheme = "W4A16"
+    elif method == "fp8":
+        scheme = "FP8"
+    elif method == "int8":
+        scheme = "W8A8"
+    else:
+        scheme = method
+
+    report(10)
+
+    device_map = "auto" if torch.cuda.is_available() else "cpu"
+
+    report(15)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    model = SparseAutoModelForCausalLM.from_pretrained(
+        model_path,
+        device_map=device_map,
+        torch_dtype="auto",
+        trust_remote_code=trust_remote_code
+    )
+    report(40)
+
+    dataset = None
+    if dataset_path and os.path.exists(dataset_path):
+        with open(dataset_path, "r", encoding="utf-8") as f:
+            data = [json.loads(line) for line in f]
+
+        dataset = []
+        for item in data[:num_samples]:
+            if "text" in item:
+                dataset.append(item["text"])
+            elif "instruction" in item and "output" in item:
+                dataset.append(f"{item['instruction']}\n\n{item['output']}")
+            else:
+                dataset.append(str(item))
+
+    report(50)
+
+    oneshot(
+        model=model,
+        tokenizer=tokenizer,
+        dataset=dataset if dataset else "open-platypus",
+        recipe=f"quantization: {scheme}",
+        num_samples=num_samples,
+        max_seq_len=max_seq_len,
+        output_dir=output_dir,
+    )
+    report(95)
+
+    model.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)
+
+    report(100)
+    print(f"__RESULT__:{output_dir}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(str(e), file=sys.stderr)
         sys.exit(1)
 
@@ -1478,6 +1578,7 @@ const { spawn } = require('child_process');
 const { getModels, getModelById, getSettings } = require('../services/state');
 const { downloadModel, deleteModel, getModelLogs, quantizeModel } = require('../services/models');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
+const { runBenchmark } = require('../services/benchmarks');
 const { CONFIG } = require('../config');
 
 const router = express.Router();
@@ -1517,8 +1618,8 @@ router.get('/:id/logs', async (req, res) => {
 
 router.post('/download', async (req, res) => {
   try {
-    const { repoId, name } = req.body || {};
-    res.json(await downloadModel({ repoId, name }));
+    const { repoId, name, tryQuantized } = req.body || {};
+    res.json(await downloadModel({ repoId, name, tryQuantized }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
@@ -1526,10 +1627,18 @@ router.post('/download', async (req, res) => {
 
 router.post('/quantize', async (req, res) => {
   try {
-    const { modelId, method, name } = req.body || {};
-    res.json(await quantizeModel({ modelId, method, name }));
+    const { modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize } = req.body || {};
+    res.json(await quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/benchmark', async (req, res) => {
+  try {
+    res.json(await runBenchmark(req.params.id));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
   }
 });
 
@@ -2027,7 +2136,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { CONFIG } = require('../config');
-const { startSyntheticGenJob } = require('../services/jobs');
+const { getJobById } = require('../services/jobs');
+const { previewSyntheticJsonlFile } = require('../services/synthetic-datasets');
 
 const router = express.Router();
 
@@ -2050,11 +2160,40 @@ router.post('/upload', upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
+
   res.json({
     ok: true,
     filename: req.file.originalname,
     path: req.file.path,
   });
+});
+
+router.get('/jobs/:jobId/preview', async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(50, Number(req.query.limit || 20)));
+    const job = await getJobById(req.params.jobId);
+
+    if (job.type !== 'synthetic-gen') {
+      return res.status(400).json({ error: 'Job is not a synthetic generation job' });
+    }
+
+    const finalPath = job.syntheticMeta?.finalPath;
+    if (!finalPath) {
+      return res.status(404).json({ error: 'Synthetic final file is not available yet' });
+    }
+
+    const preview = await previewSyntheticJsonlFile(finalPath, limit);
+
+    res.json({
+      ok: true,
+      jobId: job.id,
+      status: job.status,
+      progressStep: job.syntheticMeta?.progressStep || null,
+      ...preview,
+    });
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
 });
 
 module.exports = router;
@@ -2179,6 +2318,75 @@ main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+
+
+path: /services/benchmarks.js
+----------------------------------------
+const { getModels, getSettings } = require('./state');
+const { startRuntime, stopRuntime } = require('./runtime');
+const providers = require('./providers');
+const logger = require('../utils/logger');
+
+const BENCHMARK_PROMPTS = [
+  "Explain quantum computing in three sentences.",
+  "Write a short poem about a rainy day.",
+  "What are the benefits of using AWQ quantization?"
+];
+
+async function runBenchmark(modelId) {
+  const models = await getModels();
+  const model = models.find(m => m.id === modelId);
+  if (!model) throw new Error('Model not found');
+  if (model.status !== 'ready') throw new Error('Model is not ready');
+
+  logger.info('Starting benchmark for model', { modelId, name: model.name });
+
+  const runtime = await startRuntime({
+    model: model.path,
+    activeModelId: model.id,
+    activeModelName: model.name
+  });
+
+  const providerId = runtime.providerResolved || 'vllm';
+  const provider = providers.PROVIDERS[providerId];
+
+  const results = [];
+
+  for (const prompt of BENCHMARK_PROMPTS) {
+    const startTime = Date.now();
+    const response = await provider.chat(runtime, {
+      model: model.path,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 128,
+      temperature: 0,
+      stream: false
+    });
+
+    const data = await response.json();
+    const duration = (Date.now() - startTime) / 1000;
+    const tokens = data.usage?.completion_tokens || 0;
+    const tps = tokens / duration;
+
+    results.push({
+      prompt,
+      tokens,
+      duration,
+      tps
+    });
+  }
+
+  const avgTps = results.reduce((acc, r) => acc + r.tps, 0) / results.length;
+
+  return {
+    modelId,
+    modelName: model.name,
+    quantization: model.quantization || 'none',
+    avgTps,
+    details: results
+  };
+}
+
+module.exports = { runBenchmark };
 
 
 path: /services/datasets.js
@@ -2536,7 +2744,9 @@ const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const { registerLoraFromJob } = require('./loras');
 const { runSyntheticGenJob } = require('./synthetic');
-const { createDatasetFromJsonl } = require('./datasets');
+const {
+  importSyntheticDatasetFromJsonlFile,
+} = require('./synthetic-datasets');
 const logger = require('../utils/logger');
 const { clearGpuMemory } = require('../utils/gpu');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
@@ -2590,7 +2800,6 @@ async function getDatasetSnapshot(filePath) {
     const stats = fs.statSync(filePath);
 
     let hash = null;
-    // For files up to 500MB, we calculate a hash asynchronously
     if (stats.size < 500 * 1024 * 1024) {
       try {
         hash = await new Promise((resolve, reject) => {
@@ -2987,39 +3196,79 @@ async function startSyntheticGenJob(cfg) {
     paramsSnapshot: cfg,
     outputDir,
     logFile,
-    pid: process.pid, // We are running it in-process for now or it's managed by this job
+    pid: process.pid,
     error: null,
     tags: [],
     notes: '',
     artifacts: [],
     summaryMetrics: {},
+    syntheticMeta: {
+      progressStep: 'queued',
+      finalPath: null,
+      import: {
+        sampleLine: null,
+        sampleParsed: null,
+        invalidSamples: [],
+        detectedFormats: [],
+        totalLines: 0,
+        validCount: 0,
+        invalidCount: 0,
+      },
+    },
   };
 
   await upsertJob(job);
   emitEvent('job_updated', job);
 
-  // Background execution
   (async () => {
     try {
       const runningJob = await upsertJob({
         ...job,
         status: 'running',
         startedAt: nowIso(),
+        syntheticMeta: {
+          ...job.syntheticMeta,
+          progressStep: 'running',
+        },
       });
       emitEvent('job_updated', runningJob);
 
       const updateStatus = async (step) => {
         const current = await getJobById(jobId);
-        const updated = await upsertJob({ ...current, progressStep: step });
+        const updated = await upsertJob({
+          ...current,
+          syntheticMeta: {
+            ...(current.syntheticMeta || {}),
+            progressStep: step,
+          },
+        });
         emitEvent('job_updated', updated);
       };
 
       const result = await runSyntheticGenJob(runningJob, updateStatus);
 
-      // Register the resulting dataset
+      logger.info('Synthetic generation result ready for import', {
+        jobId,
+        finalPath: result.finalPath,
+      });
+
+      const beforeImport = await upsertJob({
+        ...(await getJobById(jobId)),
+        syntheticMeta: {
+          ...((await getJobById(jobId)).syntheticMeta || {}),
+          progressStep: 'importing',
+          finalPath: result.finalPath,
+        },
+      });
+      emitEvent('job_updated', beforeImport);
+
       const datasetName = cfg.name || `synthetic-${jobId}`;
-      const jsonlContent = fs.readFileSync(result.finalPath, 'utf8');
-      const dataset = await createDatasetFromJsonl(datasetName, jsonlContent);
+
+      const { dataset, importMeta } = await importSyntheticDatasetFromJsonlFile(
+        datasetName,
+        result.finalPath,
+        { sourcePath: result.finalPath }
+      );
 
       const finalJob = await upsertJob({
         ...(await getJobById(jobId)),
@@ -3029,17 +3278,52 @@ async function startSyntheticGenJob(cfg) {
         resultDatasetId: dataset.id,
         summaryMetrics: {
           rows: dataset.rows,
-        }
+          validCount: importMeta.validCount,
+          invalidCount: importMeta.invalidCount,
+        },
+        syntheticMeta: {
+          ...((await getJobById(jobId)).syntheticMeta || {}),
+          progressStep: 'completed',
+          finalPath: result.finalPath,
+          import: {
+            sampleLine: importMeta.sampleLine,
+            sampleParsed: importMeta.sampleParsed,
+            invalidSamples: importMeta.invalidSamples,
+            detectedFormats: importMeta.detectedFormats,
+            totalLines: importMeta.totalLines,
+            validCount: importMeta.validCount,
+            invalidCount: importMeta.invalidCount,
+          },
+        },
       });
+
       emitEvent('job_updated', finalJob);
     } catch (err) {
       logger.error('Synthetic generation job failed', { jobId, error: err.message });
+
+      const details = err.syntheticImportDetails || null;
+      const current = await getJobById(jobId);
+
       const failedJob = await upsertJob({
-        ...(await getJobById(jobId)),
+        ...current,
         status: 'failed',
         finishedAt: nowIso(),
         error: String(err.message || err),
+        syntheticMeta: {
+          ...(current.syntheticMeta || {}),
+          progressStep: 'failed',
+          import: {
+            sampleLine: details?.sampleLine || null,
+            sampleParsed: details?.sampleParsed || null,
+            invalidSamples: details?.invalidSamples || [],
+            detectedFormats: details?.detectedFormats || [],
+            totalLines: details?.totalLines || 0,
+            validCount: details?.validCount || 0,
+            invalidCount: details?.invalidCount || 0,
+          },
+        },
       });
+
       emitEvent('job_updated', failedJob);
     }
   })();
@@ -3468,10 +3752,15 @@ function safeSlug(value) {
     .slice(0, 80);
 }
 
-async function downloadModel({ repoId, name }) {
+async function downloadModel({ repoId, name, tryQuantized }) {
   if (!repoId) throw new Error('repoId is required');
 
-  const existing = (await getModels()).find((x) => x.repoId === repoId && x.status !== 'deleted');
+  let targetRepoId = repoId;
+  if (tryQuantized && !repoId.toLowerCase().endsWith('-awq')) {
+    targetRepoId = `${repoId}-AWQ`;
+  }
+
+  const existing = (await getModels()).find((x) => x.repoId === targetRepoId && x.status !== 'deleted');
   if (existing) return existing;
 
   const modelId = uid('model');
@@ -3611,19 +3900,25 @@ async function deleteModel(modelId) {
   return { ok: true };
 }
 
-async function quantizeModel({ modelId, method, name }) {
+async function quantizeModel({ modelId, method, name, datasetPath, numSamples, maxSeqLen, bits, groupSize }) {
   const source = await getModelById(modelId);
   if (!source) throw new Error('source model not found');
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
+  const existing = (await getModels()).find(m =>
+    m.sourceModelId === modelId && m.quantization === method && m.status === 'ready' && (!bits || m.bits === bits)
+  );
+  if (existing) return existing;
+
   const newId = uid('model');
-  const slug = safeSlug(name || `${source.name}-${method}`);
+  const methodLabel = method === 'awq' ? `awq-${bits || 4}bit` : method;
+  const slug = safeSlug(name || `${source.name}-${methodLabel}`);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${newId}`);
   const logFile = path.join(CONFIG.logsDir, `${newId}.log`);
 
   const item = await addModel({
     id: newId,
-    name: name || `${source.name} (${method})`,
+    name: name || `${source.name} (${methodLabel})`,
     repoId: `local/quantized/${source.id}`,
     createdAt: nowIso(),
     status: 'building',
@@ -3632,6 +3927,7 @@ async function quantizeModel({ modelId, method, name }) {
     pid: null,
     error: null,
     quantization: method,
+    bits: bits || (method === 'fp8' ? 8 : 4),
     sourceModelId: modelId,
     configPath: null,
   });
@@ -3642,24 +3938,32 @@ async function quantizeModel({ modelId, method, name }) {
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  let scriptFile = null;
-  let payload = null;
+  let scriptFile = 'quantize_llm_compressor.py';
+  let payload = {
+    modelPath: source.path,
+    outputDir: modelPath,
+    method,
+    datasetPath,
+    numSamples,
+    maxSeqLen,
+    bits,
+    groupSize,
+    trustRemoteCode: true,
+  };
 
-  if (method === 'awq') {
+  if (method === 'awq-legacy') {
     scriptFile = 'quantize_awq.py';
     payload = {
       modelPath: source.path,
       outputDir: modelPath,
       quantConfig: {
         zero_point: true,
-        q_group_size: 128,
-        w_bit: 4,
+        q_group_size: groupSize || 128,
+        w_bit: bits || 4,
         version: 'GEMM',
       },
       trustRemoteCode: true,
     };
-  } else {
-    throw new Error(`Quantization method ${method} not implemented in this version`);
   }
 
   const scriptPath = path.join(__dirname, '..', 'python', scriptFile);
@@ -4206,7 +4510,7 @@ class VllmProvider {
       if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
-      const tokens = data.usage?.completion_tokens || 0;
+      const tokens = (data.usage?.completion_tokens || data.usage?.total_tokens) || 0;
 
       if (tokens > 0 && !content.trim()) {
         return { ok: false, error: 'Empty response despite token generation' };
@@ -4441,13 +4745,16 @@ async function startRuntime(params = {}) {
   }
 
   const modelCfg = resolveModelConfig(requestedModel);
+  const { getGpuInfo } = require('../utils/gpu_info');
+  const gpuInfo = await getGpuInfo();
+  const numGpus = gpuInfo.length || 1;
 
   const merged = {
     model: requestedModel,
     port: Number(params.port ?? inf.port ?? CONFIG.vllmPort),
     maxModelLen: resolveMaxModelLen(params, inf, modelCfg.detected),
     gpuMemoryUtilization: Number(params.gpuMemoryUtilization ?? inf.gpuMemoryUtilization ?? 0.9),
-    tensorParallelSize: Number(params.tensorParallelSize ?? inf.tensorParallelSize ?? 1),
+    tensorParallelSize: Number(params.tensorParallelSize ?? inf.tensorParallelSize ?? numGpus),
     maxNumSeqs: Number(params.maxNumSeqs ?? inf.maxNumSeqs ?? 256),
     swapSpace: Number(params.swapSpace ?? inf.swapSpace ?? 4),
     quantization: resolveQuantization(params, inf, modelCfg.detected),
@@ -4552,6 +4859,14 @@ async function startRuntime(params = {}) {
     await provider.stop({ pid }).catch(() => {});
     await unregisterManagedProcess(pid).catch(() => {});
     await removeFile(CONFIG.vllmPidFile).catch(() => {});
+
+    const isOom = String(err).includes('CUDA out of memory') || String(err).includes('Out of memory');
+    if (isOom && merged.maxModelLen > 2048) {
+      return await startRuntime({ ...params, maxModelLen: 2048 });
+    } else if (isOom && merged.gpuMemoryUtilization > 0.7) {
+      return await startRuntime({ ...params, gpuMemoryUtilization: 0.7 });
+    }
+
     throw err;
   }
 
@@ -5172,6 +5487,338 @@ module.exports = {
 };
 
 
+path: /services/synthetic-datasets.js
+----------------------------------------
+const fs = require('fs');
+const fsp = require('fs/promises');
+const path = require('path');
+const { CONFIG } = require('../config');
+const { uid, nowIso } = require('../utils/ids');
+const { addDataset } = require('./state');
+const logger = require('../utils/logger');
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function asMessages(userText, assistantText) {
+  const user = String(userText || '').trim();
+  const assistant = String(assistantText || '').trim();
+
+  if (!user) throw new Error('user content is empty');
+  if (!assistant) throw new Error('assistant content is empty');
+
+  return {
+    messages: [
+      { role: 'user', content: user },
+      { role: 'assistant', content: assistant },
+    ],
+  };
+}
+
+function tryNormalizeSyntheticRecord(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    throw new Error('Row is not a JSON object');
+  }
+
+  if (Array.isArray(item.messages)) {
+    if (item.messages.length < 2) {
+      throw new Error('messages must contain at least 2 items');
+    }
+
+    for (const msg of item.messages) {
+      if (!msg || typeof msg.role !== 'string' || typeof msg.content !== 'string') {
+        throw new Error('each message must have string role and content');
+      }
+      if (!msg.role.trim()) throw new Error('message.role cannot be empty');
+      if (!msg.content.trim()) throw new Error('message.content cannot be empty');
+    }
+
+    return {
+      normalized: { messages: item.messages },
+      sourceFormat: 'messages',
+    };
+  }
+
+  if (isNonEmptyString(item.instruction) && isNonEmptyString(item.output)) {
+    return {
+      normalized: asMessages(item.instruction, item.output),
+      sourceFormat: 'instruction-output',
+    };
+  }
+
+  if (isNonEmptyString(item.prompt) && isNonEmptyString(item.completion)) {
+    return {
+      normalized: asMessages(item.prompt, item.completion),
+      sourceFormat: 'prompt-completion',
+    };
+  }
+
+  if (isNonEmptyString(item.question) && isNonEmptyString(item.answer)) {
+    return {
+      normalized: asMessages(item.question, item.answer),
+      sourceFormat: 'question-answer',
+    };
+  }
+
+  if (isNonEmptyString(item.input) && isNonEmptyString(item.output)) {
+    return {
+      normalized: asMessages(item.input, item.output),
+      sourceFormat: 'input-output',
+    };
+  }
+
+  if (isNonEmptyString(item.context) && isNonEmptyString(item.response)) {
+    return {
+      normalized: asMessages(item.context, item.response),
+      sourceFormat: 'context-response',
+    };
+  }
+
+  if (isNonEmptyString(item.instruction) && isNonEmptyString(item.response)) {
+    return {
+      normalized: asMessages(item.instruction, item.response),
+      sourceFormat: 'instruction-response',
+    };
+  }
+
+  if (isNonEmptyString(item.question) && isNonEmptyString(item.response)) {
+    return {
+      normalized: asMessages(item.question, item.response),
+      sourceFormat: 'question-response',
+    };
+  }
+
+  if (isNonEmptyString(item.prompt) && isNonEmptyString(item.answer)) {
+    return {
+      normalized: asMessages(item.prompt, item.answer),
+      sourceFormat: 'prompt-answer',
+    };
+  }
+
+  if (isNonEmptyString(item.input) && isNonEmptyString(item.answer)) {
+    return {
+      normalized: asMessages(item.input, item.answer),
+      sourceFormat: 'input-answer',
+    };
+  }
+
+  if (
+    item.record &&
+    typeof item.record === 'object' &&
+    isNonEmptyString(item.record.question) &&
+    isNonEmptyString(item.record.answer)
+  ) {
+    return {
+      normalized: asMessages(item.record.question, item.record.answer),
+      sourceFormat: 'record.question-answer',
+    };
+  }
+
+  const possibleUserKeys = ['user', 'query', 'task', 'request'];
+  const possibleAssistantKeys = ['assistant', 'result', 'completion', 'generated_answer'];
+
+  const userKey = possibleUserKeys.find((k) => isNonEmptyString(item[k]));
+  const assistantKey = possibleAssistantKeys.find((k) => isNonEmptyString(item[k]));
+
+  if (userKey && assistantKey) {
+    return {
+      normalized: asMessages(item[userKey], item[assistantKey]),
+      sourceFormat: `${userKey}-${assistantKey}`,
+    };
+  }
+
+  throw new Error(
+    `Unsupported synthetic row format. Keys: ${Object.keys(item).sort().join(', ') || '(none)'}`
+  );
+}
+
+function parseSyntheticJsonl(jsonl) {
+  const lines = String(jsonl || '')
+    .split('\n')
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+  const valid = [];
+  const invalid = [];
+  const formats = new Map();
+
+  lines.forEach((line, index) => {
+    try {
+      const parsed = JSON.parse(line);
+      const { normalized, sourceFormat } = tryNormalizeSyntheticRecord(parsed);
+
+      formats.set(sourceFormat, (formats.get(sourceFormat) || 0) + 1);
+
+      valid.push({
+        line: index + 1,
+        original: parsed,
+        normalized,
+        sourceFormat,
+      });
+    } catch (err) {
+      invalid.push({
+        line: index + 1,
+        error: String(err.message || err),
+        raw: line,
+      });
+    }
+  });
+
+  const detectedFormats = [...formats.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([name]) => name);
+
+  const sampleLine = lines[0] || '';
+  let sampleParsed = null;
+  try {
+    sampleParsed = sampleLine ? JSON.parse(sampleLine) : null;
+  } catch {
+    sampleParsed = sampleLine || null;
+  }
+
+  return {
+    totalLines: lines.length,
+    validCount: valid.length,
+    invalidCount: invalid.length,
+    valid,
+    invalid,
+    invalidSamples: invalid.slice(0, 5),
+    detectedFormats,
+    detectedFormat: detectedFormats[0] || 'unknown',
+    sampleLine,
+    sampleParsed,
+  };
+}
+
+async function importSyntheticDatasetFromJsonl(name, jsonl, options = {}) {
+  const parsed = parseSyntheticJsonl(jsonl);
+
+  logger.info('Synthetic dataset import sample', {
+    datasetName: name,
+    sourcePath: options.sourcePath || null,
+    sampleLine: parsed.sampleLine.slice(0, 2000),
+    detectedFormats: parsed.detectedFormats,
+  });
+
+  if (!parsed.validCount) {
+    const firstError = parsed.invalid[0];
+    const message =
+      `Synthetic dataset import failed: 0 valid rows. ` +
+      `First error: ${firstError?.error || 'unknown error'}`;
+
+    const error = new Error(message);
+    error.syntheticImportDetails = {
+      sampleLine: parsed.sampleLine.slice(0, 2000),
+      sampleParsed: parsed.sampleParsed,
+      invalidSamples: parsed.invalidSamples,
+      detectedFormats: parsed.detectedFormats,
+      totalLines: parsed.totalLines,
+      validCount: parsed.validCount,
+      invalidCount: parsed.invalidCount,
+    };
+    throw error;
+  }
+
+  const datasetId = uid('ds');
+  const rawPath = path.join(CONFIG.rawDatasetsDir, `${datasetId}.jsonl`);
+  const processedPath = path.join(CONFIG.datasetsDir, `${datasetId}.jsonl`);
+
+  await fsp.writeFile(rawPath, jsonl, 'utf8');
+
+  const normalizedLines = parsed.valid.map((x) => JSON.stringify(x.normalized));
+  await fsp.writeFile(processedPath, normalizedLines.join('\n') + '\n', 'utf8');
+
+  const meta = {
+    id: datasetId,
+    name,
+    createdAt: nowIso(),
+    format: 'chat-jsonl',
+    sourceFormat: `synthetic:${parsed.detectedFormat}`,
+    sourceFormats: parsed.detectedFormats,
+    rawPath,
+    processedPath,
+    rows: normalizedLines.length,
+    invalidRows: parsed.invalidCount,
+    syntheticImport: true,
+    syntheticSourcePath: options.sourcePath || null,
+    syntheticSampleRow: parsed.sampleParsed,
+  };
+
+  logger.info('Synthetic dataset imported', {
+    datasetId,
+    name,
+    rows: meta.rows,
+    invalidRows: meta.invalidRows,
+    detectedFormats: parsed.detectedFormats,
+  });
+
+  return {
+    dataset: await addDataset(meta),
+    importMeta: {
+      sampleLine: parsed.sampleLine.slice(0, 2000),
+      sampleParsed: parsed.sampleParsed,
+      invalidSamples: parsed.invalidSamples,
+      detectedFormats: parsed.detectedFormats,
+      totalLines: parsed.totalLines,
+      validCount: parsed.validCount,
+      invalidCount: parsed.invalidCount,
+    },
+  };
+}
+
+async function importSyntheticDatasetFromJsonlFile(name, filePath, options = {}) {
+  const datasetName = String(name || '').trim();
+  if (!datasetName) {
+    throw new Error('Dataset name is required');
+  }
+
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error(`Synthetic dataset file not found: ${filePath}`);
+  }
+
+  const jsonl = await fsp.readFile(filePath, 'utf8');
+  return importSyntheticDatasetFromJsonl(datasetName, jsonl, {
+    sourcePath: filePath,
+    ...options,
+  });
+}
+
+async function previewSyntheticJsonlFile(filePath, limit = 20) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error(`Synthetic dataset file not found: ${filePath}`);
+  }
+
+  const jsonl = await fsp.readFile(filePath, 'utf8');
+  const parsed = parseSyntheticJsonl(jsonl);
+
+  return {
+    path: filePath,
+    totalLines: parsed.totalLines,
+    validCount: parsed.validCount,
+    invalidCount: parsed.invalidCount,
+    detectedFormats: parsed.detectedFormats,
+    sampleLine: parsed.sampleLine.slice(0, 2000),
+    sampleParsed: parsed.sampleParsed,
+    preview: parsed.valid.slice(0, limit).map((x) => ({
+      line: x.line,
+      sourceFormat: x.sourceFormat,
+      original: x.original,
+      normalized: x.normalized,
+    })),
+    invalidSamples: parsed.invalidSamples,
+  };
+}
+
+module.exports = {
+  tryNormalizeSyntheticRecord,
+  parseSyntheticJsonl,
+  importSyntheticDatasetFromJsonl,
+  importSyntheticDatasetFromJsonlFile,
+  previewSyntheticJsonlFile,
+};
+
+
 path: /services/synthetic.js
 ----------------------------------------
 const fs = require('fs');
@@ -5356,6 +6003,26 @@ module.exports = {
   readText,
   removeFile,
 };
+
+
+path: /utils/gpu_info.js
+----------------------------------------
+const si = require('systeminformation');
+
+async function getGpuInfo() {
+  try {
+    const data = await si.graphics();
+    return data.controllers.map(g => ({
+      model: g.model,
+      vram: Number(g.vram) || 0,
+      vendor: g.vendor
+    }));
+  } catch {
+    return [];
+  }
+}
+
+module.exports = { getGpuInfo };
 
 
 path: /utils/gpu.js
@@ -5923,8 +6590,8 @@ module.exports = {
 
 
 === SUMMARY ===
-included: 40
+included: 44
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 154890
+totalBytes(approx): 173503

@@ -34,6 +34,18 @@ const CONFIG = {
   defaultBaseModel: process.env.DEFAULT_BASE_MODEL || 'Qwen/Qwen2.5-7B-Instruct',
   maxJsonMb: toNumber(process.env.MAX_JSON_MB, 25),
   webUiOrigin: normalizeOrigin(process.env.WEB_UI_ORIGIN || '*'),
+
+  // Явный путь до synthetic-data-kit CLI.
+  // Примеры:
+  // SYNTHETIC_DATA_KIT_BIN=/usr/local/bin/synthetic-data-kit
+  // SYNTHETIC_DATA_KIT_BIN=/opt/deepseek-workspace/environments/ml_env/bin/synthetic-data-kit
+  syntheticDataKitBin:
+    process.env.SYNTHETIC_DATA_KIT_BIN ||
+    path.join(
+      process.env.ML_ENV || '/opt/deepseek-workspace/environments/ml_env',
+      'bin',
+      'synthetic-data-kit',
+    ),
 };
 
 CONFIG.stateDir = path.join(CONFIG.workspace, '.llm-lab');
