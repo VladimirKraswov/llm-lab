@@ -175,7 +175,7 @@ async function quantizeModel({ modelId, method, name, datasetPath, numSamples, m
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
   const requestedMethod = method;
-  const effectiveMethod = requestedMethod === 'awq' ? 'awq-legacy' : requestedMethod;
+  const effectiveMethod = requestedMethod;
 
   const existing = (await getModels()).find(m =>
     m.sourceModelId === modelId &&
