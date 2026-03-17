@@ -104,8 +104,48 @@ export type ModelItem = {
   vramEstimate?: string;
   runner?: string;
   envName?: string;
-
   quantizationCapability?: QuantizationCapability;
+};
+
+export type MergeDeviceStrategy = 'cpu' | 'cuda' | 'auto';
+export type MergeDtype = 'auto' | 'float16' | 'bfloat16' | 'float32';
+
+export type MergeBuildOptions = {
+  deviceStrategy: MergeDeviceStrategy;
+  cudaDevice?: number;
+  dtype?: MergeDtype;
+  lowCpuMemUsage?: boolean;
+  safeSerialization?: boolean;
+  overwriteOutput?: boolean;
+  maxShardSize?: string;
+  offloadFolderName?: string;
+  clearGpuBeforeMerge?: boolean;
+  trustRemoteCode?: boolean;
+  registerAsModel?: boolean;
+  customOutputName?: string;
+};
+
+export type MergeOptionsInfo = {
+  deviceStrategies: MergeDeviceStrategy[];
+  dtypes: MergeDtype[];
+  defaultOptions: {
+    deviceStrategy: MergeDeviceStrategy;
+    cudaDevice: number;
+    dtype: MergeDtype;
+    lowCpuMemUsage: boolean;
+    safeSerialization: boolean;
+    overwriteOutput: boolean;
+    maxShardSize: string;
+    offloadFolderName: string;
+    clearGpuBeforeMerge: boolean;
+    trustRemoteCode: boolean;
+    registerAsModel: boolean;
+  };
+  gpus: Array<{
+    model: string;
+    vram: number;
+    vendor: string;
+  }>;
 };
 
 export type LoraItem = {
@@ -122,6 +162,12 @@ export type LoraItem = {
   status: string;
   mergeStatus: string;
   mergeProgress?: number;
+  mergePid?: number | null;
+  mergeLogFile?: string | null;
+  mergeOptions?: MergeBuildOptions | null;
+  mergeArtifacts?: Array<{ name: string; path: string; size: number }>;
+  mergedSize?: number;
+  mergedSizeHuman?: string | null;
   packageStatus: string;
   error: string | null;
   size?: number;
@@ -449,6 +495,9 @@ export const api = {
 
   getLoras: () => request<LoraItem[]>('/loras'),
   getLora: (id: string) => request<LoraItem>(`/loras/${id}`),
+  getLoraMergeOptions: () => request<MergeOptionsInfo>('/loras/merge-options'),
+  getLoraMergeLogs: (id: string, tail = 200) =>
+    request<{ id: string; logFile: string | null; content: string }>(`/loras/${id}/merge-logs?tail=${tail}`),
   registerLoraFromJob: (payload: { jobId: string; name?: string }) =>
     request<LoraItem>('/loras/from-job', {
       method: 'POST',
@@ -459,8 +508,13 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
-  buildMergedLora: (id: string) =>
-    request<LoraItem>(`/loras/${id}/build-merged`, {
+  buildMergedLora: (id: string, payload?: Partial<MergeBuildOptions>) =>
+    request<{ ok: boolean; lora: LoraItem }>(`/loras/${id}/build-merged`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  cancelMergedLora: (id: string) =>
+    request<{ ok: boolean; lora: LoraItem }>(`/loras/${id}/cancel-merge`, {
       method: 'POST',
       body: JSON.stringify({}),
     }),

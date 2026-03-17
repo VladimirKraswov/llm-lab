@@ -1,6 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const { CONFIG } = require('../config');
 const { uid, nowIso } = require('../utils/ids');
 const {
@@ -12,15 +11,94 @@ const {
   upsertLora,
   addModel,
 } = require('./state');
-const { isPidRunning } = require('../utils/proc');
+const { isPidRunning, killProcessGroup } = require('../utils/proc');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
-const { getDirSize, formatSize } = require('../utils/model-meta');
+const { getDirSize, formatSize, getModelMetadata } = require('../utils/model-meta');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
 const {
   registerManagedProcess,
   unregisterManagedProcess,
 } = require('../utils/managed-processes');
+const { clearGpuMemory } = require('../utils/gpu');
+const { readText } = require('../utils/fs');
+const { getGpuInfo } = require('../utils/gpu_info');
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeDtype(value) {
+  const v = String(value || 'auto').trim().toLowerCase();
+  if (['auto', 'float16', 'half', 'fp16', 'bfloat16', 'bf16', 'float32', 'float', 'fp32'].includes(v)) {
+    if (v === 'half' || v === 'fp16') return 'float16';
+    if (v === 'bf16') return 'bfloat16';
+    if (v === 'float' || v === 'fp32') return 'float32';
+    return v;
+  }
+  throw new Error(`Unsupported dtype: ${value}`);
+}
+
+function normalizeDeviceStrategy(value) {
+  const v = String(value || 'cpu').trim().toLowerCase();
+  if (!['cpu', 'cuda', 'auto'].includes(v)) {
+    throw new Error(`Unsupported deviceStrategy: ${value}`);
+  }
+  return v;
+}
+
+function validateMergeOptions(options = {}) {
+  const deviceStrategy = normalizeDeviceStrategy(options.deviceStrategy || 'cpu');
+  const dtype = normalizeDtype(options.dtype || 'auto');
+
+  const cudaDevice = options.cudaDevice == null ? 0 : Number(options.cudaDevice);
+  if (!Number.isInteger(cudaDevice) || cudaDevice < 0) {
+    throw new Error('cudaDevice must be an integer >= 0');
+  }
+
+  const maxShardSize = String(options.maxShardSize || '5GB').trim();
+  if (!maxShardSize) {
+    throw new Error('maxShardSize is required');
+  }
+
+  return {
+    deviceStrategy,
+    cudaDevice,
+    dtype,
+    lowCpuMemUsage: options.lowCpuMemUsage !== false,
+    safeSerialization: options.safeSerialization !== false,
+    overwriteOutput: options.overwriteOutput === true,
+    maxShardSize,
+    offloadFolderName: String(options.offloadFolderName || '_offload').trim() || '_offload',
+    clearGpuBeforeMerge: options.clearGpuBeforeMerge === true,
+    trustRemoteCode: options.trustRemoteCode === true,
+    registerAsModel: options.registerAsModel !== false,
+    customOutputName: options.customOutputName ? String(options.customOutputName).trim() : '',
+  };
+}
+
+function buildMergedPath(item, mergeOptions) {
+  const custom = mergeOptions.customOutputName;
+  if (custom) {
+    const safe = custom.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+    return path.join(CONFIG.mergedModelsDir, safe || `${item.id}-merged`);
+  }
+  return path.join(CONFIG.mergedModelsDir, `${item.id}-merged`);
+}
+
+function getArtifacts(dirPath) {
+  if (!dirPath || !fs.existsSync(dirPath)) return [];
+  const names = fs.readdirSync(dirPath);
+  return names.map((name) => {
+    const full = path.join(dirPath, name);
+    const stat = fs.statSync(full);
+    return {
+      name,
+      path: full,
+      size: stat.size,
+    };
+  });
+}
 
 async function registerLoraFromJob(jobId, customName = null) {
   const existing = await getLoraByJobId(jobId);
@@ -55,6 +133,9 @@ async function registerLoraFromJob(jobId, customName = null) {
     packageStatus: 'not_built',
     error: null,
     configPath: null,
+    mergeLogFile: null,
+    mergeOptions: null,
+    mergeArtifacts: [],
   });
 
   const size = fs.existsSync(item.adapterPath) ? getDirSize(item.adapterPath) : 0;
@@ -66,16 +147,47 @@ async function registerLoraFromJob(jobId, customName = null) {
   return final;
 }
 
-async function buildMergedLora(loraId) {
+async function getMergeOptionsInfo() {
+  const gpus = await getGpuInfo();
+  return {
+    deviceStrategies: ['cpu', 'cuda', 'auto'],
+    dtypes: ['auto', 'float16', 'bfloat16', 'float32'],
+    defaultOptions: {
+      deviceStrategy: 'cpu',
+      cudaDevice: 0,
+      dtype: 'float16',
+      lowCpuMemUsage: true,
+      safeSerialization: true,
+      overwriteOutput: false,
+      maxShardSize: '5GB',
+      offloadFolderName: '_offload',
+      clearGpuBeforeMerge: false,
+      trustRemoteCode: false,
+      registerAsModel: true,
+    },
+    gpus,
+  };
+}
+
+async function buildMergedLora(loraId, options = {}) {
   const item = await getLoraById(loraId);
   if (!item) throw new Error('lora not found');
+
   if (item.mergeStatus === 'building' && item.mergePid && isPidRunning(item.mergePid)) {
     return item;
   }
 
-  const mergedPath = path.join(CONFIG.mergedModelsDir, `${item.id}-merged`);
+  const mergeOptions = validateMergeOptions(options);
+  const mergedPath = buildMergedPath(item, mergeOptions);
+  const mergeLogFile = path.join(CONFIG.logsDir, `${item.id}-merge.log`);
+
   fs.mkdirSync(CONFIG.mergedModelsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+
+  if (mergeOptions.clearGpuBeforeMerge && mergeOptions.deviceStrategy !== 'cpu') {
+    await clearGpuMemory({ types: ['runtime'] });
+  }
 
   const next0 = await upsertLora({
     ...item,
@@ -85,6 +197,9 @@ async function buildMergedLora(loraId) {
     mergePid: null,
     error: null,
     configPath: null,
+    mergeLogFile,
+    mergeOptions,
+    mergeArtifacts: [],
   });
   emitEvent('lora_updated', next0);
 
@@ -92,7 +207,10 @@ async function buildMergedLora(loraId) {
   const payload = {
     adapterPath: item.adapterPath,
     outputDir: mergedPath,
+    ...mergeOptions,
   };
+
+  const outFd = fs.openSync(mergeLogFile, 'a');
 
   const { child, configPath } = await spawnPythonJsonScript({
     pythonBin: CONFIG.pythonBin,
@@ -100,7 +218,7 @@ async function buildMergedLora(loraId) {
     payload,
     cwd: CONFIG.workspace,
     detached: true,
-    stdio: 'pipe',
+    stdio: ['ignore', 'pipe', outFd],
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
     configDir: CONFIG.trainingConfigsDir,
     configPrefix: `merge-${loraId}`,
@@ -117,6 +235,8 @@ async function buildMergedLora(loraId) {
       loraId,
       mergedPath,
       adapterPath: item.adapterPath,
+      mergeLogFile,
+      mergeOptions,
     },
   });
 
@@ -128,19 +248,27 @@ async function buildMergedLora(loraId) {
   emitEvent('lora_updated', building);
 
   let stderr = '';
+  let stdoutBuffer = '';
 
   child.stderr.on('data', (data) => {
     stderr += data.toString();
   });
 
   child.stdout.on('data', async (data) => {
-    const lines = data.toString().split('\n');
+    const text = data.toString();
+    stdoutBuffer += text;
+
+    try {
+      fs.appendFileSync(mergeLogFile, text, 'utf8');
+    } catch {}
+
+    const lines = text.split('\n');
     for (const line of lines) {
       if (line.startsWith('__PROGRESS__:')) {
         const p = parseInt(line.split(':')[1], 10);
         const cur = await getLoraById(loraId);
         if (cur) {
-          const next = await upsertLora({ ...cur, mergeProgress: p });
+          const next = await upsertLora({ ...cur, mergeProgress: Number.isFinite(p) ? p : cur.mergeProgress });
           emitEvent('lora_updated', next);
         }
       }
@@ -160,6 +288,8 @@ async function buildMergedLora(loraId) {
     if (!current) return;
 
     const isOk = code === 0;
+    const artifacts = isOk ? getArtifacts(mergedPath) : current.mergeArtifacts || [];
+    const meta = isOk ? getModelMetadata(mergedPath) : {};
 
     const next = await upsertLora({
       ...current,
@@ -169,12 +299,13 @@ async function buildMergedLora(loraId) {
       mergedPath: isOk ? mergedPath : current.mergedPath,
       error: isOk ? null : (stderr.trim() || `exit code ${code}`),
       configPath,
+      mergeArtifacts: artifacts,
+      mergedSize: meta.size || 0,
+      mergedSizeHuman: meta.sizeHuman || null,
     });
     emitEvent('lora_updated', next);
 
-    if (isOk) {
-      logger.info(`LoRA merge completed: ${loraId}`, { mergedPath, configPath });
-
+    if (isOk && mergeOptions.registerAsModel) {
       try {
         const modelId = uid('model');
         await addModel({
@@ -187,6 +318,7 @@ async function buildMergedLora(loraId) {
           error: null,
           fromLoraId: loraId,
           configPath,
+          ...meta,
         });
         logger.info(`Merged model added to library`, { modelId, loraId, configPath });
       } catch (err) {
@@ -196,6 +328,10 @@ async function buildMergedLora(loraId) {
           configPath,
         });
       }
+    }
+
+    if (isOk) {
+      logger.info(`LoRA merge completed: ${loraId}`, { mergedPath, configPath });
     } else {
       logger.error(`LoRA merge failed: ${loraId}`, {
         error: next.error,
@@ -229,8 +365,26 @@ async function buildMergedLora(loraId) {
   return building;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function cancelMergedLoraBuild(loraId) {
+  const item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+
+  if (!item.mergePid || !isPidRunning(item.mergePid)) {
+    throw new Error('merge is not running');
+  }
+
+  await killProcessGroup(item.mergePid, 'SIGKILL');
+  await unregisterManagedProcess(item.mergePid);
+
+  const next = await upsertLora({
+    ...item,
+    mergeStatus: 'failed',
+    mergePid: null,
+    error: 'Merge cancelled by user',
+  });
+
+  emitEvent('lora_updated', next);
+  return { ok: true, lora: next };
 }
 
 async function ensureMergedLora(loraId) {
@@ -253,6 +407,29 @@ async function ensureMergedLora(loraId) {
 
   if (item.mergeStatus === 'ready') return item;
   throw new Error(item.error || 'LoRA merge failed');
+}
+
+async function getMergeLogs(loraId, tail = 200) {
+  const item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+
+  const logFile = item.mergeLogFile;
+  if (!logFile || !fs.existsSync(logFile)) {
+    return {
+      id: item.id,
+      logFile: null,
+      content: '',
+    };
+  }
+
+  const text = await readText(logFile, '');
+  const lines = text.split('\n');
+
+  return {
+    id: item.id,
+    logFile,
+    content: lines.slice(-tail).join('\n'),
+  };
 }
 
 async function packageMergedLora(loraId) {
@@ -279,6 +456,7 @@ async function packageMergedLora(loraId) {
   });
   emitEvent('lora_updated', next0);
 
+  const { spawn } = require('child_process');
   const child = spawn(
     'tar',
     [
@@ -334,29 +512,10 @@ async function packageMergedLora(loraId) {
       error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
     });
     emitEvent('lora_updated', next);
-
-    if (code === 0) {
-      logger.info('LoRA package completed', {
-        loraId,
-        archivePath,
-      });
-    } else {
-      logger.error('LoRA package failed', {
-        loraId,
-        archivePath,
-        error: next.error,
-      });
-    }
   });
 
   child.on('error', async (err) => {
     await unregisterManagedProcess(child.pid);
-
-    logger.error('LoRA package process error', {
-      loraId,
-      archivePath,
-      error: String(err.message || err),
-    });
 
     const current = await getLoraById(loraId);
     if (!current) return;
@@ -378,4 +537,8 @@ module.exports = {
   buildMergedLora,
   ensureMergedLora,
   packageMergedLora,
+  getMergeOptionsInfo,
+  getMergeLogs,
+  cancelMergedLoraBuild,
+  validateMergeOptions,
 };

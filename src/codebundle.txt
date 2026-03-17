@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-16T21:25:24.982Z
+generated: 2026-03-17T08:32:39.500Z
 
 
 
@@ -572,10 +572,33 @@ def build_local_text_dataset(dataset_path: str | None, num_samples: int):
     return rows if rows else "open_platypus"
 
 
-def resolve_scheme(bits: int, sym: bool):
+def validate_awq_params(bits: int, group_size: int):
     if bits != 4:
         raise ValueError("Current AWQ implementation supports 4-bit only")
-    return "W4A16" if sym else "W4A16_ASYM"
+    if group_size <= 0:
+        raise ValueError("group_size must be > 0")
+
+
+def build_awq_recipe(bits: int, group_size: int, sym: bool):
+    return [
+        AWQModifier(
+            ignore=["lm_head"],
+            config_groups={
+                "group_0": {
+                    "targets": ["Linear"],
+                    "weights": {
+                        "num_bits": bits,
+                        "type": "int",
+                        "symmetric": sym,
+                        "strategy": "group",
+                        "group_size": group_size,
+                    },
+                    "input_activations": None,
+                    "output_activations": None,
+                }
+            },
+        )
+    ]
 
 
 def main():
@@ -597,7 +620,11 @@ def main():
     trust_remote_code = bool(cfg.get("trustRemoteCode", True))
 
     if method != "awq":
-        raise ValueError(f"quantize_llm_compressor.py currently supports only method='awq', got: {method}")
+        raise ValueError(
+            f"quantize_llm_compressor.py currently supports only method='awq', got: {method}"
+        )
+
+    validate_awq_params(bits, group_size)
 
     os.makedirs(output_dir, exist_ok=True)
     report(5)
@@ -613,7 +640,7 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype="auto",
+        dtype="auto",
         trust_remote_code=trust_remote_code,
     )
 
@@ -623,16 +650,7 @@ def main():
 
     report(50)
 
-    scheme = resolve_scheme(bits, sym)
-
-    recipe = [
-        AWQModifier(
-            targets=["Linear"],
-            ignore=["lm_head"],
-            scheme=scheme,
-            group_size=group_size,
-        )
-    ]
+    recipe = build_awq_recipe(bits=bits, group_size=group_size, sym=sym)
 
     report(65)
 
@@ -947,6 +965,9 @@ import sys
 import time
 from datetime import timedelta
 
+# Важно: ставим до инициализации CUDA / загрузки модели
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import torch
 import unsloth
 from datasets import load_dataset
@@ -962,9 +983,12 @@ def main():
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         cfg = json.load(f)
 
-    os.makedirs(cfg["outputDir"], exist_ok=True)
+    output_dir = cfg["outputDir"]
+    os.makedirs(output_dir, exist_ok=True)
 
+    qlora_cfg = cfg.get("qlora", {}) or {}
     wandb_cfg = cfg.get("wandb", {}) or {}
+
     wandb_enabled = bool(wandb_cfg.get("enabled")) and wandb_cfg.get("mode", "online") != "disabled"
 
     if wandb_cfg.get("mode") == "offline":
@@ -975,42 +999,63 @@ def main():
 
     if wandb_enabled:
         import wandb
+
         if wandb_cfg.get("apiKey"):
             wandb.login(key=wandb_cfg["apiKey"])
+
         wandb.init(
             project=wandb_cfg.get("project", "llm-lab"),
             entity=wandb_cfg.get("entity"),
-            name=os.path.basename(cfg["outputDir"]),
+            name=os.path.basename(output_dir),
             config=cfg,
-            dir=cfg["outputDir"],
+            dir=output_dir,
             mode=wandb_cfg.get("mode", "online"),
         )
 
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is not available, but this script expects GPU training.")
+
+    gpu_name = torch.cuda.get_device_name(0)
+    total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    print(f"Using GPU: {gpu_name} ({total_vram_gb:.2f} GB VRAM)")
+
+    use_bf16 = torch.cuda.is_bf16_supported()
+
+    # Делай trust_remote_code управляемым через config:
+    # "trustRemoteCode": false
+    trust_remote_code = bool(cfg.get("trustRemoteCode", False))
+
+    # Ключевой фикс:
+    # 1) для 4bit НЕ даём auto + cpu offload
+    # 2) грузим всё на единственную GPU
+    # 3) не задаём max_memory с CPU, чтобы transformers не раскидывал модули на CPU/disk
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=cfg["baseModel"],
-        max_seq_length=cfg["qlora"]["maxSeqLength"],
-        load_in_4bit=cfg["qlora"]["loadIn4bit"],
-        trust_remote_code=True,
+        max_seq_length=qlora_cfg["maxSeqLength"],
+        dtype=None,
+        load_in_4bit=bool(qlora_cfg.get("loadIn4bit", True)),
+        trust_remote_code=trust_remote_code,
+        device_map={"": 0},
     )
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    use_lora = cfg["qlora"].get("useLora", True)
+    if getattr(model.config, "pad_token_id", None) is None and tokenizer.pad_token_id is not None:
+        model.config.pad_token_id = tokenizer.pad_token_id
+
+    use_lora = bool(qlora_cfg.get("useLora", True))
 
     if use_lora:
         model = FastLanguageModel.get_peft_model(
             model,
-            r=cfg["qlora"]["loraR"],
-            target_modules=cfg["qlora"]["targetModules"],
-            lora_alpha=cfg["qlora"]["loraAlpha"],
-            lora_dropout=cfg["qlora"]["loraDropout"],
+            r=qlora_cfg["loraR"],
+            target_modules=qlora_cfg["targetModules"],
+            lora_alpha=qlora_cfg["loraAlpha"],
+            lora_dropout=qlora_cfg["loraDropout"],
             bias="none",
             use_gradient_checkpointing="unsloth",
         )
-
-    if torch.cuda.is_available():
-        model = model.to("cuda")
 
     dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
 
@@ -1018,6 +1063,7 @@ def main():
         messages = row.get("messages", [])
         if not isinstance(messages, list) or len(messages) < 2:
             return {"text": ""}
+
         text = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -1025,21 +1071,19 @@ def main():
         )
         return {"text": text}
 
-    dataset = dataset.map(format_row)
-    dataset = dataset.filter(lambda x: bool(x["text"] and x["text"].strip()))
+    dataset = dataset.map(format_row, desc="Formatting dataset")
+    dataset = dataset.filter(lambda x: bool(x["text"] and x["text"].strip()), desc="Filtering empty rows")
 
     if len(dataset) == 0:
         raise ValueError("Dataset is empty after formatting/filtering")
 
-    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-
-    args = TrainingArguments(
-        output_dir=cfg["outputDir"],
-        per_device_train_batch_size=cfg["qlora"]["perDeviceTrainBatchSize"],
-        gradient_accumulation_steps=cfg["qlora"]["gradientAccumulationSteps"],
-        learning_rate=cfg["qlora"]["learningRate"],
-        num_train_epochs=cfg["qlora"]["numTrainEpochs"],
-        warmup_ratio=cfg["qlora"]["warmupRatio"],
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        per_device_train_batch_size=qlora_cfg["perDeviceTrainBatchSize"],
+        gradient_accumulation_steps=qlora_cfg["gradientAccumulationSteps"],
+        learning_rate=qlora_cfg["learningRate"],
+        num_train_epochs=qlora_cfg["numTrainEpochs"],
+        warmup_ratio=qlora_cfg["warmupRatio"],
         logging_steps=1,
         save_strategy="epoch",
         save_safetensors=True,
@@ -1048,14 +1092,19 @@ def main():
         report_to=["wandb"] if wandb_enabled else [],
         remove_unused_columns=False,
         group_by_length=False,
-        optim="adamw_8bit",
+        optim="paged_adamw_8bit",
+        lr_scheduler_type=qlora_cfg.get("lrSchedulerType", "cosine"),
+        weight_decay=qlora_cfg.get("weightDecay", 0.01),
+        max_grad_norm=qlora_cfg.get("maxGradNorm", 1.0),
+        gradient_checkpointing=False,  # Unsloth handles this via get_peft_model(... use_gradient_checkpointing="unsloth")
+        dataloader_pin_memory=True,
     )
 
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
-        args=args,
+        args=training_args,
         dataset_text_field="text",
         packing=False,
         dataset_num_proc=1,
@@ -1066,15 +1115,15 @@ def main():
     end_time = time.time()
 
     if use_lora:
-        model.save_pretrained(cfg["outputDir"])
+        model.save_pretrained(output_dir)
     else:
-        trainer.save_model(cfg["outputDir"])
+        trainer.save_model(output_dir)
 
-    tokenizer.save_pretrained(cfg["outputDir"])
+    tokenizer.save_pretrained(output_dir)
 
     duration = end_time - start_time
-
     metrics = train_result.metrics
+
     final_loss = None
     if trainer.state.log_history:
         for entry in reversed(trainer.state.log_history):
@@ -1088,7 +1137,7 @@ def main():
             import wandb
             if wandb.run:
                 wandb_run_id = wandb.run.id
-        except:
+        except Exception:
             pass
 
     summary = {
@@ -1104,21 +1153,24 @@ def main():
         "bf16": use_bf16,
         "fp16": not use_bf16,
         "wandb_run_id": wandb_run_id,
+        "gpu_name": gpu_name,
+        "gpu_vram_gb": round(total_vram_gb, 2),
+        "trust_remote_code": trust_remote_code,
     }
 
-    with open(os.path.join(cfg["outputDir"], "summary.json"), "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+    with open(os.path.join(output_dir, "summary.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    with open(os.path.join(cfg["outputDir"], "metrics.json"), "w", encoding="utf-8") as f:
-        json.dump(trainer.state.log_history, f, indent=2)
+    with open(os.path.join(output_dir, "metrics.json"), "w", encoding="utf-8") as f:
+        json.dump(trainer.state.log_history, f, indent=2, ensure_ascii=False)
 
     print(json.dumps({
         "ok": True,
-        "outputDir": cfg["outputDir"],
+        "outputDir": output_dir,
         "summary": summary,
         "wandbEnabled": wandb_enabled,
         "wandbMode": wandb_cfg.get("mode", "online"),
-    }))
+    }, ensure_ascii=False))
 
 
 if __name__ == "__main__":
@@ -6963,4 +7015,4 @@ included: 44
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 182794
+totalBytes(approx): 185086
