@@ -78,11 +78,8 @@ def run_training(cfg) -> dict:
         random_state=3407,
     )
 
-    if cfg.dataset.source != "local":
-        raise NotImplementedError("Only local dataset is supported in v1")
-
     if not cfg.dataset.train_path or not cfg.dataset.val_path:
-        raise ValueError("train_path and val_path are required for local dataset mode")
+        raise ValueError("train_path and val_path are required for training")
 
     print("==> loading dataset")
     dataset = load_dataset(

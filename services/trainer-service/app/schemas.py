@@ -60,9 +60,10 @@ class PostprocessConfig(BaseModel):
 
 class UploadConfig(BaseModel):
     enabled: bool = False
-    target: Literal["local", "huggingface"] = "local"
+    target: Literal["local", "huggingface", "url"] = "local"
     repo_id_lora: Optional[str] = None
     repo_id_merged: Optional[str] = None
+    upload_url: Optional[str] = None
 
 
 class JobConfig(BaseModel):
@@ -75,3 +76,4 @@ class JobConfig(BaseModel):
     outputs: OutputsConfig
     postprocess: PostprocessConfig
     upload: UploadConfig
+    report_url: Optional[str] = None

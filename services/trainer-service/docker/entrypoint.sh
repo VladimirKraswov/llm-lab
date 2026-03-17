@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_PATH="${CONFIG_PATH:-/workspace/configs/trainer/job.json}"
+# Default fallback
+DEFAULT_LOCAL_CONFIG="/workspace/configs/trainer/job.json"
 
-echo "==> trainer-service starting"
-echo "==> config: ${CONFIG_PATH}"
+CONFIG_SOURCE="${CONFIG_SOURCE:-local}"
+CONFIG_REF="${CONFIG_REF:-$DEFAULT_LOCAL_CONFIG}"
 
-if [ ! -f "${CONFIG_PATH}" ]; then
-  echo "ERROR: config file not found: ${CONFIG_PATH}"
-  exit 1
+# If CONFIG_PATH is explicitly set, use it as local path (backwards compatibility)
+if [ -n "${CONFIG_PATH:-}" ]; then
+  CONFIG_REF="$CONFIG_PATH"
+  CONFIG_SOURCE="local"
 fi
 
-python3 /app/app/runner.py --config "${CONFIG_PATH}"
+echo "==> trainer-service starting"
+echo "==> config source: ${CONFIG_SOURCE}"
+echo "==> config ref: ${CONFIG_REF}"
+
+if [ "${CONFIG_SOURCE}" = "local" ]; then
+  if [ ! -f "${CONFIG_REF}" ]; then
+    echo "ERROR: local config file not found: ${CONFIG_REF}"
+    exit 1
+  fi
+fi
+
+# runner.py now handles both local paths and remote URLs via --config
+python3 /app/app/runner.py --config "${CONFIG_REF}"
