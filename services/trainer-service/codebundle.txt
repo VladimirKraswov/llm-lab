@@ -1,0 +1,1270 @@
+=== CODE BUNDLE ===
+root: /Volumes/Extend/work/llm-lab/services/trainer-service
+ignore: .codebun)dleignore
+generated: 2026-03-17T14:03:32.907Z
+
+
+
+path: /.env.local.example
+----------------------------------------
+CONFIG_SOURCE=local
+CONFIG_REF=/configs/job.local.json
+HF_TOKEN=hf_xxx
+
+
+path: /.env.remote.example
+----------------------------------------
+CONFIG_SOURCE=remote
+CONFIG_REF=https://example.com/job.json
+HF_TOKEN=hf_xxx
+
+
+path: /app/archiver.py
+----------------------------------------
+import os
+import tarfile
+import requests
+from pathlib import Path
+
+class Archiver:
+    def __init__(self):
+        pass
+
+    def make_archive(self, source_dir: str, output_filename: str):
+        print(f"==> creating archive {output_filename} from {source_dir}")
+        source_path = Path(source_dir)
+        with tarfile.open(output_filename, "w:gz") as tar:
+            for item in source_path.iterdir():
+                if item.name == "downloads":
+                    continue
+                tar.add(item, arcname=item.name)
+        return output_filename
+
+    def upload_archive(self, archive_path: str, upload_url: str):
+        print(f"==> uploading archive to {upload_url}")
+        with open(archive_path, 'rb') as f:
+            files = {'file': f}
+            response = requests.post(upload_url, files=files)
+            response.raise_for_status()
+        print("==> upload successful")
+
+
+path: /app/asset_manager.py
+----------------------------------------
+import requests
+from pathlib import Path
+from schemas import JobConfig
+
+class AssetManager:
+    def __init__(self, cfg: JobConfig):
+        self.cfg = cfg
+        self.download_dir = Path(cfg.outputs.base_dir) / "downloads"
+
+    def download_file(self, url: str, dest_path: Path):
+        print(f"==> downloading {url} to {dest_path}")
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(dest_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        return dest_path
+
+    def prepare_dataset(self, cfg: JobConfig):
+        if cfg.dataset.source != "url":
+            return
+
+        if cfg.dataset.train_url:
+            train_path = self.download_dir / "train.json"
+            self.download_file(cfg.dataset.train_url, train_path)
+            cfg.dataset.train_path = str(train_path)
+
+        if cfg.dataset.val_url:
+            val_path = self.download_dir / "val.json"
+            self.download_file(cfg.dataset.val_url, val_path)
+            cfg.dataset.val_path = str(val_path)
+
+        print("==> dataset prepared")
+
+
+path: /app/config_loader.py
+----------------------------------------
+import json
+import requests
+from pathlib import Path
+from schemas import JobConfig
+
+
+def load_config(path: str) -> JobConfig:
+    if path.startswith("http://") or path.startswith("https://"):
+        print(f"==> loading remote config from {path}")
+        response = requests.get(path)
+        response.raise_for_status()
+        raw = response.json()
+    else:
+        config_path = Path(path)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config not found: {path}")
+
+        with config_path.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+    return JobConfig.model_validate(raw)
+
+
+path: /app/hf_utils.py
+----------------------------------------
+import os
+from huggingface_hub import login
+
+
+def try_hf_login() -> None:
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        login(token=token, add_to_git_credential=False)
+        print("==> Hugging Face login success")
+    else:
+        print("==> HF_TOKEN not set, skip HF login")
+
+
+path: /app/quant_awq.py
+----------------------------------------
+
+
+
+path: /app/reporter.py
+----------------------------------------
+import time
+import requests
+import logging
+
+logger = logging.getLogger(__name__)
+
+class Reporter:
+    def __init__(self, report_url: str, job_name: str):
+        self.report_url = report_url
+        self.job_name = job_name
+
+    def report_status(self, status: str, message: str = None, logs: str = None):
+        if not self.report_url:
+            return
+
+        payload = {
+            "job_name": self.job_name,
+            "status": status,
+            "message": message,
+            "logs": logs,
+            "timestamp": time.time()
+        }
+
+        try:
+            print(f"==> reporting status: {status}")
+            response = requests.post(self.report_url, json=payload, timeout=10)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"WARNING: failed to report status: {e}")
+
+    def report_error(self, error_message: str, logs: str = None):
+        self.report_status("failed", message=error_message, logs=logs)
+
+
+path: /app/runner.py
+----------------------------------------
+import argparse
+import json
+import logging
+import sys
+import traceback
+from pathlib import Path
+
+from config_loader import load_config
+from hf_utils import try_hf_login
+from train_runner import run_training
+from reporter import Reporter
+from asset_manager import AssetManager
+from archiver import Archiver
+
+
+def setup_logging(logs_dir: str):
+    logs_path = Path(logs_dir)
+    logs_path.mkdir(parents=True, exist_ok=True)
+    log_file = logs_path / "trainer.log"
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    return log_file
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    args = parser.parse_args()
+
+    # Early load to get logs_dir if possible
+    try:
+        cfg = load_config(args.config)
+    except Exception as e:
+        print(f"ERROR: failed to load config: {e}")
+        sys.exit(1)
+
+    log_file = setup_logging(cfg.outputs.logs_dir)
+    logging.info(f"==> logging initialized: {log_file}")
+
+    reporter = Reporter(cfg.report_url, cfg.job_name)
+    asset_manager = AssetManager(cfg)
+    archiver = Archiver()
+
+    try:
+        reporter.report_status("started", message="Training pipeline started")
+
+        effective_config_path = Path(cfg.outputs.logs_dir) / "effective-job.json"
+        summary_path = Path(cfg.outputs.logs_dir) / "summary.json"
+
+        with effective_config_path.open("w", encoding="utf-8") as f:
+            f.write(cfg.model_dump_json(indent=2))
+
+        logging.info("==> config loaded")
+        logging.info(f"==> job_name: {cfg.job_name}")
+
+        try_hf_login()
+
+        # Step: Prepare Assets
+        logging.info("==> preparing assets")
+        asset_manager.prepare_dataset(cfg)
+
+        # Step: Run Training
+        logging.info("==> starting training")
+        result = run_training(cfg)
+        logging.info("==> training finished")
+
+        # Step: Archive and Upload
+        if cfg.upload.enabled and cfg.upload.target == "url" and cfg.upload.upload_url:
+            logging.info("==> archiving and uploading results")
+            archive_path = Path(cfg.outputs.base_dir) / f"{cfg.job_name}.tar.gz"
+            archiver.make_archive(cfg.outputs.base_dir, str(archive_path))
+            archiver.upload_archive(str(archive_path), cfg.upload.upload_url)
+            result["archive_path"] = str(archive_path)
+
+        with summary_path.open("w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+
+        logging.info("==> pipeline finished successfully")
+        reporter.report_status("finished", message="Training pipeline finished successfully")
+
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    except Exception as e:
+        error_msg = str(e)
+        stack_trace = traceback.format_exc()
+        logging.error(f"FATAL ERROR: {error_msg}")
+        logging.error(stack_trace)
+
+        # Get last 50 lines of log for reporting
+        try:
+            with open(log_file, "r") as f:
+                logs = "".join(f.readlines()[-50:])
+        except:
+            logs = "Could not retrieve logs"
+
+        reporter.report_error(error_msg, logs=logs)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+
+
+path: /app/schemas.py
+----------------------------------------
+from typing import List, Literal, Optional
+from pydantic import BaseModel
+
+
+class ModelConfig(BaseModel):
+    source: Literal["local", "huggingface"] = "local"
+    local_path: Optional[str] = None
+    repo_id: Optional[str] = None
+    trust_remote_code: bool = False
+
+
+class DatasetConfig(BaseModel):
+    source: Literal["local", "url"] = "local"
+    train_path: Optional[str] = None
+    val_path: Optional[str] = None
+    train_url: Optional[str] = None
+    val_url: Optional[str] = None
+    format: Literal["instruction_output"] = "instruction_output"
+    input_field: str = "input"
+    output_field: str = "output"
+
+
+class TrainingConfig(BaseModel):
+    method: Literal["lora", "qlora"] = "qlora"
+    max_seq_length: int = 4096
+    per_device_train_batch_size: int = 1
+    gradient_accumulation_steps: int = 8
+    num_train_epochs: int = 1
+    learning_rate: float = 1e-4
+    warmup_ratio: float = 0.03
+    logging_steps: int = 1
+    save_steps: int = 50
+    eval_steps: int = 50
+    bf16: bool = True
+    packing: bool = True
+
+
+class LoraConfig(BaseModel):
+    r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.0
+    target_modules: List[str]
+
+
+class OutputsConfig(BaseModel):
+    base_dir: str
+    logs_dir: str
+    lora_dir: str
+    checkpoints_dir: str
+    metrics_dir: str
+    merged_dir: str
+    quantized_dir: str
+
+
+class PostprocessConfig(BaseModel):
+    merge_lora: bool = True
+    save_merged_16bit: bool = True
+    run_awq_quantization: bool = False
+
+
+class UploadConfig(BaseModel):
+    enabled: bool = False
+    target: Literal["local", "huggingface", "url"] = "local"
+    repo_id_lora: Optional[str] = None
+    repo_id_merged: Optional[str] = None
+    upload_url: Optional[str] = None
+
+
+class JobConfig(BaseModel):
+    job_name: str
+    mode: Literal["local", "remote"] = "local"
+    model: ModelConfig
+    dataset: DatasetConfig
+    training: TrainingConfig
+    lora: LoraConfig
+    outputs: OutputsConfig
+    postprocess: PostprocessConfig
+    upload: UploadConfig
+    report_url: Optional[str] = None
+
+
+path: /app/test_remote_flow.py
+----------------------------------------
+import unittest
+from unittest.mock import MagicMock, patch
+from pathlib import Path
+import json
+import os
+import sys
+
+# Mocking unsloth and torch before importing runner/train_runner
+sys.modules["unsloth"] = MagicMock()
+sys.modules["torch"] = MagicMock()
+sys.modules["datasets"] = MagicMock()
+sys.modules["transformers"] = MagicMock()
+sys.modules["trl"] = MagicMock()
+
+import runner
+from schemas import JobConfig
+
+class TestRemoteFlow(unittest.TestCase):
+    def setUp(self):
+        self.config_dict = {
+            "job_name": "test-job",
+            "mode": "remote",
+            "model": {
+                "source": "huggingface",
+                "repo_id": "test/model"
+            },
+            "dataset": {
+                "source": "url",
+                "train_url": "http://example.com/train.json",
+                "val_url": "http://example.com/val.json"
+            },
+            "training": {
+                "method": "lora",
+                "target_modules": ["q_proj", "v_proj"]
+            },
+            "lora": {
+                "target_modules": ["q_proj", "v_proj"]
+            },
+            "outputs": {
+                "base_dir": "test_outputs",
+                "logs_dir": "test_outputs/logs",
+                "lora_dir": "test_outputs/lora",
+                "checkpoints_dir": "test_outputs/checkpoints",
+                "metrics_dir": "test_outputs/metrics",
+                "merged_dir": "test_outputs/merged",
+                "quantized_dir": "test_outputs/quantized"
+            },
+            "postprocess": {
+                "merge_lora": True
+            },
+            "upload": {
+                "enabled": True,
+                "target": "url",
+                "upload_url": "http://example.com/upload"
+            },
+            "report_url": "http://example.com/report"
+        }
+        self.cfg = JobConfig.model_validate(self.config_dict)
+
+    @patch("runner.load_config")
+    @patch("runner.Reporter")
+    @patch("runner.AssetManager")
+    @patch("runner.Archiver")
+    @patch("runner.run_training")
+    @patch("runner.try_hf_login")
+    @patch("runner.setup_logging")
+    @patch("pathlib.Path.open", unittest.mock.mock_open())
+    def test_full_pipeline_success(self, mock_setup_logging, mock_hf_login, mock_run_training, mock_archiver, mock_asset_manager, mock_reporter, mock_load_config):
+        mock_load_config.return_value = self.cfg
+        mock_run_training.return_value = {"status": "success"}
+
+        # Simulate command line args
+        with patch("sys.argv", ["runner.py", "--config", "http://example.com/config.json"]):
+            runner.main()
+
+        # Verify reporter calls
+        mock_reporter.return_value.report_status.assert_any_call("started", message="Training pipeline started")
+        mock_reporter.return_value.report_status.assert_any_call("finished", message="Training pipeline finished successfully")
+
+        # Verify asset manager
+        mock_asset_manager.return_value.prepare_dataset.assert_called_once_with(self.cfg)
+
+        # Verify archiver
+        mock_archiver.return_value.make_archive.assert_called_once()
+        mock_archiver.return_value.upload_archive.assert_called_once_with(unittest.mock.ANY, "http://example.com/upload")
+
+    @patch("runner.load_config")
+    @patch("runner.Reporter")
+    @patch("runner.AssetManager")
+    @patch("runner.Archiver")
+    @patch("runner.run_training")
+    @patch("runner.setup_logging")
+    @patch("pathlib.Path.open", unittest.mock.mock_open())
+    def test_pipeline_failure(self, mock_setup_logging, mock_run_training, mock_archiver, mock_asset_manager, mock_reporter, mock_load_config):
+        mock_load_config.return_value = self.cfg
+        mock_run_training.side_effect = Exception("Training failed")
+
+        with patch("sys.argv", ["runner.py", "--config", "http://example.com/config.json"]):
+            with self.assertRaises(SystemExit) as cm:
+                runner.main()
+
+            self.assertEqual(cm.exception.code, 1)
+
+        # Verify error reporting
+        mock_reporter.return_value.report_error.assert_called_once_with("Training failed", logs=unittest.mock.ANY)
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+path: /app/train_runner.py
+----------------------------------------
+from pathlib import Path
+import json
+import os
+
+os.environ["WANDB_DISABLED"] = "true"
+
+from unsloth import FastLanguageModel
+import torch
+from datasets import load_dataset
+from transformers import TrainingArguments
+from trl import SFTTrainer
+
+
+def ensure_dirs(cfg) -> None:
+    for path in [
+        cfg.outputs.base_dir,
+        cfg.outputs.logs_dir,
+        cfg.outputs.lora_dir,
+        cfg.outputs.checkpoints_dir,
+        cfg.outputs.metrics_dir,
+        cfg.outputs.merged_dir,
+        cfg.outputs.quantized_dir,
+    ]:
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+
+def resolve_model_args(cfg):
+    method = cfg.training.method
+
+    if cfg.model.source == "local":
+        model_name = cfg.model.local_path
+    else:
+        model_name = cfg.model.repo_id
+
+    if not model_name:
+        raise ValueError("Model path/repo_id is empty")
+
+    load_in_4bit = method == "qlora"
+
+    return model_name, load_in_4bit
+
+
+def format_example(example, input_field: str, output_field: str, eos_token: str):
+    return {
+        "text": (
+            f"### Instruction:\n{example[input_field]}\n\n"
+            f"### Response:\n{example[output_field]}{eos_token}"
+        )
+    }
+
+
+def run_training(cfg) -> dict:
+    ensure_dirs(cfg)
+
+    model_name, load_in_4bit = resolve_model_args(cfg)
+
+    print(f"==> loading model: {model_name}")
+    print(f"==> method: {cfg.training.method}")
+
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=model_name,
+        max_seq_length=cfg.training.max_seq_length,
+        dtype=torch.bfloat16 if cfg.training.bf16 else None,
+        load_in_4bit=load_in_4bit,
+        local_files_only=(cfg.model.source == "local"),
+        trust_remote_code=cfg.model.trust_remote_code,
+        device_map="auto",
+    )
+
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=cfg.lora.r,
+        target_modules=cfg.lora.target_modules,
+        lora_alpha=cfg.lora.lora_alpha,
+        lora_dropout=cfg.lora.lora_dropout,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=3407,
+    )
+
+    if not cfg.dataset.train_path or not cfg.dataset.val_path:
+        raise ValueError("train_path and val_path are required for training")
+
+    print("==> loading dataset")
+    dataset = load_dataset(
+        "json",
+        data_files={
+            "train": cfg.dataset.train_path,
+            "validation": cfg.dataset.val_path,
+        },
+    )
+
+    dataset = dataset.map(
+        lambda example: format_example(
+            example,
+            cfg.dataset.input_field,
+            cfg.dataset.output_field,
+            tokenizer.eos_token,
+        )
+    )
+
+    checkpoint_dir = str(Path(cfg.outputs.checkpoints_dir) / cfg.job_name)
+
+    trainer = SFTTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset["train"],
+        eval_dataset=dataset["validation"],
+        dataset_text_field="text",
+        max_seq_length=cfg.training.max_seq_length,
+        packing=cfg.training.packing,
+        args=TrainingArguments(
+            per_device_train_batch_size=cfg.training.per_device_train_batch_size,
+            gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
+            warmup_ratio=cfg.training.warmup_ratio,
+            num_train_epochs=cfg.training.num_train_epochs,
+            learning_rate=cfg.training.learning_rate,
+            bf16=cfg.training.bf16,
+            logging_steps=cfg.training.logging_steps,
+            save_steps=cfg.training.save_steps,
+            eval_steps=cfg.training.eval_steps,
+            eval_strategy="steps",
+            save_strategy="steps",
+            output_dir=checkpoint_dir,
+            optim="adamw_8bit",
+            report_to=[],
+            push_to_hub=False,
+        ),
+    )
+
+    print("==> training started")
+    train_result = trainer.train()
+    print("==> training finished")
+
+    lora_dir = Path(cfg.outputs.lora_dir) / cfg.job_name
+    merged_dir = Path(cfg.outputs.merged_dir) / cfg.job_name
+    metrics_path = Path(cfg.outputs.metrics_dir) / f"{cfg.job_name}.train_metrics.json"
+
+    lora_dir.mkdir(parents=True, exist_ok=True)
+    merged_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"==> saving lora adapters to {lora_dir}")
+    model.save_pretrained(str(lora_dir))
+    tokenizer.save_pretrained(str(lora_dir))
+
+    if cfg.postprocess.merge_lora and cfg.postprocess.save_merged_16bit:
+        print(f"==> saving merged model to {merged_dir}")
+        model.save_pretrained_merged(
+            save_directory=str(merged_dir),
+            tokenizer=tokenizer,
+            save_method="merged_16bit",
+        )
+
+    metrics = dict(train_result.metrics)
+    with metrics_path.open("w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2, ensure_ascii=False)
+
+    return {
+        "status": "success",
+        "job_name": cfg.job_name,
+        "lora_dir": str(lora_dir),
+        "merged_dir": str(merged_dir),
+        "checkpoint_dir": checkpoint_dir,
+        "metrics_path": str(metrics_path),
+    }
+
+
+path: /bundle-code.js
+----------------------------------------
+#!/usr/bin/env node
+/**
+ * bundle-code.js
+ * Собирает весь текстовый код проекта в один файл, помечая секции путями.
+ * - Рекурсивный обход
+ * - Пропуск бинарных файлов (по содержимому)
+ * - Игнор по .codebundleignore (gitignore-like)
+ */
+
+const  fs = require("fs");
+const  fsp = require("fs/promises");
+const  path = require("path")
+
+const PROJECT_ROOT = process.cwd();
+const IGNORE_FILE_NAME = ".codebun)dleignore";
+const OUTPUT_FILE = path.join(PROJECT_ROOT, "codebundle.txt");
+
+const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
+const MAX_TOTAL_BYTES = 200 * 1024 * 1024;   // 200MB
+
+// Если заполнить — соберёт только эти расширения. Если пусто — любые текстовые.
+const ONLY_EXTENSIONS = new Set([
+  // ".js", ".jsx", ".ts", ".tsx", ".json", ".css", ".scss", ".md", ".html", ".yml", ".yaml"
+]);
+
+function normalizeToPosix(p) {
+  return p.split(path.sep).join("/");
+}
+
+function stripBom(s) {
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}
+
+async function readIgnoreFile(ignorePath) {
+  try {
+    const raw = await fsp.readFile(ignorePath, "utf8");
+    return stripBom(raw)
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith("#"));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Компилируем игнор-правила.
+ * Поддержка:
+ * - "node_modules/" (игнор любой сегмент /node_modules/ в любом месте)
+ * - "dist/" и т.п.
+ * - "*.ext"
+ * - "path/to/file" (точный относительный путь)
+ * - "!pattern" (снять игнор)
+ */
+function buildIgnoreMatcher(patterns) {
+  // дефолтные, чтобы не протекало даже если забыли
+  const defaultPatterns = [
+    "node_modules/",
+    ".git/",
+    "dist/",
+    "build/",
+    ".next/",
+    "coverage/",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+  ];
+
+  const all = [...defaultPatterns, ...patterns];
+
+  const rules = all.map(p => ({
+    neg: p.startsWith("!"),
+    pat: (p.startsWith("!") ? p.slice(1) : p).trim(),
+  })).filter(r => r.pat);
+
+  function matchRule(relPosix, pat) {
+    // relPosix: "admin/node_modules/express/index.js"
+
+    // directory pattern: "node_modules/"
+    if (pat.endsWith("/")) {
+      const seg = pat.slice(0, -1);
+      if (!seg) return false;
+
+      // матч:
+      // - если путь начинается с seg/
+      // - или содержит /seg/ как сегмент
+      return (
+        relPosix === seg ||
+        relPosix.startsWith(seg + "/") ||
+        relPosix.includes("/" + seg + "/") ||
+        relPosix.endsWith("/" + seg)
+      );
+    }
+
+    // glob extension: "*.png"
+    if (pat.startsWith("*.") && !pat.includes("/")) {
+      const ext = pat.slice(1); // ".png"
+      return relPosix.toLowerCase().endsWith(ext.toLowerCase());
+    }
+
+    // exact file path
+    return relPosix === pat;
+  }
+
+  return function isIgnored(relPosix) {
+    let ignored = false;
+    for (const r of rules) {
+      if (matchRule(relPosix, r.pat)) {
+        ignored = !r.neg; // если negation — снимаем игнор
+      }
+    }
+    return ignored;
+  };
+}
+
+async function isProbablyBinary(filePath) {
+  const fd = await fsp.open(filePath, "r");
+  try {
+    const { size } = await fd.stat();
+    const toRead = Math.min(size, 8192);
+    const buf = Buffer.allocUnsafe(toRead);
+    const { bytesRead } = await fd.read(buf, 0, toRead, 0);
+    if (bytesRead === 0) return false;
+
+    let nulCount = 0;
+    let weirdCount = 0;
+    for (let i = 0; i < bytesRead; i++) {
+      const b = buf[i];
+      if (b === 0) nulCount++;
+      const ok =
+        b === 9 || b === 10 || b === 13 || (b >= 32 && b <= 126) || b >= 128;
+      if (!ok) weirdCount++;
+    }
+    if (nulCount > 0) return true;
+    return (weirdCount / bytesRead) > 0.25;
+  } finally {
+    await fd.close();
+  }
+}
+
+async function* walk(dirAbs, isIgnored) {
+  let entries;
+  try {
+    entries = await fsp.readdir(dirAbs, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const ent of entries) {
+    const abs = path.join(dirAbs, ent.name);
+    const rel = path.relative(PROJECT_ROOT, abs);
+    const relPosix = normalizeToPosix(rel);
+
+    // не включаем output и ignore файл
+    if (path.resolve(abs) === path.resolve(OUTPUT_FILE)) continue;
+    if (relPosix === IGNORE_FILE_NAME) continue;
+
+    if (isIgnored(relPosix)) continue;
+
+    if (ent.isDirectory()) {
+      yield* walk(abs, isIgnored);
+    } else if (ent.isFile()) {
+      yield { abs, relPosix };
+    }
+  }
+}
+
+async function bundle() {
+  const ignorePath = path.join(PROJECT_ROOT, IGNORE_FILE_NAME);
+  const patterns = await readIgnoreFile(ignorePath);
+  const isIgnored = buildIgnoreMatcher(patterns);
+
+  const out = fs.createWriteStream(OUTPUT_FILE, { encoding: "utf8" });
+
+  let totalBytes = 0;
+  let included = 0;
+  let skippedBinary = 0;
+  let skippedSize = 0;
+  let skippedExt = 0;
+
+  out.write(`=== CODE BUNDLE ===\n`);
+  out.write(`root: ${normalizeToPosix(PROJECT_ROOT)}\n`);
+  out.write(`ignore: ${IGNORE_FILE_NAME}\n`);
+  out.write(`generated: ${new Date().toISOString()}\n\n`);
+
+  for await (const file of walk(PROJECT_ROOT, isIgnored)) {
+    const ext = path.extname(file.relPosix).toLowerCase();
+    if (ONLY_EXTENSIONS.size && !ONLY_EXTENSIONS.has(ext)) {
+      skippedExt++;
+      continue;
+    }
+
+    let stat;
+    try {
+      stat = await fsp.stat(file.abs);
+    } catch {
+      continue;
+    }
+
+    if (stat.size > MAX_FILE_SIZE_BYTES) {
+      skippedSize++;
+      continue;
+    }
+    if (totalBytes + stat.size > MAX_TOTAL_BYTES) {
+      out.write(`\n\n=== STOP: total size limit reached (${MAX_TOTAL_BYTES} bytes) ===\n`);
+      break;
+    }
+
+    let binary;
+    try {
+      binary = await isProbablyBinary(file.abs);
+    } catch {
+      continue;
+    }
+    if (binary) {
+      skippedBinary++;
+      continue;
+    }
+
+    let content;
+    try {
+      content = await fsp.readFile(file.abs, "utf8");
+    } catch {
+      continue;
+    }
+
+    out.write(`\n\npath: /${file.relPosix}\n`);
+    out.write(`----------------------------------------\n`);
+    out.write(content);
+    if (!content.endsWith("\n")) out.write("\n");
+
+    totalBytes += stat.size;
+    included++;
+  }
+
+  out.write(`\n\n=== SUMMARY ===\n`);
+  out.write(`included: ${included}\n`);
+  out.write(`skipped(binary): ${skippedBinary}\n`);
+  out.write(`skipped(size): ${skippedSize}\n`);
+  out.write(`skipped(ext): ${skippedExt}\n`);
+  out.write(`totalBytes(approx): ${totalBytes}\n`);
+
+  await new Promise((res, rej) => {
+    out.end(res);
+    out.on("error", rej);
+  });
+
+  console.log(`Done. Output: ${OUTPUT_FILE}`);
+}
+
+bundle().catch(err => {
+  console.error("Error:", err);
+  process.exitCode = 1;
+});
+
+
+path: /docker/Dockerfile
+----------------------------------------
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
+
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv
+
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+
+RUN pip install -U pip setuptools wheel
+RUN pip install -r /app/requirements.txt
+
+COPY app /app/app
+COPY docker/entrypoint.sh /app/entrypoint.sh
+
+RUN chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+
+path: /docker/entrypoint.sh
+----------------------------------------
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Default fallback
+DEFAULT_LOCAL_CONFIG="/workspace/configs/trainer/job.json"
+
+CONFIG_SOURCE="${CONFIG_SOURCE:-local}"
+CONFIG_REF="${CONFIG_REF:-$DEFAULT_LOCAL_CONFIG}"
+
+# If CONFIG_PATH is explicitly set, use it as local path (backwards compatibility)
+if [ -n "${CONFIG_PATH:-}" ]; then
+  CONFIG_REF="$CONFIG_PATH"
+  CONFIG_SOURCE="local"
+fi
+
+echo "==> trainer-service starting"
+echo "==> config source: ${CONFIG_SOURCE}"
+echo "==> config ref: ${CONFIG_REF}"
+
+if [ "${CONFIG_SOURCE}" = "local" ]; then
+  if [ ! -f "${CONFIG_REF}" ]; then
+    echo "ERROR: local config file not found: ${CONFIG_REF}"
+    exit 1
+  fi
+fi
+
+# runner.py now handles both local paths and remote URLs via --config
+python3 /app/app/runner.py --config "${CONFIG_REF}"
+
+
+path: /docker-compose.local.yml
+----------------------------------------
+services:
+  itk-ai-trainer-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: itk-ai-trainer-service
+    env_file:
+      - .env.local.example
+    volumes:
+      - ./examples:/configs
+      - ./data:/data
+      - ./output:/output
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+
+path: /docker-compose.remote.yml
+----------------------------------------
+services:
+  itk-ai-trainer-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: itk-ai-trainer-service
+    env_file:
+      - .env.remote.example
+    volumes:
+      - ./output:/output
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+
+path: /examples/job.local.json
+----------------------------------------
+{
+  "job_name": "qwen25-05b-demo",
+  "base_model": {
+    "repo_id": "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit",
+    "revision": "main",
+    "trust_remote_code": false,
+    "load_in_4bit": true,
+    "dtype": "bfloat16",
+    "max_seq_length": 4096
+  },
+  "dataset": {
+    "train_path": "/data/train.json",
+    "val_path": "/data/val.json",
+    "input_field": "input",
+    "output_field": "output"
+  },
+  "training": {
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 4,
+    "num_train_epochs": 1,
+    "learning_rate": 0.0001,
+    "warmup_ratio": 0.03,
+    "logging_steps": 1,
+    "save_steps": 50,
+    "packing": true,
+    "bf16": true,
+    "output_dir": "/output/checkpoints"
+  },
+  "lora": {
+    "r": 32,
+    "lora_alpha": 64,
+    "lora_dropout": 0.0,
+    "bias": "none",
+    "use_gradient_checkpointing": "unsloth",
+    "random_state": 3407,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "artifacts": {
+    "output_dir": "/output",
+    "lora_subdir": "lora",
+    "merged_subdir": "merged",
+    "save_merged_16bit": true
+  },
+  "huggingface": {
+    "push_lora": true,
+    "push_merged": true,
+    "repo_id_lora": "your-org/qwen25-05b-demo-lora",
+    "repo_id_merged": "your-org/qwen25-05b-demo-merged",
+    "private": true
+  }
+}
+
+
+path: /examples/job.remote.json
+----------------------------------------
+{
+  "job_name": "qwen25-05b-demo",
+  "base_model": {
+    "repo_id": "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit",
+    "revision": "main",
+    "trust_remote_code": false,
+    "load_in_4bit": true,
+    "dtype": "bfloat16",
+    "max_seq_length": 4096
+  },
+  "dataset": {
+    "train_path": "/data/train.json",
+    "val_path": "/data/val.json",
+    "input_field": "input",
+    "output_field": "output"
+  },
+  "training": {
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 4,
+    "num_train_epochs": 1,
+    "learning_rate": 0.0001,
+    "warmup_ratio": 0.03,
+    "logging_steps": 1,
+    "save_steps": 50,
+    "packing": true,
+    "bf16": true,
+    "output_dir": "/output/checkpoints"
+  },
+  "lora": {
+    "r": 32,
+    "lora_alpha": 64,
+    "lora_dropout": 0.0,
+    "bias": "none",
+    "use_gradient_checkpointing": "unsloth",
+    "random_state": 3407,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "artifacts": {
+    "output_dir": "/output",
+    "lora_subdir": "lora",
+    "merged_subdir": "merged",
+    "save_merged_16bit": true
+  },
+  "huggingface": {
+    "push_lora": true,
+    "push_merged": true,
+    "repo_id_lora": "your-org/qwen25-05b-demo-lora",
+    "repo_id_merged": "your-org/qwen25-05b-demo-merged",
+    "private": true
+  }
+}
+
+
+path: /README.md
+----------------------------------------
+# itk-ai-trainer-service
+
+Сервис обучения моделей для LLM Lab.
+
+Работает по одному JSON-конфигу и может запускаться:
+- локально;
+- удалённо.
+
+## Что делает
+
+Pipeline:
+1. Загружает JSON-конфиг из файла или URL.
+2. Логинится в Hugging Face по `HF_TOKEN`, если токен передан.
+3. Загружает базовую модель.
+4. Запускает SFT + LoRA fine-tuning через Unsloth.
+5. Сохраняет LoRA adapter.
+6. Сохраняет merged 16-bit модель.
+7. При необходимости пушит LoRA и merged model в Hugging Face.
+8. Сохраняет итог в `job-result.json`.
+
+## Режимы запуска
+
+### 1. Auto
+Сервис сам определяет источник:
+- если `CONFIG_REF` начинается с `http://` или `https://`, это remote;
+- иначе local.
+
+### 2. Local
+Конфиг читается как путь к файлу внутри контейнера.
+
+### 3. Remote
+Конфиг скачивается по URL.
+
+## Build
+
+```bash
+cd services/itk-ai-trainer-service
+docker build -t itk-ai-trainer-service -f docker/Dockerfile .
+```
+
+## Локальный запуск
+
+```bash
+docker run --rm --gpus all   -e HF_TOKEN=hf_xxx   -e CONFIG_SOURCE=local   -e CONFIG_REF=/configs/job.local.json   -v $(pwd)/examples:/configs   -v $(pwd)/data:/data   -v $(pwd)/output:/output   itk-ai-trainer-service
+```
+
+## Удалённый запуск
+
+```bash
+docker run --rm --gpus all   -e HF_TOKEN=hf_xxx   -e CONFIG_SOURCE=remote   -e CONFIG_REF=https://example.com/job.json   -v $(pwd)/output:/output   itk-ai-trainer-service
+```
+
+## Запуск через CLI
+
+```bash
+docker run --rm --gpus all   -e HF_TOKEN=hf_xxx   -v $(pwd)/examples:/configs   -v $(pwd)/data:/data   -v $(pwd)/output:/output   itk-ai-trainer-service   --config /configs/job.local.json
+```
+
+## Env-переменные
+
+- `CONFIG_SOURCE=auto|local|remote`
+- `CONFIG_REF=<path-or-url>`
+- `HF_TOKEN=<huggingface token>`
+
+## Структура сервиса
+
+```text
+services/itk-ai-trainer-service/
+├─ app/
+│  ├─ config_loader.py
+│  ├─ hf_utils.py
+│  ├─ runner.py
+│  ├─ schemas.py
+│  └─ train_runner.py
+├─ docker/
+│  ├─ Dockerfile
+│  └─ entrypoint.sh
+├─ examples/
+│  ├─ job.local.json
+│  └─ job.remote.json
+├─ .env.local.example
+├─ .env.remote.example
+└─ requirements.txt
+```
+
+## Интеграция с LLM Lab backend
+
+Backend может:
+- формировать JSON сам;
+- сохранять JSON локально и монтировать его в контейнер;
+- публиковать JSON по URL и запускать сервис удалённо.
+
+Единый контракт для сервиса всегда один: **один JSON-конфиг на один job**.
+
+
+path: /requirements.txt
+----------------------------------------
+torch>=2.8.0
+torchvision>=0.23.0
+torchaudio>=2.8.0
+
+unsloth
+unsloth-zoo
+
+bitsandbytes>=0.45.0
+xformers==0.0.32.post2
+
+transformers>=4.48.0
+datasets>=3.6.0
+accelerate>=1.10.1
+trl>=0.19.0
+peft>=0.17.1
+sentencepiece>=0.2.1
+huggingface_hub[hf-xet]
+pydantic>=2.11.7
+requests>=2.32.3
+
+
+=== SUMMARY ===
+included: 21
+skipped(binary): 0
+skipped(size): 0
+skipped(ext): 0
+totalBytes(approx): 33851

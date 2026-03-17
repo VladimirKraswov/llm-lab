@@ -7,6 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "bootstrap": "bash scripts/bootstrap.sh",
+    "check": "bash scripts/check.sh",
+    "run": "bash scripts/run.sh",
     "web:dev": "npm --prefix web run dev -- --host 0.0.0.0",
     "web:build": "npm --prefix web run build",
     "dev:all": "concurrently -n api,web -c green,blue \"npm run dev\" \"npm run web:dev\"",

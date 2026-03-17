@@ -15,3 +15,6 @@ services/trainer-service/wheels/
 artifacts/
 .cache/
 **/__pycache__/
+
+.llm-lab/
+logs/
