@@ -1,5 +1,7 @@
 const express = require('express');
 const fs = require('fs');
+const fsp = fs.promises;
+
 const { getSettings, renameLora, removeLora, getModelById } = require('../services/state');
 const {
   registerLoraFromJob,
@@ -14,6 +16,12 @@ const { CONFIG } = require('../config');
 
 const router = express.Router();
 
+async function readLastLines(filePath, tail = 200) {
+  const text = await fsp.readFile(filePath, 'utf8');
+  const lines = text.split(/\r?\n/);
+  return lines.slice(-tail).join('\n');
+}
+
 router.get('/', async (_req, res) => {
   res.json(await reconcileAllLoras());
 });
@@ -22,6 +30,42 @@ router.get('/:id', async (req, res) => {
   const item = await getLoraByIdSafe(req.params.id);
   if (!item) return res.status(404).json({ error: 'lora not found' });
   res.json(item);
+});
+
+router.get('/:id/logs', async (req, res) => {
+  try {
+    const item = await getLoraByIdSafe(req.params.id);
+    if (!item) return res.status(404).json({ error: 'lora not found' });
+
+    const tail = Math.max(1, Math.min(Number(req.query.tail || 200), 5000));
+    const logFile = item.mergeLogFile || null;
+
+    if (!logFile) {
+      return res.json({
+        id: item.id,
+        logFile: null,
+        content: '',
+      });
+    }
+
+    if (!fs.existsSync(logFile)) {
+      return res.json({
+        id: item.id,
+        logFile,
+        content: '',
+      });
+    }
+
+    const content = await readLastLines(logFile, tail);
+
+    res.json({
+      id: item.id,
+      logFile,
+      content,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
 });
 
 router.post('/from-job', async (req, res) => {
