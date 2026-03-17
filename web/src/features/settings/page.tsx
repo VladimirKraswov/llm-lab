@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { api } from '../../lib/api';
+import { api, type AwqCalibrationMode } from '../../lib/api';
 import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -20,6 +20,15 @@ export default function SettingsPage() {
   const [trustRemoteCode, setTrustRemoteCode] = useState(true);
   const [enforceEager, setEnforceEager] = useState(false);
   const [kvCacheDtype, setKvCacheDtype] = useState('auto');
+
+  const [awqDtype, setAwqDtype] = useState('float16');
+  const [awqNumSamples, setAwqNumSamples] = useState('32');
+  const [awqMaxSeqLen, setAwqMaxSeqLen] = useState('1024');
+  const [awqBits, setAwqBits] = useState('4');
+  const [awqGroupSize, setAwqGroupSize] = useState('128');
+  const [awqSym, setAwqSym] = useState(false);
+  const [awqTrustRemoteCode, setAwqTrustRemoteCode] = useState(true);
+  const [awqCalibrationMode, setAwqCalibrationMode] = useState<AwqCalibrationMode>('text_only');
 
   const [wandbEnabled, setWandbEnabled] = useState(false);
   const [wandbMode, setWandbMode] = useState<'online' | 'offline' | 'disabled'>('online');
@@ -47,6 +56,18 @@ export default function SettingsPage() {
       setEnforceEager(!!settingsQuery.data.inference.enforceEager);
       setKvCacheDtype(settingsQuery.data.inference.kvCacheDtype || 'auto');
 
+      const awq = settingsQuery.data.quantization?.awq;
+      if (awq) {
+        setAwqDtype(awq.dtype || 'float16');
+        setAwqNumSamples(String(awq.numSamples ?? 32));
+        setAwqMaxSeqLen(String(awq.maxSeqLen ?? 1024));
+        setAwqBits(String(awq.bits ?? 4));
+        setAwqGroupSize(String(awq.groupSize ?? 128));
+        setAwqSym(!!awq.sym);
+        setAwqTrustRemoteCode(!!awq.trustRemoteCode);
+        setAwqCalibrationMode(awq.calibrationMode || 'text_only');
+      }
+
       const w = (settingsQuery.data as any).wandb;
       if (w) {
         setWandbEnabled(!!w.enabled);
@@ -62,7 +83,8 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Settings" description="Дефолтные параметры модели, inference и QLoRA." />
+      <PageHeader title="Settings" description="Дефолтные параметры модели, inference, QLoRA и AWQ." />
+
       <Card>
         <CardHeader>
           <CardTitle>Defaults</CardTitle>
@@ -185,29 +207,134 @@ export default function SettingsPage() {
               <option value="fp8">FP8 (if supported)</option>
             </select>
           </div>
-          <Button onClick={() => mutation.mutate({
-            baseModel,
-            qlora: { maxSeqLength: Number(maxSeqLength) },
-            inference: {
-              model: inferenceModel,
-              provider: inferenceProvider,
-              port: Number(port),
-              quantization: quantization || null,
-              maxNumSeqs: Number(maxNumSeqs),
-              swapSpace: Number(swapSpace),
-              dtype,
-              trustRemoteCode,
-              enforceEager,
-              kvCacheDtype
-            },
-            wandb: {
-              enabled: wandbEnabled,
-              mode: wandbMode,
-              apiKey: wandbApiKey,
-              project: wandbProject,
-              entity: wandbEntity,
-            }
-          })} disabled={mutation.isPending}>
+        </CardContent>
+      </Card>
+
+      <Card className="border-amber-500/20 bg-amber-500/5">
+        <CardHeader>
+          <CardTitle>AWQ Defaults</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-xl border border-amber-500/20 bg-slate-950/30 p-3 text-sm text-slate-300">
+            Эти значения используются в Quick AWQ и как стартовые значения в модалке AWQ.
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">AWQ DType</label>
+              <select
+                value={awqDtype}
+                onChange={(e) => setAwqDtype(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="float16">float16</option>
+                <option value="bfloat16">bfloat16</option>
+                <option value="float32">float32</option>
+                <option value="auto">auto</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Calibration mode</label>
+              <select
+                value={awqCalibrationMode}
+                onChange={(e) => setAwqCalibrationMode(e.target.value as AwqCalibrationMode)}
+                className="flex h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="text_only">text_only</option>
+                <option value="permissive">permissive</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-4">
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Samples</label>
+              <Input value={awqNumSamples} onChange={(e) => setAwqNumSamples(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Max seq len</label>
+              <Input value={awqMaxSeqLen} onChange={(e) => setAwqMaxSeqLen(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Bits</label>
+              <Input value={awqBits} onChange={(e) => setAwqBits(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Group size</label>
+              <Input value={awqGroupSize} onChange={(e) => setAwqGroupSize(e.target.value)} />
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="flex items-center gap-3">
+              <input
+                id="awq-sym"
+                type="checkbox"
+                checked={awqSym}
+                onChange={(e) => setAwqSym(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-blue-500"
+              />
+              <label htmlFor="awq-sym" className="text-sm font-medium text-white cursor-pointer">
+                Symmetric quantization
+              </label>
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                id="awq-trust-remote"
+                type="checkbox"
+                checked={awqTrustRemoteCode}
+                onChange={(e) => setAwqTrustRemoteCode(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-blue-500"
+              />
+              <label htmlFor="awq-trust-remote" className="text-sm font-medium text-white cursor-pointer">
+                Trust Remote Code for AWQ
+              </label>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-sm text-slate-400">
+            Рекомендуемый безопасный старт: <span className="text-white">float16, text_only, 32 samples, 1024 seq, sym=false</span>.
+          </div>
+
+          <Button
+            onClick={() => mutation.mutate({
+              baseModel,
+              qlora: { maxSeqLength: Number(maxSeqLength) },
+              inference: {
+                model: inferenceModel,
+                provider: inferenceProvider,
+                port: Number(port),
+                quantization: quantization || null,
+                maxNumSeqs: Number(maxNumSeqs),
+                swapSpace: Number(swapSpace),
+                dtype,
+                trustRemoteCode,
+                enforceEager,
+                kvCacheDtype,
+              },
+              quantization: {
+                awq: {
+                  dtype: awqDtype,
+                  numSamples: Number(awqNumSamples),
+                  maxSeqLen: Number(awqMaxSeqLen),
+                  bits: Number(awqBits),
+                  groupSize: Number(awqGroupSize),
+                  sym: awqSym,
+                  trustRemoteCode: awqTrustRemoteCode,
+                  calibrationMode: awqCalibrationMode,
+                },
+              },
+              wandb: {
+                enabled: wandbEnabled,
+                mode: wandbMode,
+                apiKey: wandbApiKey,
+                project: wandbProject,
+                entity: wandbEntity,
+              },
+            })}
+            disabled={mutation.isPending}
+          >
             {mutation.isPending ? 'Saving…' : 'Save settings'}
           </Button>
           {mutation.data ? <p className="text-sm text-emerald-300">Saved.</p> : null}

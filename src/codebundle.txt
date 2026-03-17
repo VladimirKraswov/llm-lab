@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-17T08:32:39.500Z
+generated: 2026-03-17T10:42:20.271Z
 
 
 
@@ -322,7 +322,7 @@ CONFIG.datasetsDir = path.join(CONFIG.workspace, 'data', 'processed');
 CONFIG.rawDatasetsDir = path.join(CONFIG.workspace, 'data', 'raw');
 CONFIG.trainingConfigsDir = path.join(CONFIG.workspace, 'training', 'configs');
 CONFIG.trainingOutputsDir = path.join(CONFIG.workspace, 'training', 'outputs');
-CONFIG.mergedModelsDir = path.join(CONFIG.workspace, 'exports', 'merged');
+CONFIG.mergedModelsDir = path.join(CONFIG.modelsDir, 'merged');
 CONFIG.packagesDir = path.join(CONFIG.workspace, 'exports', 'packages');
 CONFIG.logsDir = path.join(CONFIG.workspace, 'logs');
 
@@ -388,122 +388,208 @@ path: /python/merge_lora.py
 ----------------------------------------
 import json
 import os
+import shutil
 import sys
+import traceback
 
-def report(p):
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+
+def report(p: int):
     print(f"__PROGRESS__:{p}", flush=True)
 
-def main():
+
+def read_cfg():
     if len(sys.argv) < 2:
         raise SystemExit("Usage: merge_lora.py <config.json>")
 
     with open(sys.argv[1], "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+        return json.load(f)
 
-    adapter_path = cfg["adapterPath"]
-    output_dir = cfg["outputDir"]
 
+def resolve_dtype(dtype_value, torch):
+    value = str(dtype_value or "auto").lower().strip()
+    if value == "auto":
+        return "auto"
+    if value in ("float16", "half", "fp16"):
+        return torch.float16
+    if value in ("bfloat16", "bf16"):
+        return torch.bfloat16
+    if value in ("float32", "float", "fp32"):
+        return torch.float32
+    raise ValueError(f"Unsupported dtype: {dtype_value}")
+
+
+def resolve_device_map(cfg, torch):
+    strategy = str(cfg.get("deviceStrategy", "cpu")).lower().strip()
+
+    if strategy == "cpu":
+        return "cpu"
+
+    if strategy == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA merge requested, but CUDA is not available")
+        cuda_device = int(cfg.get("cudaDevice", 0))
+        return {"": cuda_device}
+
+    if strategy == "auto":
+        if torch.cuda.is_available():
+            cuda_device = int(cfg.get("cudaDevice", 0))
+            return {"": cuda_device}
+        return "cpu"
+
+    raise ValueError(f"Unsupported deviceStrategy: {strategy}")
+
+
+def maybe_clear_output_dir(output_dir: str, overwrite_output: bool):
+    if os.path.exists(output_dir) and overwrite_output:
+        shutil.rmtree(output_dir, ignore_errors=True)
     os.makedirs(output_dir, exist_ok=True)
-    report(10)
-
-    import torch
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    report(15)
-
-    from peft import AutoPeftModelForCausalLM
-    from transformers import AutoTokenizer
-    report(20)
-
-    model = AutoPeftModelForCausalLM.from_pretrained(
-        adapter_path,
-        torch_dtype="auto",
-        device_map=device,
-    )
-    report(50)
-
-    merged = model.merge_and_unload()
-    report(70)
-
-    merged.save_pretrained(output_dir, safe_serialization=True)
-    report(90)
-
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(adapter_path, fix_mistral_regex=True)
-    except TypeError:
-        tokenizer = AutoTokenizer.from_pretrained(adapter_path)
-
-    tokenizer.save_pretrained(output_dir)
-    report(100)
-    print(f"__RESULT__:{output_dir}")
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(str(e), file=sys.stderr)
-        sys.exit(1)
 
 
-path: /python/quantize_awq.py
-----------------------------------------
-import json
-import os
-import sys
+def read_adapter_config(adapter_path: str) -> dict:
+    adapter_cfg_path = os.path.join(adapter_path, "adapter_config.json")
+    if not os.path.exists(adapter_cfg_path):
+        raise FileNotFoundError(f"adapter_config.json not found in {adapter_path}")
+
+    with open(adapter_cfg_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def report(p):
-    print(f"__PROGRESS__:{p}", flush=True)
+def resolve_base_model_path(adapter_path: str, base_model_override: str | None = None) -> str:
+    if base_model_override and str(base_model_override).strip():
+        return str(base_model_override).strip()
+
+    adapter_cfg = read_adapter_config(adapter_path)
+    base_model = str(adapter_cfg.get("base_model_name_or_path") or "").strip()
+    if not base_model:
+        raise ValueError("base_model_name_or_path is missing in adapter_config.json")
+
+    return base_model
+
+
+def save_result(output_dir: str, payload: dict):
+    with open(os.path.join(output_dir, "merge-result.json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
 def main():
-    if len(sys.argv) < 2:
-        raise SystemExit("Usage: quantize_awq.py <config.json>")
+    cfg = read_cfg()
 
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
-        cfg = json.load(f)
-
-    model_path = cfg["modelPath"]
+    adapter_path = cfg["adapterPath"]
     output_dir = cfg["outputDir"]
-    quant_config = cfg.get("quantConfig") or {
-        "zero_point": True,
-        "q_group_size": 128,
-        "w_bit": 4,
-        "version": "GEMM",
-    }
-    trust_remote_code = bool(cfg.get("trustRemoteCode", True))
+    overwrite_output = bool(cfg.get("overwriteOutput", False))
+    low_cpu_mem_usage = bool(cfg.get("lowCpuMemUsage", True))
+    safe_serialization = bool(cfg.get("safeSerialization", True))
+    max_shard_size = str(cfg.get("maxShardSize", "5GB"))
+    trust_remote_code = bool(cfg.get("trustRemoteCode", False))
+    offload_folder_name = str(cfg.get("offloadFolderName", "_offload")).strip() or "_offload"
+    base_model_override = str(cfg.get("baseModelOverride") or "").strip() or None
 
-    os.makedirs(output_dir, exist_ok=True)
-    report(10)
+    maybe_clear_output_dir(output_dir, overwrite_output)
+    offload_dir = os.path.join(output_dir, offload_folder_name)
+    os.makedirs(offload_dir, exist_ok=True)
 
-    from awq import AutoAWQForCausalLM
-    from transformers import AutoTokenizer
-    report(30)
+    report(5)
 
-    model = AutoAWQForCausalLM.from_pretrained(
-        model_path,
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from peft import PeftModel
+
+    report(15)
+
+    dtype = resolve_dtype(cfg.get("dtype", "auto"), torch)
+    device_map = resolve_device_map(cfg, torch)
+    base_model_path = resolve_base_model_path(adapter_path, base_model_override)
+
+    print(json.dumps({
+        "adapterPath": adapter_path,
+        "outputDir": output_dir,
+        "baseModelPath": base_model_path,
+        "baseModelOverride": base_model_override,
+        "deviceStrategy": cfg.get("deviceStrategy", "cpu"),
+        "resolvedDeviceMap": device_map,
+        "dtype": str(cfg.get("dtype", "auto")),
+        "lowCpuMemUsage": low_cpu_mem_usage,
+        "safeSerialization": safe_serialization,
+        "maxShardSize": max_shard_size,
+        "trustRemoteCode": trust_remote_code,
+    }, ensure_ascii=False), flush=True)
+
+    report(25)
+
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
+        dtype=dtype,
+        device_map=device_map,
+        low_cpu_mem_usage=low_cpu_mem_usage,
+        offload_folder=offload_dir,
         trust_remote_code=trust_remote_code,
     )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=trust_remote_code,
+
+    report(50)
+
+    model = PeftModel.from_pretrained(
+        base_model,
+        adapter_path,
+        device_map=device_map,
+        offload_folder=offload_dir,
     )
-    report(55)
 
-    model.quantize(tokenizer, quant_config=quant_config)
-    report(85)
+    report(70)
 
-    model.save_quantized(output_dir)
+    merged = model.merge_and_unload()
+
+    report(82)
+
+    merged.save_pretrained(
+        output_dir,
+        safe_serialization=safe_serialization,
+        max_shard_size=max_shard_size,
+    )
+
+    report(92)
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model_path,
+            trust_remote_code=trust_remote_code,
+            fix_mistral_regex=True,
+        )
+    except TypeError:
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model_path,
+            trust_remote_code=trust_remote_code,
+        )
+
     tokenizer.save_pretrained(output_dir)
-    report(100)
 
+    result = {
+      "ok": True,
+      "adapterPath": adapter_path,
+      "outputDir": output_dir,
+      "baseModelPath": base_model_path,
+      "baseModelOverride": base_model_override,
+      "deviceStrategy": cfg.get("deviceStrategy", "cpu"),
+      "resolvedDeviceMap": device_map,
+      "dtype": str(cfg.get("dtype", "auto")),
+      "lowCpuMemUsage": low_cpu_mem_usage,
+      "safeSerialization": safe_serialization,
+      "maxShardSize": max_shard_size,
+      "trustRemoteCode": trust_remote_code,
+    }
+    save_result(output_dir, result)
+
+    report(100)
     print(f"__RESULT__:{output_dir}")
+    print(json.dumps(result, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
-        print(str(e), file=sys.stderr)
+    except Exception:
+        traceback.print_exc()
         sys.exit(1)
 
 
@@ -1534,8 +1620,14 @@ path: /routes/loras.js
 ----------------------------------------
 const express = require('express');
 const fs = require('fs');
-const { getSettings, getLoras, getLoraById, renameLora, removeLora, getModelById } = require('../services/state');
-const { registerLoraFromJob, ensureMergedLora, packageMergedLora, buildMergedLora } = require('../services/loras');
+const { getSettings, renameLora, removeLora, getModelById } = require('../services/state');
+const {
+  registerLoraFromJob,
+  packageMergedLora,
+  buildMergedLora,
+  reconcileAllLoras,
+  getLoraByIdSafe,
+} = require('../services/loras');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { emitEvent } = require('../services/events');
 const { CONFIG } = require('../config');
@@ -1543,11 +1635,11 @@ const { CONFIG } = require('../config');
 const router = express.Router();
 
 router.get('/', async (_req, res) => {
-  res.json(await getLoras());
+  res.json(await reconcileAllLoras());
 });
 
 router.get('/:id', async (req, res) => {
-  const item = await getLoraById(req.params.id);
+  const item = await getLoraByIdSafe(req.params.id);
   if (!item) return res.status(404).json({ error: 'lora not found' });
   res.json(item);
 });
@@ -1578,7 +1670,7 @@ router.put('/:id', async (req, res) => {
 
 router.post('/:id/build-merged', async (req, res) => {
   try {
-    res.json(await buildMergedLora(req.params.id));
+    res.json(await buildMergedLora(req.params.id, req.body || {}));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -1598,7 +1690,7 @@ router.post('/:id/package', async (req, res) => {
 });
 
 router.get('/:id/package/download', async (req, res) => {
-  const item = await getLoraById(req.params.id);
+  const item = await getLoraByIdSafe(req.params.id);
   if (!item || !item.packagePath || !fs.existsSync(item.packagePath)) {
     return res.status(404).json({ error: 'package not found' });
   }
@@ -1607,7 +1699,7 @@ router.get('/:id/package/download', async (req, res) => {
 
 router.post('/:id/activate', async (req, res) => {
   try {
-    const item = await getLoraById(req.params.id);
+    const item = await getLoraByIdSafe(req.params.id);
     if (!item) return res.status(404).json({ error: 'lora not found' });
     if (item.status !== 'ready') return res.status(400).json({ error: 'lora is not ready' });
 
@@ -1721,7 +1813,6 @@ const router = express.Router();
 router.get('/', async (_req, res) => {
   const models = await getModels();
 
-  // Backfill metadata for models missing it
   const { getModelMetadata } = require('../utils/model-meta');
   const { upsertModel } = require('../services/state');
 
@@ -1861,7 +1952,6 @@ router.get('/:id/download', async (req, res) => {
     return res.status(404).json({ error: 'model not found or not ready' });
   }
 
-  // Models are directories, so we need to tar them
   const archiveName = `${item.name.replace(/[^a-z0-9]/gi, '_')}.tar.gz`;
   res.setHeader('Content-Disposition', `attachment; filename="${archiveName}"`);
   res.setHeader('Content-Type', 'application/gzip');
@@ -3550,16 +3640,18 @@ const {
   getModelById,
   upsertLora,
   addModel,
+  getLoras,
 } = require('./state');
 const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');
 const logger = require('../utils/logger');
-const { getDirSize, formatSize } = require('../utils/model-meta');
+const { getDirSize, formatSize, getModelMetadata } = require('../utils/model-meta');
 const { spawnPythonJsonScript } = require('../utils/python-runner');
 const {
   registerManagedProcess,
   unregisterManagedProcess,
 } = require('../utils/managed-processes');
+const { clearGpuMemory } = require('../utils/gpu');
 
 async function registerLoraFromJob(jobId, customName = null) {
   const existing = await getLoraByJobId(jobId);
@@ -3594,6 +3686,9 @@ async function registerLoraFromJob(jobId, customName = null) {
     packageStatus: 'not_built',
     error: null,
     configPath: null,
+    mergeLogFile: null,
+    mergeOptions: null,
+    mergeArtifacts: [],
   });
 
   const size = fs.existsSync(item.adapterPath) ? getDirSize(item.adapterPath) : 0;
@@ -3605,16 +3700,212 @@ async function registerLoraFromJob(jobId, customName = null) {
   return final;
 }
 
-async function buildMergedLora(loraId) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildMergedPath(item, mergeOptions = {}) {
+  const customOutputName = String(mergeOptions.customOutputName || '').trim();
+  if (customOutputName) {
+    return path.join(CONFIG.mergedModelsDir, customOutputName);
+  }
+  return path.join(CONFIG.mergedModelsDir, `${item.id}-merged`);
+}
+
+function getMergeArtifacts(mergedPath) {
+  try {
+    if (!mergedPath || !fs.existsSync(mergedPath)) return [];
+    return fs.readdirSync(mergedPath).map((name) => {
+      const filePath = path.join(mergedPath, name);
+      const stats = fs.statSync(filePath);
+      return {
+        name,
+        path: filePath,
+        size: stats.size,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function resolveBaseModelForMerge(item, mergeOptions = {}) {
+  if (mergeOptions.baseModelSource === 'manual') {
+    const manual = String(mergeOptions.baseModelOverride || '').trim();
+    if (!manual) {
+      throw new Error('baseModelOverride is required when baseModelSource=manual');
+    }
+    return manual;
+  }
+
+  if (item.baseModelId) {
+    const model = await getModelById(item.baseModelId);
+    if (model?.path) return model.path;
+  }
+
+  if (item.baseModelRef) return item.baseModelRef;
+
+  throw new Error('Unable to resolve base model for merge');
+}
+
+async function finalizeMergeSuccess(loraId, mergedPath, configPath, mergeLogFile) {
+  const current = await getLoraById(loraId);
+  if (!current) return null;
+
+  const artifacts = getMergeArtifacts(mergedPath);
+  const size = fs.existsSync(mergedPath) ? getDirSize(mergedPath) : 0;
+
+  const next = await upsertLora({
+    ...current,
+    mergeStatus: 'ready',
+    mergeProgress: 100,
+    mergePid: null,
+    mergedPath,
+    error: null,
+    configPath,
+    mergeLogFile,
+    mergeArtifacts: artifacts,
+  });
+
+  emitEvent('lora_updated', next);
+
+  const alreadyRegistered = current.mergedModelId
+    ? await getModelById(current.mergedModelId)
+    : null;
+
+  if (!alreadyRegistered) {
+    try {
+      const modelId = uid('model');
+      const modelMeta = getModelMetadata(mergedPath);
+
+      await addModel({
+        id: modelId,
+        name: `Merged: ${current.name}`,
+        repoId: `local/merged/${current.id}`,
+        createdAt: nowIso(),
+        status: 'ready',
+        path: mergedPath,
+        error: null,
+        fromLoraId: loraId,
+        configPath,
+        ...modelMeta,
+      });
+
+      const updated = await upsertLora({
+        ...next,
+        mergedModelId: modelId,
+        mergedModelSize: size,
+        mergedModelSizeHuman: formatSize(size),
+      });
+
+      emitEvent('lora_updated', updated);
+      return updated;
+    } catch (err) {
+      logger.error('Failed to register merged model', {
+        loraId,
+        error: String(err.message || err),
+      });
+    }
+  }
+
+  return next;
+}
+
+async function finalizeMergeFailure(loraId, error, configPath, mergeLogFile) {
+  const current = await getLoraById(loraId);
+  if (!current) return null;
+
+  const next = await upsertLora({
+    ...current,
+    mergeStatus: 'failed',
+    mergePid: null,
+    error: String(error || 'merge failed'),
+    configPath,
+    mergeLogFile,
+  });
+
+  emitEvent('lora_updated', next);
+  return next;
+}
+
+async function reconcileLoraMergeState(item) {
+  if (!item) return null;
+  if (item.mergeStatus !== 'building') return item;
+
+  if (item.mergePid && isPidRunning(item.mergePid)) {
+    return item;
+  }
+
+  const mergedPath = item.mergedPath;
+  const resultFile = mergedPath ? path.join(mergedPath, 'merge-result.json') : null;
+
+  if (resultFile && fs.existsSync(resultFile)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+      if (parsed?.ok) {
+        logger.info('Reconciling finished merge from artifacts', {
+          loraId: item.id,
+          mergedPath,
+        });
+        return await finalizeMergeSuccess(item.id, mergedPath, item.configPath, item.mergeLogFile);
+      }
+    } catch (err) {
+      logger.warn('Failed to parse merge-result.json during reconcile', {
+        loraId: item.id,
+        error: String(err.message || err),
+      });
+    }
+  }
+
+  logger.warn('Reconciling dead merge process as failed', {
+    loraId: item.id,
+    mergePid: item.mergePid,
+  });
+
+  return await finalizeMergeFailure(
+    item.id,
+    'Merge process exited but final status was not recorded',
+    item.configPath,
+    item.mergeLogFile,
+  );
+}
+
+async function getLoraByIdSafe(id) {
+  const item = await getLoraById(id);
+  if (!item) return null;
+  return reconcileLoraMergeState(item);
+}
+
+async function buildMergedLora(loraId, options = {}) {
   const item = await getLoraById(loraId);
   if (!item) throw new Error('lora not found');
+
+  const settings = require('./state');
+  const userSettings = await settings.getSettings();
+  const mergeOptions = {
+    ...(userSettings.merge || {}),
+    ...(options || {}),
+  };
+
   if (item.mergeStatus === 'building' && item.mergePid && isPidRunning(item.mergePid)) {
     return item;
   }
 
-  const mergedPath = path.join(CONFIG.mergedModelsDir, `${item.id}-merged`);
+  const resolvedBaseModel = await resolveBaseModelForMerge(item, mergeOptions);
+  const mergedPath = buildMergedPath(item, mergeOptions);
+  const mergeLogFile = path.join(CONFIG.logsDir, `${item.id}-merge.log`);
+
   fs.mkdirSync(CONFIG.mergedModelsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
+  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
+
+  if (mergeOptions.clearGpuBeforeMerge && mergeOptions.deviceStrategy !== 'cpu') {
+    await clearGpuMemory({ types: ['runtime'] });
+  }
+
+  try {
+    fs.rmSync(mergeLogFile, { force: true });
+  } catch {}
 
   const next0 = await upsertLora({
     ...item,
@@ -3624,6 +3915,12 @@ async function buildMergedLora(loraId) {
     mergePid: null,
     error: null,
     configPath: null,
+    mergeLogFile,
+    mergeOptions: {
+      ...mergeOptions,
+      baseModelOverride: mergeOptions.baseModelSource === 'manual' ? resolvedBaseModel : '',
+    },
+    mergeArtifacts: [],
   });
   emitEvent('lora_updated', next0);
 
@@ -3631,7 +3928,11 @@ async function buildMergedLora(loraId) {
   const payload = {
     adapterPath: item.adapterPath,
     outputDir: mergedPath,
+    ...mergeOptions,
+    baseModelOverride: resolvedBaseModel,
   };
+
+  const outFd = fs.openSync(mergeLogFile, 'w');
 
   const { child, configPath } = await spawnPythonJsonScript({
     pythonBin: CONFIG.pythonBin,
@@ -3639,7 +3940,7 @@ async function buildMergedLora(loraId) {
     payload,
     cwd: CONFIG.workspace,
     detached: true,
-    stdio: 'pipe',
+    stdio: ['ignore', outFd, outFd],
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
     configDir: CONFIG.trainingConfigsDir,
     configPrefix: `merge-${loraId}`,
@@ -3656,6 +3957,7 @@ async function buildMergedLora(loraId) {
       loraId,
       mergedPath,
       adapterPath: item.adapterPath,
+      mergeLogFile,
     },
   });
 
@@ -3666,26 +3968,6 @@ async function buildMergedLora(loraId) {
   });
   emitEvent('lora_updated', building);
 
-  let stderr = '';
-
-  child.stderr.on('data', (data) => {
-    stderr += data.toString();
-  });
-
-  child.stdout.on('data', async (data) => {
-    const lines = data.toString().split('\n');
-    for (const line of lines) {
-      if (line.startsWith('__PROGRESS__:')) {
-        const p = parseInt(line.split(':')[1], 10);
-        const cur = await getLoraById(loraId);
-        if (cur) {
-          const next = await upsertLora({ ...cur, mergeProgress: p });
-          emitEvent('lora_updated', next);
-        }
-      }
-    }
-  });
-
   child.on('exit', async (code) => {
     await unregisterManagedProcess(child.pid);
 
@@ -3695,51 +3977,10 @@ async function buildMergedLora(loraId) {
       configPath,
     });
 
-    const current = await getLoraById(loraId);
-    if (!current) return;
-
-    const isOk = code === 0;
-
-    const next = await upsertLora({
-      ...current,
-      mergeStatus: isOk ? 'ready' : 'failed',
-      mergeProgress: isOk ? 100 : current.mergeProgress,
-      mergePid: null,
-      mergedPath: isOk ? mergedPath : current.mergedPath,
-      error: isOk ? null : (stderr.trim() || `exit code ${code}`),
-      configPath,
-    });
-    emitEvent('lora_updated', next);
-
-    if (isOk) {
-      logger.info(`LoRA merge completed: ${loraId}`, { mergedPath, configPath });
-
-      try {
-        const modelId = uid('model');
-        await addModel({
-          id: modelId,
-          name: `Merged: ${current.name}`,
-          repoId: `local/${current.id}`,
-          createdAt: nowIso(),
-          status: 'ready',
-          path: mergedPath,
-          error: null,
-          fromLoraId: loraId,
-          configPath,
-        });
-        logger.info(`Merged model added to library`, { modelId, loraId, configPath });
-      } catch (err) {
-        logger.error(`Failed to add merged model to library`, {
-          error: err.message,
-          loraId,
-          configPath,
-        });
-      }
+    if (code === 0) {
+      await finalizeMergeSuccess(loraId, mergedPath, configPath, mergeLogFile);
     } else {
-      logger.error(`LoRA merge failed: ${loraId}`, {
-        error: next.error,
-        configPath,
-      });
+      await finalizeMergeFailure(loraId, `merge exited with code ${code}`, configPath, mergeLogFile);
     }
   });
 
@@ -3752,28 +3993,14 @@ async function buildMergedLora(loraId) {
       error: String(err.message || err),
     });
 
-    const current = await getLoraById(loraId);
-    if (!current) return;
-
-    const next = await upsertLora({
-      ...current,
-      mergeStatus: 'failed',
-      mergePid: null,
-      error: String(err.message || err),
-      configPath,
-    });
-    emitEvent('lora_updated', next);
+    await finalizeMergeFailure(loraId, String(err.message || err), configPath, mergeLogFile);
   });
 
   return building;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function ensureMergedLora(loraId) {
-  let item = await getLoraById(loraId);
+  let item = await getLoraByIdSafe(loraId);
   if (!item) throw new Error('lora not found');
 
   if (item.mergeStatus === 'ready' && item.mergedPath && fs.existsSync(item.mergedPath)) {
@@ -3786,7 +4013,8 @@ async function ensureMergedLora(loraId) {
 
   while (true) {
     await sleep(2000);
-    item = await getLoraById(loraId);
+    item = await getLoraByIdSafe(loraId);
+    if (!item) throw new Error('lora not found');
     if (item.mergeStatus !== 'building') break;
   }
 
@@ -3795,7 +4023,7 @@ async function ensureMergedLora(loraId) {
 }
 
 async function packageMergedLora(loraId) {
-  let item = await getLoraById(loraId);
+  let item = await getLoraByIdSafe(loraId);
   if (!item) throw new Error('lora not found');
 
   if (item.mergeStatus !== 'ready') {
@@ -3858,13 +4086,9 @@ async function packageMergedLora(loraId) {
   child.on('exit', async (code) => {
     await unregisterManagedProcess(child.pid);
 
-    logger.info('LoRA package process exited', {
-      loraId,
-      code,
-      archivePath,
-    });
-
     const current = await getLoraById(loraId);
+    if (!current) return;
+
     const next = await upsertLora({
       ...current,
       packageStatus: code === 0 ? 'ready' : 'failed',
@@ -3873,29 +4097,10 @@ async function packageMergedLora(loraId) {
       error: code === 0 ? null : (stderr.trim() || `exit code ${code}`),
     });
     emitEvent('lora_updated', next);
-
-    if (code === 0) {
-      logger.info('LoRA package completed', {
-        loraId,
-        archivePath,
-      });
-    } else {
-      logger.error('LoRA package failed', {
-        loraId,
-        archivePath,
-        error: next.error,
-      });
-    }
   });
 
   child.on('error', async (err) => {
     await unregisterManagedProcess(child.pid);
-
-    logger.error('LoRA package process error', {
-      loraId,
-      archivePath,
-      error: String(err.message || err),
-    });
 
     const current = await getLoraById(loraId);
     if (!current) return;
@@ -3912,11 +4117,23 @@ async function packageMergedLora(loraId) {
   return building;
 }
 
+async function reconcileAllLoras() {
+  const items = await getLoras();
+  const out = [];
+  for (const item of items) {
+    out.push(await reconcileLoraMergeState(item));
+  }
+  return out;
+}
+
 module.exports = {
   registerLoraFromJob,
   buildMergedLora,
   ensureMergedLora,
   packageMergedLora,
+  reconcileLoraMergeState,
+  reconcileAllLoras,
+  getLoraByIdSafe,
 };
 
 
@@ -4153,8 +4370,11 @@ async function quantizeModel({
   if (!source) throw new Error('source model not found');
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
-  const requestedMethod = method;
-  const effectiveMethod = requestedMethod;
+  const effectiveMethod = String(method || 'awq').toLowerCase();
+  if (effectiveMethod !== 'awq') {
+    throw new Error(`Unsupported quantization method: ${method}`);
+  }
+
   const effectiveRunner = runner || 'quant_env';
 
   const existing = (await getModels()).find(m =>
@@ -4174,7 +4394,7 @@ async function quantizeModel({
   }
 
   const newId = uid('model');
-  const methodLabel = effectiveMethod === 'awq-legacy' ? `awq-${bits || 4}bit` : effectiveMethod;
+  const methodLabel = effectiveMethod;
   const slug = safeSlug(name || `${source.name}-${methodLabel}`);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${newId}`);
   const logFile = path.join(CONFIG.logsDir, `${newId}.log`);
@@ -4190,9 +4410,9 @@ async function quantizeModel({
     pid: null,
     error: null,
     quantization: effectiveMethod,
-    bits: bits || (effectiveMethod === 'fp8' ? 8 : 4),
+    bits: bits || 4,
     groupSize: groupSize || 128,
-    sym: sym !== undefined ? sym : true,
+    sym: sym !== undefined ? sym : false,
     sourceModelId: modelId,
     configPath: null,
     runner: effectiveRunner,
@@ -4205,8 +4425,8 @@ async function quantizeModel({
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  let scriptFile = 'quantize_llm_compressor.py';
-  let payload = {
+  const scriptFile = 'quantize_llm_compressor.py';
+  const payload = {
     modelPath: source.path,
     outputDir: modelPath,
     method: effectiveMethod,
@@ -4218,21 +4438,6 @@ async function quantizeModel({
     sym,
     trustRemoteCode: true,
   };
-
-  if (effectiveMethod === 'awq-legacy') {
-    scriptFile = 'quantize_awq.py';
-    payload = {
-      modelPath: source.path,
-      outputDir: modelPath,
-      quantConfig: {
-        zero_point: true,
-        q_group_size: groupSize || 128,
-        w_bit: bits || 4,
-        version: 'GEMM',
-      },
-      trustRemoteCode: true,
-    };
-  }
 
   const scriptPath = path.join(__dirname, '..', 'python', scriptFile);
   const outFd = fs.openSync(logFile, 'a');
@@ -4260,7 +4465,6 @@ async function quantizeModel({
       modelId: newId,
       sourceModelId: modelId,
       method: effectiveMethod,
-      requestedMethod,
       runner: effectiveRunner,
       modelPath,
       logFile,
@@ -4290,7 +4494,6 @@ async function quantizeModel({
     paramsSnapshot: {
       ...payload,
       runner: effectiveRunner,
-      requestedMethod,
       effectiveMethod,
     },
   });
@@ -4304,7 +4507,6 @@ async function quantizeModel({
       sourceModelId: modelId,
       code,
       method: effectiveMethod,
-      requestedMethod,
       runner: effectiveRunner,
       configPath,
     });
@@ -4342,7 +4544,6 @@ async function quantizeModel({
         modelId: newId,
         sourceModelId: modelId,
         method: effectiveMethod,
-        requestedMethod,
         runner: effectiveRunner,
         configPath,
       });
@@ -4351,7 +4552,6 @@ async function quantizeModel({
         modelId: newId,
         sourceModelId: modelId,
         method: effectiveMethod,
-        requestedMethod,
         runner: effectiveRunner,
         error: next.error,
         configPath,
@@ -4366,7 +4566,6 @@ async function quantizeModel({
       modelId: newId,
       sourceModelId: modelId,
       method: effectiveMethod,
-      requestedMethod,
       runner: effectiveRunner,
       configPath,
       error: String(err.message || err),
@@ -5380,6 +5579,21 @@ const DEFAULT_SETTINGS = {
     loraDropout: 0,
     targetModules: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
   },
+  merge: {
+    deviceStrategy: 'cpu',
+    cudaDevice: 0,
+    dtype: 'float16',
+    lowCpuMemUsage: true,
+    safeSerialization: true,
+    overwriteOutput: false,
+    maxShardSize: '5GB',
+    offloadFolderName: '_offload',
+    clearGpuBeforeMerge: false,
+    trustRemoteCode: false,
+    registerAsModel: true,
+    baseModelSource: 'auto',
+    baseModelOverride: '',
+  },
   wandb: {
     enabled: false,
     mode: 'online',
@@ -5498,6 +5712,10 @@ async function getSettings() {
       ...DEFAULT_SETTINGS.qlora,
       ...(current.qlora || {}),
     },
+    merge: {
+      ...DEFAULT_SETTINGS.merge,
+      ...(current.merge || {}),
+    },
     wandb: {
       ...DEFAULT_SETTINGS.wandb,
       ...(current.wandb || {}),
@@ -5516,6 +5734,7 @@ async function setSettings(next) {
       ...current,
       ...next,
       qlora: { ...current.qlora, ...(next.qlora || {}) },
+      merge: { ...current.merge, ...(next.merge || {}) },
       wandb: { ...current.wandb, ...(next.wandb || {}) },
       inference: { ...current.inference, ...(next.inference || {}) },
     };
@@ -6391,6 +6610,12 @@ async function removeFile(file) {
   }
 }
 
+async function resetFile(file) {
+  try {
+    await fsp.rm(file, { force: true });
+  } catch {}
+}
+
 module.exports = {
   exists,
   ensureDir,
@@ -6398,6 +6623,7 @@ module.exports = {
   writeJson,
   readText,
   removeFile,
+  resetFile,
 };
 
 
@@ -7011,8 +7237,8 @@ module.exports = {
 
 
 === SUMMARY ===
-included: 44
+included: 43
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 185086
+totalBytes(approx): 192337

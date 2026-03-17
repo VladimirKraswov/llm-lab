@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import traceback
+import torch
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from llmcompressor import oneshot
@@ -12,14 +13,35 @@ def report(p: int):
     print(f"__PROGRESS__:{p}", flush=True)
 
 
-def build_local_text_dataset(dataset_path: str | None, num_samples: int):
+def resolve_torch_dtype(dtype_value):
+    value = str(dtype_value or "float16").lower().strip()
+
+    if value in ("float16", "half", "fp16"):
+        return torch.float16
+    if value in ("bfloat16", "bf16"):
+        return torch.bfloat16
+    if value in ("float32", "float", "fp32"):
+        return torch.float32
+    if value == "auto":
+        return "auto"
+
+    raise ValueError(f"Unsupported dtype: {dtype_value}")
+
+
+def build_local_text_dataset(
+    dataset_path: str | None,
+    num_samples: int,
+    calibration_mode: str = "text_only",
+):
     if not dataset_path or not os.path.exists(dataset_path):
         return "open_platypus"
 
     rows: list[str] = []
+    calibration_mode = str(calibration_mode or "text_only").lower().strip()
+
     with open(dataset_path, "r", encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            if i >= num_samples:
+        for line in f:
+            if len(rows) >= num_samples:
                 break
 
             line = line.strip()
@@ -30,8 +52,13 @@ def build_local_text_dataset(dataset_path: str | None, num_samples: int):
 
             if isinstance(item, dict):
                 text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    rows.append(text)
+                if isinstance(text, str):
+                    text = text.strip()
+                    if text:
+                        rows.append(text)
+                        continue
+
+                if calibration_mode == "text_only":
                     continue
 
                 messages = item.get("messages")
@@ -40,23 +67,30 @@ def build_local_text_dataset(dataset_path: str | None, num_samples: int):
                     for msg in messages:
                         if not isinstance(msg, dict):
                             continue
-                        role = str(msg.get("role", "")).strip()
                         content = str(msg.get("content", "")).strip()
                         if content:
-                            parts.append(f"{role}: {content}" if role else content)
-                    if parts:
-                        rows.append("\n".join(parts))
+                            parts.append(content)
+                    merged = "\n".join(parts).strip()
+                    if merged:
+                        rows.append(merged)
                         continue
 
                 if "instruction" in item and "output" in item:
-                    rows.append(f"{item.get('instruction', '')}\n\n{item.get('output', '')}")
-                    continue
+                    merged = f"{item.get('instruction', '')}\n\n{item.get('output', '')}".strip()
+                    if merged:
+                        rows.append(merged)
+                        continue
 
                 if "prompt" in item and "completion" in item:
-                    rows.append(f"{item.get('prompt', '')}\n\n{item.get('completion', '')}")
-                    continue
+                    merged = f"{item.get('prompt', '')}\n\n{item.get('completion', '')}".strip()
+                    if merged:
+                        rows.append(merged)
+                        continue
 
-            rows.append(str(item))
+            elif calibration_mode != "text_only":
+                text = str(item).strip()
+                if text:
+                    rows.append(text)
 
     return rows if rows else "open_platypus"
 
@@ -101,11 +135,13 @@ def main():
     output_dir = cfg["outputDir"]
     method = str(cfg.get("method", "awq")).lower()
     dataset_path = cfg.get("datasetPath")
-    num_samples = int(cfg.get("numSamples", 128))
-    max_seq_len = int(cfg.get("maxSeqLen", 2048))
+    num_samples = int(cfg.get("numSamples", 32))
+    max_seq_len = int(cfg.get("maxSeqLen", 1024))
     bits = int(cfg.get("bits", 4))
     group_size = int(cfg.get("groupSize", 128))
     sym = bool(cfg.get("sym", False))
+    dtype = cfg.get("dtype", "float16")
+    calibration_mode = cfg.get("calibrationMode", "text_only")
     trust_remote_code = bool(cfg.get("trustRemoteCode", True))
 
     if method != "awq":
@@ -129,13 +165,17 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        dtype="auto",
+        torch_dtype=resolve_torch_dtype(dtype),
         trust_remote_code=trust_remote_code,
     )
 
     report(35)
 
-    dataset = build_local_text_dataset(dataset_path, num_samples)
+    dataset = build_local_text_dataset(
+        dataset_path=dataset_path,
+        num_samples=num_samples,
+        calibration_mode=calibration_mode,
+    )
 
     report(50)
 

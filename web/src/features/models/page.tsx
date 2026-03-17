@@ -31,6 +31,12 @@ export default function ModelsPage() {
     refetchInterval: 5000,
   });
 
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    staleTime: 30_000,
+  });
+
   const statsQuery = useQuery({
     queryKey: ['monitor-stats'],
     queryFn: api.getMonitorStats,
@@ -110,18 +116,25 @@ export default function ModelsPage() {
   const hasActiveBuild = quantizeMutation.isPending;
 
   const runQuickAwq = (modelId: string, modelName: string) => {
+    const awq = settingsQuery.data?.quantization?.awq;
+
     quantizeMutation.mutate({
       modelId,
       method: 'awq',
       name: `${modelName} AWQ`,
-      bits: 4,
-      groupSize: 128,
-      numSamples: 128,
-      maxSeqLen: 2048,
-      sym: true,
+      bits: awq?.bits ?? 4,
+      groupSize: awq?.groupSize ?? 128,
+      numSamples: awq?.numSamples ?? 32,
+      maxSeqLen: awq?.maxSeqLen ?? 1024,
+      sym: awq?.sym ?? false,
+      dtype: awq?.dtype ?? 'float16',
+      calibrationMode: awq?.calibrationMode ?? 'text_only',
+      trustRemoteCode: awq?.trustRemoteCode ?? true,
       runner: 'quant_env',
     });
   };
+
+  const awqDefaults = settingsQuery.data?.quantization?.awq;
 
   return (
     <div className="space-y-6">
@@ -170,12 +183,12 @@ export default function ModelsPage() {
               <span className="font-medium">AWQ conversion</span>
             </div>
             <div className="mt-1 text-sm text-slate-300">
-              Quick AWQ запускает рекомендуемые параметры сразу через isolated quant_env. Кнопка AWQ… открывает расширенную настройку.
+              Quick AWQ использует backend defaults из Settings → AWQ. Кнопка AWQ… открывает расширенную настройку.
             </div>
           </div>
 
           <div className="text-xs text-slate-400">
-            Recommended default: 4-bit · group 128 · 128 samples · seq 2048
+            Default: {awqDefaults?.dtype || 'float16'} · {awqDefaults?.bits ?? 4}-bit · group {awqDefaults?.groupSize ?? 128} · {awqDefaults?.numSamples ?? 32} samples · seq {awqDefaults?.maxSeqLen ?? 1024}
           </div>
         </CardContent>
       </Card>

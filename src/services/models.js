@@ -224,6 +224,9 @@ async function quantizeModel({
   groupSize,
   sym,
   runner,
+  dtype,
+  calibrationMode,
+  trustRemoteCode,
 }) {
   const source = await getModelById(modelId);
   if (!source) throw new Error('source model not found');
@@ -236,14 +239,27 @@ async function quantizeModel({
 
   const effectiveRunner = runner || 'quant_env';
 
+  const { getSettings } = require('./state');
+  const settings = await getSettings();
+  const awqDefaults = settings.quantization?.awq || {};
+
+  const effectiveBits = bits ?? awqDefaults.bits ?? 4;
+  const effectiveGroupSize = groupSize ?? awqDefaults.groupSize ?? 128;
+  const effectiveSym = sym ?? awqDefaults.sym ?? false;
+  const effectiveNumSamples = numSamples ?? awqDefaults.numSamples ?? 32;
+  const effectiveMaxSeqLen = maxSeqLen ?? awqDefaults.maxSeqLen ?? 1024;
+  const effectiveDtype = dtype ?? awqDefaults.dtype ?? 'float16';
+  const effectiveCalibrationMode = calibrationMode ?? awqDefaults.calibrationMode ?? 'text_only';
+  const effectiveTrustRemoteCode = trustRemoteCode ?? awqDefaults.trustRemoteCode ?? true;
+
   const existing = (await getModels()).find(m =>
     m.sourceModelId === modelId &&
     m.quantization === effectiveMethod &&
     m.status === 'ready' &&
     m.runner === effectiveRunner &&
-    (!bits || m.bits === bits) &&
-    (!groupSize || m.groupSize === groupSize) &&
-    (sym === undefined || m.sym === sym)
+    m.bits === effectiveBits &&
+    m.groupSize === effectiveGroupSize &&
+    m.sym === effectiveSym
   );
   if (existing) {
     return {
@@ -269,9 +285,9 @@ async function quantizeModel({
     pid: null,
     error: null,
     quantization: effectiveMethod,
-    bits: bits || 4,
-    groupSize: groupSize || 128,
-    sym: sym !== undefined ? sym : false,
+    bits: effectiveBits,
+    groupSize: effectiveGroupSize,
+    sym: effectiveSym,
     sourceModelId: modelId,
     configPath: null,
     runner: effectiveRunner,
@@ -290,12 +306,14 @@ async function quantizeModel({
     outputDir: modelPath,
     method: effectiveMethod,
     datasetPath,
-    numSamples,
-    maxSeqLen,
-    bits,
-    groupSize,
-    sym,
-    trustRemoteCode: true,
+    numSamples: effectiveNumSamples,
+    maxSeqLen: effectiveMaxSeqLen,
+    bits: effectiveBits,
+    groupSize: effectiveGroupSize,
+    sym: effectiveSym,
+    dtype: effectiveDtype,
+    calibrationMode: effectiveCalibrationMode,
+    trustRemoteCode: effectiveTrustRemoteCode,
   };
 
   const scriptPath = path.join(__dirname, '..', 'python', scriptFile);

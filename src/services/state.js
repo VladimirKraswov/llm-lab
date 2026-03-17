@@ -52,6 +52,18 @@ const DEFAULT_SETTINGS = {
     baseModelSource: 'auto',
     baseModelOverride: '',
   },
+  quantization: {
+    awq: {
+      dtype: 'float16',
+      numSamples: 32,
+      maxSeqLen: 1024,
+      bits: 4,
+      groupSize: 128,
+      sym: false,
+      trustRemoteCode: true,
+      calibrationMode: 'text_only',
+    },
+  },
   wandb: {
     enabled: false,
     mode: 'online',
@@ -174,6 +186,14 @@ async function getSettings() {
       ...DEFAULT_SETTINGS.merge,
       ...(current.merge || {}),
     },
+    quantization: {
+      ...DEFAULT_SETTINGS.quantization,
+      ...(current.quantization || {}),
+      awq: {
+        ...DEFAULT_SETTINGS.quantization.awq,
+        ...((current.quantization || {}).awq || {}),
+      },
+    },
     wandb: {
       ...DEFAULT_SETTINGS.wandb,
       ...(current.wandb || {}),
@@ -193,6 +213,14 @@ async function setSettings(next) {
       ...next,
       qlora: { ...current.qlora, ...(next.qlora || {}) },
       merge: { ...current.merge, ...(next.merge || {}) },
+      quantization: {
+        ...current.quantization,
+        ...(next.quantization || {}),
+        awq: {
+          ...(current.quantization?.awq || {}),
+          ...((next.quantization || {}).awq || {}),
+        },
+      },
       wandb: { ...current.wandb, ...(next.wandb || {}) },
       inference: { ...current.inference, ...(next.inference || {}) },
     };

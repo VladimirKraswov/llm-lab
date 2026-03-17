@@ -34,6 +34,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
 
+export type AwqCalibrationMode = 'text_only' | 'permissive';
+
 export type Settings = {
   baseModel: string;
   qlora: {
@@ -49,6 +51,18 @@ export type Settings = {
     loraDropout: number;
     targetModules: string[];
     useLora?: boolean;
+  };
+  quantization: {
+    awq: {
+      dtype: string;
+      numSamples: number;
+      maxSeqLen: number;
+      bits: number;
+      groupSize: number;
+      sym: boolean;
+      trustRemoteCode: boolean;
+      calibrationMode: AwqCalibrationMode;
+    };
   };
   inference: {
     provider: string;
@@ -493,6 +507,9 @@ export const api = {
     groupSize?: number;
     sym?: boolean;
     runner?: 'ml_env' | 'quant_env';
+    dtype?: string;
+    calibrationMode?: AwqCalibrationMode;
+    trustRemoteCode?: boolean;
   }) =>
     request<ModelItem>('/models/quantize', {
       method: 'POST',

@@ -132,7 +132,7 @@ def main():
 
     base_model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
-        dtype=dtype,
+        torch_dtype=dtype,
         device_map=device_map,
         low_cpu_mem_usage=low_cpu_mem_usage,
         offload_folder=offload_dir,
@@ -177,18 +177,18 @@ def main():
     tokenizer.save_pretrained(output_dir)
 
     result = {
-      "ok": True,
-      "adapterPath": adapter_path,
-      "outputDir": output_dir,
-      "baseModelPath": base_model_path,
-      "baseModelOverride": base_model_override,
-      "deviceStrategy": cfg.get("deviceStrategy", "cpu"),
-      "resolvedDeviceMap": device_map,
-      "dtype": str(cfg.get("dtype", "auto")),
-      "lowCpuMemUsage": low_cpu_mem_usage,
-      "safeSerialization": safe_serialization,
-      "maxShardSize": max_shard_size,
-      "trustRemoteCode": trust_remote_code,
+        "ok": True,
+        "adapterPath": adapter_path,
+        "outputDir": output_dir,
+        "baseModelPath": base_model_path,
+        "baseModelOverride": base_model_override,
+        "deviceStrategy": cfg.get("deviceStrategy", "cpu"),
+        "resolvedDeviceMap": device_map,
+        "dtype": str(cfg.get("dtype", "auto")),
+        "lowCpuMemUsage": low_cpu_mem_usage,
+        "safeSerialization": safe_serialization,
+        "maxShardSize": max_shard_size,
+        "trustRemoteCode": trust_remote_code,
     }
     save_result(output_dir, result)
 

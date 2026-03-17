@@ -74,6 +74,9 @@ router.post('/quantize', async (req, res) => {
       groupSize,
       sym,
       runner,
+      dtype,
+      calibrationMode,
+      trustRemoteCode,
     } = req.body || {};
 
     res.json(await quantizeModel({
@@ -87,6 +90,9 @@ router.post('/quantize', async (req, res) => {
       groupSize,
       sym,
       runner,
+      dtype,
+      calibrationMode,
+      trustRemoteCode,
     }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
