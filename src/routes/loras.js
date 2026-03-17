@@ -1,21 +1,12 @@
 const express = require('express');
 const fs = require('fs');
-const {
-  getSettings,
-  getLoras,
-  getLoraById,
-  renameLora,
-  removeLora,
-  getModelById,
-} = require('../services/state');
+const { getSettings, renameLora, removeLora, getModelById } = require('../services/state');
 const {
   registerLoraFromJob,
-  ensureMergedLora,
   packageMergedLora,
   buildMergedLora,
-  getMergeOptionsInfo,
-  getMergeLogs,
-  cancelMergedLoraBuild,
+  reconcileAllLoras,
+  getLoraByIdSafe,
 } = require('../services/loras');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { emitEvent } = require('../services/events');
@@ -24,30 +15,13 @@ const { CONFIG } = require('../config');
 const router = express.Router();
 
 router.get('/', async (_req, res) => {
-  res.json(await getLoras());
-});
-
-router.get('/merge-options', async (_req, res) => {
-  try {
-    res.json(await getMergeOptionsInfo());
-  } catch (err) {
-    res.status(500).json({ error: String(err.message || err) });
-  }
+  res.json(await reconcileAllLoras());
 });
 
 router.get('/:id', async (req, res) => {
-  const item = await getLoraById(req.params.id);
+  const item = await getLoraByIdSafe(req.params.id);
   if (!item) return res.status(404).json({ error: 'lora not found' });
   res.json(item);
-});
-
-router.get('/:id/merge-logs', async (req, res) => {
-  try {
-    const tail = Math.max(20, Math.min(2000, Number(req.query.tail || 200)));
-    res.json(await getMergeLogs(req.params.id, tail));
-  } catch (err) {
-    res.status(404).json({ error: String(err.message || err) });
-  }
 });
 
 router.post('/from-job', async (req, res) => {
@@ -76,21 +50,9 @@ router.put('/:id', async (req, res) => {
 
 router.post('/:id/build-merged', async (req, res) => {
   try {
-    const item = await buildMergedLora(req.params.id, req.body || {});
-    res.json({
-      ok: true,
-      lora: item,
-    });
+    res.json(await buildMergedLora(req.params.id, req.body || {}));
   } catch (err) {
-    res.status(400).json({ error: String(err.message || err) });
-  }
-});
-
-router.post('/:id/cancel-merge', async (req, res) => {
-  try {
-    res.json(await cancelMergedLoraBuild(req.params.id));
-  } catch (err) {
-    res.status(400).json({ error: String(err.message || err) });
+    res.status(500).json({ error: String(err.message || err) });
   }
 });
 
@@ -108,7 +70,7 @@ router.post('/:id/package', async (req, res) => {
 });
 
 router.get('/:id/package/download', async (req, res) => {
-  const item = await getLoraById(req.params.id);
+  const item = await getLoraByIdSafe(req.params.id);
   if (!item || !item.packagePath || !fs.existsSync(item.packagePath)) {
     return res.status(404).json({ error: 'package not found' });
   }
@@ -117,7 +79,7 @@ router.get('/:id/package/download', async (req, res) => {
 
 router.post('/:id/activate', async (req, res) => {
   try {
-    const item = await getLoraById(req.params.id);
+    const item = await getLoraByIdSafe(req.params.id);
     if (!item) return res.status(404).json({ error: 'lora not found' });
     if (item.status !== 'ready') return res.status(400).json({ error: 'lora is not ready' });
 

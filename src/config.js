@@ -53,7 +53,7 @@ CONFIG.datasetsDir = path.join(CONFIG.workspace, 'data', 'processed');
 CONFIG.rawDatasetsDir = path.join(CONFIG.workspace, 'data', 'raw');
 CONFIG.trainingConfigsDir = path.join(CONFIG.workspace, 'training', 'configs');
 CONFIG.trainingOutputsDir = path.join(CONFIG.workspace, 'training', 'outputs');
-CONFIG.mergedModelsDir = path.join(CONFIG.workspace, 'exports', 'merged');
+CONFIG.mergedModelsDir = path.join(CONFIG.modelsDir, 'merged');
 CONFIG.packagesDir = path.join(CONFIG.workspace, 'exports', 'packages');
 CONFIG.logsDir = path.join(CONFIG.workspace, 'logs');
 

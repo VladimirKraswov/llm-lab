@@ -656,7 +656,7 @@ export default function LorasPage() {
               {mergeLogsQuery.data?.logFile || 'No merge log file yet'}
             </div>
 
-            <pre className="max-h-[500px] overflow-auto rounded-2xl border border-slate-800 bg-slate-950 p-4 text-xs text-slate-200">
+            <pre className="max-h-[500px] overflow-auto whitespace-pre-wrap break-all rounded-2xl border border-slate-800 bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-200">
               {mergeLogsQuery.data?.content || 'No logs yet'}
             </pre>
 
