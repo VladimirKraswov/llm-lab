@@ -59,6 +59,27 @@ def maybe_clear_output_dir(output_dir: str, overwrite_output: bool):
     os.makedirs(output_dir, exist_ok=True)
 
 
+def read_adapter_config(adapter_path: str) -> dict:
+    adapter_cfg_path = os.path.join(adapter_path, "adapter_config.json")
+    if not os.path.exists(adapter_cfg_path):
+        raise FileNotFoundError(f"adapter_config.json not found in {adapter_path}")
+
+    with open(adapter_cfg_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def resolve_base_model_path(adapter_path: str, base_model_override: str | None = None) -> str:
+    if base_model_override and str(base_model_override).strip():
+        return str(base_model_override).strip()
+
+    adapter_cfg = read_adapter_config(adapter_path)
+    base_model = str(adapter_cfg.get("base_model_name_or_path") or "").strip()
+    if not base_model:
+        raise ValueError("base_model_name_or_path is missing in adapter_config.json")
+
+    return base_model
+
+
 def save_result(output_dir: str, payload: dict):
     with open(os.path.join(output_dir, "merge-result.json"), "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -75,6 +96,7 @@ def main():
     max_shard_size = str(cfg.get("maxShardSize", "5GB"))
     trust_remote_code = bool(cfg.get("trustRemoteCode", False))
     offload_folder_name = str(cfg.get("offloadFolderName", "_offload")).strip() or "_offload"
+    base_model_override = str(cfg.get("baseModelOverride") or "").strip() or None
 
     maybe_clear_output_dir(output_dir, overwrite_output)
     offload_dir = os.path.join(output_dir, offload_folder_name)
@@ -83,17 +105,20 @@ def main():
     report(5)
 
     import torch
-    from peft import AutoPeftModelForCausalLM
-    from transformers import AutoTokenizer
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     report(15)
 
     dtype = resolve_dtype(cfg.get("dtype", "auto"), torch)
     device_map = resolve_device_map(cfg, torch)
+    base_model_path = resolve_base_model_path(adapter_path, base_model_override)
 
     print(json.dumps({
         "adapterPath": adapter_path,
         "outputDir": output_dir,
+        "baseModelPath": base_model_path,
+        "baseModelOverride": base_model_override,
         "deviceStrategy": cfg.get("deviceStrategy", "cpu"),
         "resolvedDeviceMap": device_map,
         "dtype": str(cfg.get("dtype", "auto")),
@@ -105,8 +130,8 @@ def main():
 
     report(25)
 
-    model = AutoPeftModelForCausalLM.from_pretrained(
-        adapter_path,
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
         dtype=dtype,
         device_map=device_map,
         low_cpu_mem_usage=low_cpu_mem_usage,
@@ -114,11 +139,20 @@ def main():
         trust_remote_code=trust_remote_code,
     )
 
-    report(55)
+    report(50)
+
+    model = PeftModel.from_pretrained(
+        base_model,
+        adapter_path,
+        device_map=device_map,
+        offload_folder=offload_dir,
+    )
+
+    report(70)
 
     merged = model.merge_and_unload()
 
-    report(75)
+    report(82)
 
     merged.save_pretrained(
         output_dir,
@@ -126,17 +160,17 @@ def main():
         max_shard_size=max_shard_size,
     )
 
-    report(90)
+    report(92)
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(
-            adapter_path,
+            base_model_path,
             trust_remote_code=trust_remote_code,
             fix_mistral_regex=True,
         )
     except TypeError:
         tokenizer = AutoTokenizer.from_pretrained(
-            adapter_path,
+            base_model_path,
             trust_remote_code=trust_remote_code,
         )
 
@@ -146,6 +180,8 @@ def main():
         "ok": True,
         "adapterPath": adapter_path,
         "outputDir": output_dir,
+        "baseModelPath": base_model_path,
+        "baseModelOverride": base_model_override,
         "deviceStrategy": cfg.get("deviceStrategy", "cpu"),
         "resolvedDeviceMap": device_map,
         "dtype": str(cfg.get("dtype", "auto")),
@@ -164,7 +200,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
+    except Exception:
         traceback.print_exc()
-        print(str(e), file=sys.stderr)
         sys.exit(1)

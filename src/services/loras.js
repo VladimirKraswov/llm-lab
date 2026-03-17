@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const { CONFIG } = require('../config');
 const { uid, nowIso } = require('../utils/ids');
 const {
@@ -10,6 +11,7 @@ const {
   getModelById,
   upsertLora,
   addModel,
+  getModels,
 } = require('./state');
 const { isPidRunning, killProcessGroup } = require('../utils/proc');
 const { emitEvent } = require('./events');
@@ -47,9 +49,31 @@ function normalizeDeviceStrategy(value) {
   return v;
 }
 
+function normalizeBaseModelSource(value) {
+  const v = String(value || 'auto').trim().toLowerCase();
+  return v === 'manual' ? 'manual' : 'auto';
+}
+
+function readAdapterConfig(adapterPath) {
+  try {
+    const file = path.join(adapterPath, 'adapter_config.json');
+    if (!fs.existsSync(file)) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function resolveTrainingBaseModel(adapterPath) {
+  const cfg = readAdapterConfig(adapterPath);
+  const value = String(cfg?.base_model_name_or_path || '').trim();
+  return value || null;
+}
+
 function validateMergeOptions(options = {}) {
   const deviceStrategy = normalizeDeviceStrategy(options.deviceStrategy || 'cpu');
   const dtype = normalizeDtype(options.dtype || 'auto');
+  const baseModelSource = normalizeBaseModelSource(options.baseModelSource || 'auto');
 
   const cudaDevice = options.cudaDevice == null ? 0 : Number(options.cudaDevice);
   if (!Number.isInteger(cudaDevice) || cudaDevice < 0) {
@@ -74,6 +98,8 @@ function validateMergeOptions(options = {}) {
     trustRemoteCode: options.trustRemoteCode === true,
     registerAsModel: options.registerAsModel !== false,
     customOutputName: options.customOutputName ? String(options.customOutputName).trim() : '',
+    baseModelSource,
+    baseModelOverride: options.baseModelOverride ? String(options.baseModelOverride).trim() : '',
   };
 }
 
@@ -117,6 +143,8 @@ async function registerLoraFromJob(jobId, customName = null) {
     if (model) baseModelName = model.name;
   }
 
+  const trainingBaseModelPath = resolveTrainingBaseModel(job.outputDir);
+
   const item = await addLora({
     id: uid('lora'),
     name: (customName || job.name || job.id).trim(),
@@ -136,6 +164,7 @@ async function registerLoraFromJob(jobId, customName = null) {
     mergeLogFile: null,
     mergeOptions: null,
     mergeArtifacts: [],
+    trainingBaseModelPath,
   });
 
   const size = fs.existsSync(item.adapterPath) ? getDirSize(item.adapterPath) : 0;
@@ -164,9 +193,43 @@ async function getMergeOptionsInfo() {
       clearGpuBeforeMerge: false,
       trustRemoteCode: false,
       registerAsModel: true,
+      baseModelSource: 'auto',
+      baseModelOverride: '',
     },
     gpus,
   };
+}
+
+async function resolveBaseModelForMerge(item, mergeOptions) {
+  if (mergeOptions.baseModelSource === 'manual') {
+    const manual = String(mergeOptions.baseModelOverride || '').trim();
+    if (!manual) {
+      throw new Error('Manual base model is selected, but no baseModelOverride was provided');
+    }
+    return manual;
+  }
+
+  const trainingBase = String(
+    item.trainingBaseModelPath ||
+    resolveTrainingBaseModel(item.adapterPath) ||
+    ''
+  ).trim();
+
+  if (trainingBase) {
+    return trainingBase;
+  }
+
+  const models = await getModels();
+  if (item.baseModelId) {
+    const model = models.find((m) => m.id === item.baseModelId);
+    if (model?.path) return model.path;
+  }
+
+  if (item.baseModelRef) {
+    return item.baseModelRef;
+  }
+
+  throw new Error('Unable to resolve base model for merge');
 }
 
 async function buildMergedLora(loraId, options = {}) {
@@ -178,6 +241,8 @@ async function buildMergedLora(loraId, options = {}) {
   }
 
   const mergeOptions = validateMergeOptions(options);
+  const resolvedBaseModel = await resolveBaseModelForMerge(item, mergeOptions);
+
   const mergedPath = buildMergedPath(item, mergeOptions);
   const mergeLogFile = path.join(CONFIG.logsDir, `${item.id}-merge.log`);
 
@@ -198,7 +263,10 @@ async function buildMergedLora(loraId, options = {}) {
     error: null,
     configPath: null,
     mergeLogFile,
-    mergeOptions,
+    mergeOptions: {
+      ...mergeOptions,
+      baseModelOverride: mergeOptions.baseModelSource === 'manual' ? resolvedBaseModel : '',
+    },
     mergeArtifacts: [],
   });
   emitEvent('lora_updated', next0);
@@ -208,6 +276,7 @@ async function buildMergedLora(loraId, options = {}) {
     adapterPath: item.adapterPath,
     outputDir: mergedPath,
     ...mergeOptions,
+    baseModelOverride: resolvedBaseModel,
   };
 
   const outFd = fs.openSync(mergeLogFile, 'a');
@@ -237,6 +306,7 @@ async function buildMergedLora(loraId, options = {}) {
       adapterPath: item.adapterPath,
       mergeLogFile,
       mergeOptions,
+      resolvedBaseModel,
     },
   });
 
@@ -248,7 +318,6 @@ async function buildMergedLora(loraId, options = {}) {
   emitEvent('lora_updated', building);
 
   let stderr = '';
-  let stdoutBuffer = '';
 
   child.stderr.on('data', (data) => {
     stderr += data.toString();
@@ -256,7 +325,6 @@ async function buildMergedLora(loraId, options = {}) {
 
   child.stdout.on('data', async (data) => {
     const text = data.toString();
-    stdoutBuffer += text;
 
     try {
       fs.appendFileSync(mergeLogFile, text, 'utf8');
@@ -268,7 +336,10 @@ async function buildMergedLora(loraId, options = {}) {
         const p = parseInt(line.split(':')[1], 10);
         const cur = await getLoraById(loraId);
         if (cur) {
-          const next = await upsertLora({ ...cur, mergeProgress: Number.isFinite(p) ? p : cur.mergeProgress });
+          const next = await upsertLora({
+            ...cur,
+            mergeProgress: Number.isFinite(p) ? p : cur.mergeProgress,
+          });
           emitEvent('lora_updated', next);
         }
       }
@@ -302,6 +373,7 @@ async function buildMergedLora(loraId, options = {}) {
       mergeArtifacts: artifacts,
       mergedSize: meta.size || 0,
       mergedSizeHuman: meta.sizeHuman || null,
+      trainingBaseModelPath: current.trainingBaseModelPath || resolvedBaseModel,
     });
     emitEvent('lora_updated', next);
 
@@ -320,9 +392,9 @@ async function buildMergedLora(loraId, options = {}) {
           configPath,
           ...meta,
         });
-        logger.info(`Merged model added to library`, { modelId, loraId, configPath });
+        logger.info('Merged model added to library', { modelId, loraId, configPath });
       } catch (err) {
-        logger.error(`Failed to add merged model to library`, {
+        logger.error('Failed to add merged model to library', {
           error: err.message,
           loraId,
           configPath,
@@ -456,7 +528,6 @@ async function packageMergedLora(loraId) {
   });
   emitEvent('lora_updated', next0);
 
-  const { spawn } = require('child_process');
   const child = spawn(
     'tar',
     [

@@ -5,7 +5,13 @@ import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
-import { api, apiBase, type LoraItem, type MergeBuildOptions } from '../../lib/api';
+import {
+  api,
+  apiBase,
+  type BaseModelSource,
+  type LoraItem,
+  type MergeBuildOptions,
+} from '../../lib/api';
 import { fmtDate } from '../../lib/utils';
 
 function defaultMergeForm(
@@ -25,6 +31,8 @@ function defaultMergeForm(
     trustRemoteCode: lora?.mergeOptions?.trustRemoteCode ?? defaults?.trustRemoteCode ?? false,
     registerAsModel: lora?.mergeOptions?.registerAsModel ?? defaults?.registerAsModel ?? true,
     customOutputName: lora?.mergeOptions?.customOutputName || '',
+    baseModelSource: lora?.mergeOptions?.baseModelSource || defaults?.baseModelSource || 'auto',
+    baseModelOverride: lora?.mergeOptions?.baseModelOverride || defaults?.baseModelOverride || '',
   };
 }
 
@@ -43,6 +51,12 @@ export default function LorasPage() {
     queryKey: ['loras'],
     queryFn: api.getLoras,
     refetchInterval: 5000,
+  });
+
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: api.getModels,
+    staleTime: 60_000,
   });
 
   const mergeOptionsQuery = useQuery({
@@ -108,20 +122,43 @@ export default function LorasPage() {
   });
 
   const items = useMemo(() => lorasQuery.data || [], [lorasQuery.data]);
+  const models = useMemo(
+    () => (modelsQuery.data || []).filter((m) => m.status === 'ready'),
+    [modelsQuery.data],
+  );
 
   useEffect(() => {
     if (!mergeOpenId) return;
     const lora = items.find((x) => x.id === mergeOpenId) || null;
-    setMergeForm(defaultMergeForm(lora, mergeOptionsQuery.data?.defaultOptions));
+    const next = defaultMergeForm(lora, mergeOptionsQuery.data?.defaultOptions);
+
+    if (!next.baseModelOverride && lora?.trainingBaseModelPath) {
+      next.baseModelOverride = lora.trainingBaseModelPath;
+    }
+
+    setMergeForm(next);
   }, [mergeOpenId, items, mergeOptionsQuery.data]);
 
   const activeMergeItem = mergeOpenId ? items.find((x) => x.id === mergeOpenId) || null : null;
+  const resolvedAutoBaseModel =
+    activeMergeItem?.trainingBaseModelPath ||
+    activeMergeItem?.baseModelRef ||
+    '';
+
+  const buildPayload: MergeBuildOptions = {
+    ...mergeForm,
+    baseModelSource: (mergeForm.baseModelSource || 'auto') as BaseModelSource,
+    baseModelOverride:
+      (mergeForm.baseModelSource || 'auto') === 'manual'
+        ? (mergeForm.baseModelOverride || '').trim()
+        : '',
+  };
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="LoRAs"
-        description="Список адаптеров, build merged-модели с настройками, активация на инференс и упаковка."
+        description="Список адаптеров, build merged-модели с настройками, выбором base model, активация на инференс и упаковка."
       />
 
       <Card>
@@ -173,12 +210,16 @@ export default function LorasPage() {
                         <div className="mt-1 text-xs text-slate-500">Package: {item.packagePath || 'not built'}</div>
                         <div className="mt-1 text-xs text-slate-500">Created: {fmtDate(item.createdAt)}</div>
 
+                        {item.trainingBaseModelPath ? (
+                          <div className="mt-1 text-xs text-slate-500">
+                            Training base: {item.trainingBaseModelPath}
+                          </div>
+                        ) : null}
+
                         {item.mergeOptions ? (
                           <div className="mt-2 text-xs text-slate-400">
-                            Last merge: {item.mergeOptions.deviceStrategy} / {item.mergeOptions.dtype || 'auto'}
-                            {item.mergeOptions.deviceStrategy === 'cuda'
-                              ? ` / GPU ${item.mergeOptions.cudaDevice ?? 0}`
-                              : ''}
+                            Last merge: {item.mergeOptions.deviceStrategy} / {item.mergeOptions.dtype || 'auto'} /{' '}
+                            {item.mergeOptions.baseModelSource === 'manual' ? 'manual base' : 'auto base'}
                           </div>
                         ) : null}
 
@@ -242,7 +283,11 @@ export default function LorasPage() {
                           onClick={() =>
                             buildMutation.mutate({
                               id: item.id,
-                              payload: item.mergeOptions || mergeOptionsQuery.data?.defaultOptions || {},
+                              payload: item.mergeOptions || {
+                                ...mergeOptionsQuery.data?.defaultOptions,
+                                baseModelSource: 'auto',
+                                baseModelOverride: '',
+                              },
                             })
                           }
                           disabled={buildMutation.isPending}
@@ -298,6 +343,23 @@ export default function LorasPage() {
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="grid gap-4 md:grid-cols-2">
+              <label className="space-y-2">
+                <div className="text-sm text-slate-300">Base model source</div>
+                <select
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-white"
+                  value={mergeForm.baseModelSource || 'auto'}
+                  onChange={(e) =>
+                    setMergeForm((prev) => ({
+                      ...prev,
+                      baseModelSource: e.target.value as BaseModelSource,
+                    }))
+                  }
+                >
+                  <option value="auto">auto (from LoRA training config)</option>
+                  <option value="manual">manual</option>
+                </select>
+              </label>
+
               <label className="space-y-2">
                 <div className="text-sm text-slate-300">Device strategy</div>
                 <select
@@ -406,6 +468,52 @@ export default function LorasPage() {
               </label>
             </div>
 
+            {(mergeForm.baseModelSource || 'auto') === 'auto' ? (
+              <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
+                <div className="text-sm font-medium text-white">Resolved base model</div>
+                <div className="mt-2 break-all text-sm text-slate-300">
+                  {resolvedAutoBaseModel || 'Not found in adapter_config.json'}
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2">
+                  <div className="text-sm text-slate-300">Select base model from library</div>
+                  <select
+                    className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-white"
+                    value={mergeForm.baseModelOverride || ''}
+                    onChange={(e) =>
+                      setMergeForm((prev) => ({
+                        ...prev,
+                        baseModelOverride: e.target.value,
+                      }))
+                    }
+                  >
+                    <option value="">-- select model --</option>
+                    {models.map((model) => (
+                      <option key={model.id} value={model.path}>
+                        {model.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-2">
+                  <div className="text-sm text-slate-300">Manual base model path / repo</div>
+                  <Input
+                    value={mergeForm.baseModelOverride || ''}
+                    onChange={(e) =>
+                      setMergeForm((prev) => ({
+                        ...prev,
+                        baseModelOverride: e.target.value,
+                      }))
+                    }
+                    placeholder="Qwen/Qwen3-32B or /path/to/model"
+                  />
+                </label>
+              </div>
+            )}
+
             <div className="grid gap-3 md:grid-cols-2">
               <label className="flex items-center gap-3 rounded-xl border border-slate-800 p-3 text-sm text-slate-200">
                 <input
@@ -494,7 +602,7 @@ export default function LorasPage() {
 
             <div className="rounded-xl border border-amber-800 bg-amber-950/40 p-3 text-sm text-amber-200">
               Для больших моделей safest path — <span className="font-semibold">CPU + float16</span>.
-              GPU merge быстрее, но чаще упирается в VRAM.
+              Модель по умолчанию берётся из <code>adapter_config.json</code>, но её можно заменить вручную.
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -502,10 +610,14 @@ export default function LorasPage() {
                 onClick={() =>
                   buildMutation.mutate({
                     id: activeMergeItem.id,
-                    payload: mergeForm,
+                    payload: buildPayload,
                   })
                 }
-                disabled={buildMutation.isPending}
+                disabled={
+                  buildMutation.isPending ||
+                  ((mergeForm.baseModelSource || 'auto') === 'manual' &&
+                    !String(mergeForm.baseModelOverride || '').trim())
+                }
               >
                 Start merge
               </Button>
@@ -513,7 +625,11 @@ export default function LorasPage() {
               <Button
                 className="bg-slate-800 hover:bg-slate-700"
                 onClick={() => {
-                  setMergeForm(defaultMergeForm(activeMergeItem, mergeOptionsQuery.data?.defaultOptions));
+                  const next = defaultMergeForm(activeMergeItem, mergeOptionsQuery.data?.defaultOptions);
+                  if (!next.baseModelOverride && activeMergeItem?.trainingBaseModelPath) {
+                    next.baseModelOverride = activeMergeItem.trainingBaseModelPath;
+                  }
+                  setMergeForm(next);
                 }}
               >
                 Reset

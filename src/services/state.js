@@ -37,6 +37,21 @@ const DEFAULT_SETTINGS = {
     loraDropout: 0,
     targetModules: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
   },
+  merge: {
+    deviceStrategy: 'cpu',
+    cudaDevice: 0,
+    dtype: 'float16',
+    lowCpuMemUsage: true,
+    safeSerialization: true,
+    overwriteOutput: false,
+    maxShardSize: '5GB',
+    offloadFolderName: '_offload',
+    clearGpuBeforeMerge: false,
+    trustRemoteCode: false,
+    registerAsModel: true,
+    baseModelSource: 'auto',
+    baseModelOverride: '',
+  },
   wandb: {
     enabled: false,
     mode: 'online',
@@ -155,6 +170,10 @@ async function getSettings() {
       ...DEFAULT_SETTINGS.qlora,
       ...(current.qlora || {}),
     },
+    merge: {
+      ...DEFAULT_SETTINGS.merge,
+      ...(current.merge || {}),
+    },
     wandb: {
       ...DEFAULT_SETTINGS.wandb,
       ...(current.wandb || {}),
@@ -173,6 +192,7 @@ async function setSettings(next) {
       ...current,
       ...next,
       qlora: { ...current.qlora, ...(next.qlora || {}) },
+      merge: { ...current.merge, ...(next.merge || {}) },
       wandb: { ...current.wandb, ...(next.wandb || {}) },
       inference: { ...current.inference, ...(next.inference || {}) },
     };

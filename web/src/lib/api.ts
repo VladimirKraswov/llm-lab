@@ -109,6 +109,7 @@ export type ModelItem = {
 
 export type MergeDeviceStrategy = 'cpu' | 'cuda' | 'auto';
 export type MergeDtype = 'auto' | 'float16' | 'bfloat16' | 'float32';
+export type BaseModelSource = 'auto' | 'manual';
 
 export type MergeBuildOptions = {
   deviceStrategy: MergeDeviceStrategy;
@@ -123,6 +124,8 @@ export type MergeBuildOptions = {
   trustRemoteCode?: boolean;
   registerAsModel?: boolean;
   customOutputName?: string;
+  baseModelSource?: BaseModelSource;
+  baseModelOverride?: string;
 };
 
 export type MergeOptionsInfo = {
@@ -140,6 +143,8 @@ export type MergeOptionsInfo = {
     clearGpuBeforeMerge: boolean;
     trustRemoteCode: boolean;
     registerAsModel: boolean;
+    baseModelSource: BaseModelSource;
+    baseModelOverride: string;
   };
   gpus: Array<{
     model: string;
@@ -168,6 +173,7 @@ export type LoraItem = {
   mergeArtifacts?: Array<{ name: string; path: string; size: number }>;
   mergedSize?: number;
   mergedSizeHuman?: string | null;
+  trainingBaseModelPath?: string | null;
   packageStatus: string;
   error: string | null;
   size?: number;
