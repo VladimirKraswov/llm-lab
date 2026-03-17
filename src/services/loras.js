@@ -23,7 +23,7 @@ const {
   unregisterManagedProcess,
 } = require('../utils/managed-processes');
 const { clearGpuMemory } = require('../utils/gpu');
-const { readText } = require('../utils/fs');
+const { readText, resetFile } = require('../utils/fs');
 const { getGpuInfo } = require('../utils/gpu_info');
 
 function sleep(ms) {
@@ -254,6 +254,10 @@ async function buildMergedLora(loraId, options = {}) {
     await clearGpuMemory({ types: ['runtime'] });
   }
 
+  try {
+    fs.rmSync(mergeLogFile, { force: true });
+  } catch {}
+
   const next0 = await upsertLora({
     ...item,
     mergeStatus: 'building',
@@ -279,7 +283,7 @@ async function buildMergedLora(loraId, options = {}) {
     baseModelOverride: resolvedBaseModel,
   };
 
-  const outFd = fs.openSync(mergeLogFile, 'a');
+  const outFd = fs.openSync(mergeLogFile, 'w');
 
   const { child, configPath } = await spawnPythonJsonScript({
     pythonBin: CONFIG.pythonBin,
@@ -326,9 +330,7 @@ async function buildMergedLora(loraId, options = {}) {
   child.stdout.on('data', async (data) => {
     const text = data.toString();
 
-    try {
-      fs.appendFileSync(mergeLogFile, text, 'utf8');
-    } catch {}
+    resetFile(mergeLogFile);
 
     const lines = text.split('\n');
     for (const line of lines) {

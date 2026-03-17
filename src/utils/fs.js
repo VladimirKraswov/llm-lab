@@ -42,6 +42,12 @@ async function removeFile(file) {
   }
 }
 
+async function resetFile(file) {
+  try {
+    await fsp.rm(file, { force: true });
+  } catch {}
+}
+
 module.exports = {
   exists,
   ensureDir,
@@ -49,4 +55,5 @@ module.exports = {
   writeJson,
   readText,
   removeFile,
+  resetFile,
 };
