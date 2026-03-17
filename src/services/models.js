@@ -33,6 +33,21 @@ function normalizeQuantizationValue(value) {
   return v;
 }
 
+function getHfToken() {
+  return (
+    process.env.HF_TOKEN ||
+    process.env.HUGGINGFACE_HUB_TOKEN ||
+    process.env.HUGGINGFACE_TOKEN ||
+    ''
+  );
+}
+
+async function readLogTail(logFile, tail = 40) {
+  const text = await readText(logFile, '');
+  const lines = text.split('\n');
+  return lines.slice(-tail).join('\n').trim();
+}
+
 function detectModelCapability(model) {
   const quantized = !!normalizeQuantizationValue(model.quantization);
 
@@ -66,20 +81,28 @@ function detectModelCapability(model) {
 }
 
 async function downloadModel({ repoId, name, tryQuantized }) {
-  if (!repoId) throw new Error('repoId is required');
-
-  let targetRepoId = repoId;
-  if (tryQuantized && !repoId.toLowerCase().endsWith('-awq')) {
-    targetRepoId = `${repoId}-AWQ`;
+  if (!repoId || !String(repoId).trim()) {
+    throw new Error('repoId is required');
   }
 
-  const existing = (await getModels()).find((x) => x.repoId === targetRepoId && x.status !== 'deleted');
+  const targetRepoId = String(repoId).trim();
+
+  if (tryQuantized) {
+    logger.info('tryQuantized requested, but automatic repoId rewrite is disabled', {
+      repoId: targetRepoId,
+    });
+  }
+
+  const existing = (await getModels()).find(
+    (x) => x.repoId === targetRepoId && x.status !== 'deleted'
+  );
   if (existing) return existing;
 
   const modelId = uid('model');
   const slug = safeSlug(name || targetRepoId.split('/').pop() || modelId);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${modelId}`);
   const logFile = path.join(CONFIG.logsDir, `${modelId}.log`);
+  const hfToken = getHfToken();
 
   const item = await addModel({
     id: modelId,
@@ -104,6 +127,7 @@ async function downloadModel({ repoId, name, tryQuantized }) {
   const payload = {
     repoId: targetRepoId,
     localDir: modelPath,
+    hfToken,
   };
 
   const outFd = fs.openSync(logFile, 'a');
@@ -114,7 +138,13 @@ async function downloadModel({ repoId, name, tryQuantized }) {
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    env: {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+      HF_TOKEN: hfToken,
+      HUGGINGFACE_HUB_TOKEN: hfToken,
+      HUGGINGFACE_TOKEN: hfToken,
+    },
     configDir: CONFIG.trainingConfigsDir,
     configPrefix: modelId,
     logLabel: `download-model:${modelId}`,
@@ -150,10 +180,18 @@ async function downloadModel({ repoId, name, tryQuantized }) {
       configPath,
     });
 
+    let error = null;
+    if (code !== 0) {
+      const logTail = await readLogTail(logFile, 60);
+      error = logTail
+        ? `download exited with code ${code}\n${logTail}`
+        : `download exited with code ${code}`;
+    }
+
     const next = await upsertModel({
       ...running,
       status: code === 0 ? 'ready' : 'failed',
-      error: code === 0 ? null : `download exited with code ${code}`,
+      error,
       pid: null,
       configPath,
     });
@@ -185,10 +223,13 @@ async function downloadModel({ repoId, name, tryQuantized }) {
       error: String(err.message || err),
     });
 
+    const logTail = await readLogTail(logFile, 60);
     const next = await upsertModel({
       ...running,
       status: 'failed',
-      error: String(err.message || err),
+      error: logTail
+        ? `${String(err.message || err)}\n${logTail}`
+        : String(err.message || err),
       pid: null,
       configPath,
     });
@@ -353,10 +394,10 @@ async function quantizeModel({
     status: 'running',
     createdAt: item.createdAt,
     startedAt: nowIso(),
-    modelId: modelId,
+    modelId,
     modelPath: source.path,
     outputDir: modelPath,
-    logFile: logFile,
+    logFile,
     pid: child.pid,
     runner: effectiveRunner,
     paramsSnapshot: {
