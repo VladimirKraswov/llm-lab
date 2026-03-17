@@ -8,7 +8,7 @@ import torch
 import unsloth
 from datasets import load_dataset
 from unsloth import FastLanguageModel
-from transformers import TrainingArguments
+from transformers import TrainingArguments, BitsAndBytesConfig
 from trl import SFTTrainer
 
 
@@ -43,12 +43,25 @@ def main():
             mode=wandb_cfg.get("mode", "online"),
         )
 
+    # ---------- Исправленный блок загрузки модели ----------
+    # Создаём конфигурацию 4-битного квантования с возможностью выгрузки на CPU
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=cfg["qlora"]["loadIn4bit"],
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+        bnb_4bit_use_double_quant=True,
+        llm_int8_enable_fp32_cpu_offload=True,  # разрешить offload на CPU
+    )
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=cfg["baseModel"],
         max_seq_length=cfg["qlora"]["maxSeqLength"],
-        load_in_4bit=cfg["qlora"]["loadIn4bit"],
+        quantization_config=bnb_config,          # используем конфиг вместо load_in_4bit
         trust_remote_code=True,
+        device_map="auto",
+        max_memory={0: "30GB", "cpu": "10GB"},    # оставляем 2 ГБ запаса на GPU
     )
+    # -------------------------------------------------------
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -66,8 +79,10 @@ def main():
             use_gradient_checkpointing="unsloth",
         )
 
-    if torch.cuda.is_available():
-        model = model.to("cuda")
+    # model.to("cuda") не нужен, так как device_map уже позаботился о размещении
+    # Оставлено для совместимости, но можно закомментировать
+    # if torch.cuda.is_available():
+    #     model = model.to("cuda")
 
     dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
 
