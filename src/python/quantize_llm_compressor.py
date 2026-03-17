@@ -159,7 +159,7 @@ def summarize_dataset_for_logs(dataset: Any):
     if isinstance(dataset, list):
         lengths = [len(x) for x in dataset if isinstance(x, str)]
         return {
-            "kind": "local_list",
+            "datasetKind": "local_list",
             "count": len(dataset),
             "emptyCount": sum(1 for x in dataset if not str(x).strip()),
             "minChars": min(lengths) if lengths else 0,
@@ -168,7 +168,7 @@ def summarize_dataset_for_logs(dataset: Any):
             "preview": [str(x)[:200] for x in dataset[:3]],
         }
     return {
-        "kind": str(dataset),
+        "datasetKind": str(dataset),
         "count": None,
         "emptyCount": None,
         "minChars": None,
