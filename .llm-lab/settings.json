@@ -2,7 +2,7 @@
   "baseModel": "Qwen/Qwen2.5-7B-Instruct",
   "qlora": {
     "loadIn4bit": true,
-    "maxSeqLength": 4096,
+    "maxSeqLength": 2048,
     "perDeviceTrainBatchSize": 1,
     "gradientAccumulationSteps": 8,
     "learningRate": 0.0002,
