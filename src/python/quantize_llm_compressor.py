@@ -3,6 +3,7 @@ import math
 import os
 import sys
 import traceback
+from typing import Any
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -12,6 +13,17 @@ from llmcompressor.modifiers.awq import AWQModifier
 
 def report(p: int):
     print(f"__PROGRESS__:{p}", flush=True)
+
+
+def log_event(kind: str, **payload: Any):
+    print(
+        json.dumps(
+            {"event": kind, **payload},
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
 
 
 def resolve_dtype(dtype_value):
@@ -25,6 +37,18 @@ def resolve_dtype(dtype_value):
     if value == "auto":
         return "auto"
     raise ValueError(f"Unsupported dtype: {dtype_value}")
+
+
+def dtype_name(dtype_value: Any) -> str:
+    if dtype_value == "auto":
+        return "auto"
+    if dtype_value is torch.float16:
+        return "float16"
+    if dtype_value is torch.bfloat16:
+        return "bfloat16"
+    if dtype_value is torch.float32:
+        return "float32"
+    return str(dtype_value)
 
 
 def _clean_text(value: str, max_chars: int = 12000) -> str:
@@ -109,44 +133,10 @@ def validate_awq_params(bits: int, group_size: int):
         raise ValueError("group_size must be > 0")
 
 
-def _safe_num_samples(value: int) -> int:
-    return max(8, min(int(value), 128))
-
-
-def _safe_max_seq_len(value: int) -> int:
-    return max(256, min(int(value), 2048))
-
-
-def check_model_for_invalid_values(model):
-    bad = []
-
-    for name, param in model.named_parameters():
-      # noqa: E111
-        if param is None:
-            continue
-        data = param.data
-        if torch.isnan(data).any().item():
-            bad.append(f"{name}: NaN")
-        elif torch.isinf(data).any().item():
-            bad.append(f"{name}: Inf")
-
-        if len(bad) >= 10:
-            break
-
-    if bad:
-        raise RuntimeError(
-            "Model contains invalid parameter values before AWQ starts: " + "; ".join(bad)
-        )
-
-
 def build_awq_recipe(bits: int, group_size: int, sym: bool):
     return [
         AWQModifier(
-            ignore=[
-                "lm_head",
-                "re:.*post_attention_layernorm$",
-                "re:.*rotary_emb.*",
-            ],
+            ignore=["lm_head"],
             config_groups={
                 "group_0": {
                     "targets": ["Linear"],
@@ -165,6 +155,222 @@ def build_awq_recipe(bits: int, group_size: int, sym: bool):
     ]
 
 
+def summarize_dataset_for_logs(dataset: Any):
+    if isinstance(dataset, list):
+        lengths = [len(x) for x in dataset if isinstance(x, str)]
+        return {
+            "kind": "local_list",
+            "count": len(dataset),
+            "emptyCount": sum(1 for x in dataset if not str(x).strip()),
+            "minChars": min(lengths) if lengths else 0,
+            "maxChars": max(lengths) if lengths else 0,
+            "avgChars": round(sum(lengths) / len(lengths), 2) if lengths else 0,
+            "preview": [str(x)[:200] for x in dataset[:3]],
+        }
+    return {
+        "kind": str(dataset),
+        "count": None,
+        "emptyCount": None,
+        "minChars": None,
+        "maxChars": None,
+        "avgChars": None,
+        "preview": [],
+    }
+
+
+def collect_parameter_health(model) -> dict[str, Any]:
+    bad_tensors: list[dict[str, Any]] = []
+    scanned = 0
+    global_absmax = 0.0
+
+    for name, param in model.named_parameters():
+        if param is None:
+            continue
+
+        scanned += 1
+        data = param.detach()
+
+        has_nan = torch.isnan(data).any().item()
+        has_inf = torch.isinf(data).any().item()
+
+        finite_mask = torch.isfinite(data)
+        finite_count = int(finite_mask.sum().item())
+        total_count = data.numel()
+
+        absmax = None
+        min_val = None
+        max_val = None
+
+        if finite_count > 0:
+          finite_vals = data[finite_mask]
+          absmax = float(finite_vals.abs().max().item())
+          min_val = float(finite_vals.min().item())
+          max_val = float(finite_vals.max().item())
+          global_absmax = max(global_absmax, absmax)
+
+        if has_nan or has_inf:
+            bad_tensors.append(
+                {
+                    "name": name,
+                    "shape": list(data.shape),
+                    "dtype": str(data.dtype),
+                    "hasNaN": bool(has_nan),
+                    "hasInf": bool(has_inf),
+                    "finiteCount": finite_count,
+                    "totalCount": total_count,
+                    "min": min_val,
+                    "max": max_val,
+                    "absmax": absmax,
+                }
+            )
+
+    return {
+        "scannedParameters": scanned,
+        "badTensorCount": len(bad_tensors),
+        "globalAbsMax": global_absmax,
+        "badTensors": bad_tensors[:50],
+    }
+
+
+def choose_sanity_texts(dataset: Any, fallback_count: int = 3) -> list[str]:
+    if isinstance(dataset, list):
+        texts = [x for x in dataset if isinstance(x, str) and x.strip()]
+        return texts[:fallback_count]
+    return [
+        "Hello",
+        "Write a short explanation of transformers.",
+        "2 + 2 =",
+    ]
+
+
+def safe_tensor_stats(t: torch.Tensor) -> dict[str, Any]:
+    finite_mask = torch.isfinite(t)
+    finite_count = int(finite_mask.sum().item())
+    total_count = t.numel()
+
+    if finite_count == 0:
+        return {
+            "shape": list(t.shape),
+            "dtype": str(t.dtype),
+            "finiteCount": finite_count,
+            "totalCount": total_count,
+            "min": None,
+            "max": None,
+            "absmax": None,
+            "hasNaN": bool(torch.isnan(t).any().item()),
+            "hasInf": bool(torch.isinf(t).any().item()),
+        }
+
+    finite_vals = t[finite_mask]
+    return {
+        "shape": list(t.shape),
+        "dtype": str(t.dtype),
+        "finiteCount": finite_count,
+        "totalCount": total_count,
+        "min": float(finite_vals.min().item()),
+        "max": float(finite_vals.max().item()),
+        "absmax": float(finite_vals.abs().max().item()),
+        "hasNaN": bool(torch.isnan(t).any().item()),
+        "hasInf": bool(torch.isinf(t).any().item()),
+    }
+
+
+def run_pre_quant_forward_checks(
+    model,
+    tokenizer,
+    texts: list[str],
+    max_seq_len: int,
+    device: torch.device,
+):
+    problems: list[dict[str, Any]] = []
+    checks: list[dict[str, Any]] = []
+
+    model.eval()
+
+    for idx, text in enumerate(texts):
+        try:
+            encoded = tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_seq_len,
+                padding=False,
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+
+            with torch.no_grad():
+                out = model(
+                    **encoded,
+                    output_hidden_states=True,
+                    use_cache=False,
+                )
+
+            logits = out.logits.detach()
+            logits_stats = safe_tensor_stats(logits)
+
+            hidden_summaries = []
+            hidden_bad = False
+
+            hidden_states = getattr(out, "hidden_states", None)
+            if hidden_states:
+                for h_idx, hs in enumerate(hidden_states[: min(len(hidden_states), 6)]):
+                    hs_detached = hs.detach()
+                    hs_stats = safe_tensor_stats(hs_detached)
+                    hidden_summaries.append(
+                        {
+                            "index": h_idx,
+                            "shape": hs_stats["shape"],
+                            "absmax": hs_stats["absmax"],
+                            "hasNaN": hs_stats["hasNaN"],
+                            "hasInf": hs_stats["hasInf"],
+                        }
+                    )
+                    if hs_stats["hasNaN"] or hs_stats["hasInf"]:
+                        hidden_bad = True
+
+            item = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "tokenCount": int(encoded["input_ids"].shape[-1]),
+                "logits": {
+                    "shape": logits_stats["shape"],
+                    "absmax": logits_stats["absmax"],
+                    "min": logits_stats["min"],
+                    "max": logits_stats["max"],
+                    "hasNaN": logits_stats["hasNaN"],
+                    "hasInf": logits_stats["hasInf"],
+                },
+                "hiddenStates": hidden_summaries,
+            }
+            checks.append(item)
+
+            if logits_stats["hasNaN"] or logits_stats["hasInf"] or hidden_bad:
+                problems.append(item)
+
+        except Exception as exc:
+            err_item = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "error": str(exc),
+            }
+            checks.append(err_item)
+            problems.append(err_item)
+
+    return {
+        "checkedSamples": len(checks),
+        "problemCount": len(problems),
+        "checks": checks,
+        "problems": problems,
+    }
+
+
+def detect_device(model) -> torch.device:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cpu")
+
+
 def main():
     if len(sys.argv) < 2:
         raise SystemExit("Usage: quantize_llm_compressor.py <config.json>")
@@ -172,14 +378,12 @@ def main():
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         cfg = json.load(f)
 
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
     model_path = cfg["modelPath"]
     output_dir = cfg["outputDir"]
     method = str(cfg.get("method", "awq")).lower()
     dataset_path = cfg.get("datasetPath")
-    num_samples = _safe_num_samples(int(cfg.get("numSamples", 32)))
-    max_seq_len = _safe_max_seq_len(int(cfg.get("maxSeqLen", 1024)))
+    num_samples = int(cfg.get("numSamples", 32))
+    max_seq_len = int(cfg.get("maxSeqLen", 1024))
     bits = int(cfg.get("bits", 4))
     group_size = int(cfg.get("groupSize", 128))
     sym = bool(cfg.get("sym", False))
@@ -197,24 +401,19 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     report(5)
 
-    print(
-        json.dumps(
-            {
-                "modelPath": model_path,
-                "outputDir": output_dir,
-                "datasetPath": dataset_path,
-                "numSamples": num_samples,
-                "maxSeqLen": max_seq_len,
-                "bits": bits,
-                "groupSize": group_size,
-                "sym": sym,
-                "dtype": str(cfg.get("dtype", "float16")),
-                "calibrationMode": calibration_mode,
-                "trustRemoteCode": trust_remote_code,
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
+    log_event(
+        "quant_config",
+        modelPath=model_path,
+        outputDir=output_dir,
+        datasetPath=dataset_path,
+        numSamples=num_samples,
+        maxSeqLen=max_seq_len,
+        bits=bits,
+        groupSize=group_size,
+        sym=sym,
+        dtype=dtype_name(dtype),
+        calibrationMode=calibration_mode,
+        trustRemoteCode=trust_remote_code,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -232,10 +431,9 @@ def main():
         trust_remote_code=trust_remote_code,
     )
 
-    model.eval()
-    check_model_for_invalid_values(model)
+    device = detect_device(model)
 
-    report(35)
+    report(30)
 
     dataset = build_local_text_dataset(
         dataset_path=dataset_path,
@@ -247,20 +445,56 @@ def main():
         dataset = [x for x in dataset if x and x.strip()]
         dataset = dataset[:num_samples]
 
-    print(
-        json.dumps(
-            {
-                "resolvedDatasetType": "local_list" if isinstance(dataset, list) else dataset,
-                "resolvedSamples": len(dataset) if isinstance(dataset, list) else num_samples,
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
-    )
+    dataset_summary = summarize_dataset_for_logs(dataset)
+    log_event("dataset_summary", **dataset_summary)
+
+    if isinstance(dataset, list) and not dataset:
+        raise RuntimeError("Resolved calibration dataset is empty after preprocessing")
+
+    report(40)
+
+    weight_health = collect_parameter_health(model)
+    log_event("model_weight_health", **weight_health)
+
+    if weight_health["badTensorCount"] > 0:
+        raise RuntimeError(
+            "Merged/base model contains NaN or Inf in weights before quantization. "
+            "Check LoRA training and merge pipeline."
+        )
+
+    if not math.isfinite(weight_health["globalAbsMax"]) or weight_health["globalAbsMax"] == 0:
+        raise RuntimeError(
+            f"Model weight statistics look invalid before quantization: globalAbsMax={weight_health['globalAbsMax']}"
+        )
 
     report(50)
 
+    sanity_texts = choose_sanity_texts(dataset)
+    preflight = run_pre_quant_forward_checks(
+        model=model,
+        tokenizer=tokenizer,
+        texts=sanity_texts,
+        max_seq_len=min(max_seq_len, 1024),
+        device=device,
+    )
+    log_event("forward_precheck", **preflight)
+
+    if preflight["problemCount"] > 0:
+        raise RuntimeError(
+            "Pre-quantization forward check failed: model produced non-finite values "
+            "or errored on sanity samples. See `forward_precheck` logs."
+        )
+
+    report(60)
+
     recipe = build_awq_recipe(bits=bits, group_size=group_size, sym=sym)
+    log_event(
+        "awq_recipe_ready",
+        modifierCount=len(recipe),
+        bits=bits,
+        groupSize=group_size,
+        symmetric=sym,
+    )
 
     report(65)
 
@@ -274,22 +508,27 @@ def main():
             num_calibration_samples=num_samples,
         )
     except Exception as exc:
-        message = str(exc)
-        if "No finite loss was found in best scalesgrid search" in message or "No finite loss was found" in message:
-            raise RuntimeError(
-                "AWQ failed during smoothing because the model produced non-finite values "
-                "on one of the smoothing targets. This model is numerically unstable for the "
-                "default AWQ smoothing path. Try safer settings: dtype=float16, "
-                "calibrationMode=text_only, numSamples=16..32, maxSeqLen=512..1024, "
-                "or skip AWQ for this model."
-            ) from exc
-        raise
+        log_event(
+            "awq_failure",
+            error=str(exc),
+            hint=(
+                "AWQ failed during smoothing/calibration. "
+                "If base model quantizes but merged model fails, the most likely cause is "
+                "numerical instability introduced by LoRA training or merge."
+            ),
+        )
+        raise RuntimeError(
+            "AWQ failed during smoothing because the model produced non-finite values "
+            "on one of the smoothing targets. This usually points to numerical instability "
+            "in the merged model. Check logs: model_weight_health and forward_precheck."
+        ) from exc
 
     report(95)
 
     tokenizer.save_pretrained(output_dir)
 
     report(100)
+    log_event("quantization_success", outputDir=output_dir)
     print(f"__RESULT__:{output_dir}")
 
 
