@@ -1,8 +1,11 @@
 import json
+import math
 import os
 import sys
 import time
+import traceback
 from datetime import timedelta
+from typing import Any
 
 # Важно: ставим до инициализации CUDA / загрузки модели
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -11,8 +14,287 @@ import torch
 import unsloth
 from datasets import load_dataset
 from unsloth import FastLanguageModel
-from transformers import TrainingArguments
+from transformers import TrainingArguments, TrainerCallback
 from trl import SFTTrainer
+
+
+def report(p: int):
+    print(f"__PROGRESS__:{p}", flush=True)
+
+
+def log_event(kind: str, **payload: Any):
+    print(
+        json.dumps(
+            {"event": kind, **payload},
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
+
+
+def safe_float(v: Any):
+    try:
+        x = float(v)
+        if math.isfinite(x):
+            return x
+        return None
+    except Exception:
+        return None
+
+
+def clean_text(value: Any, max_chars: int = 5000) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].strip()
+    return text
+
+
+def summarize_texts(texts: list[str]) -> dict[str, Any]:
+    lengths = [len(x) for x in texts if isinstance(x, str)]
+    return {
+        "count": len(texts),
+        "minChars": min(lengths) if lengths else 0,
+        "maxChars": max(lengths) if lengths else 0,
+        "avgChars": round(sum(lengths) / len(lengths), 2) if lengths else 0,
+        "preview": [x[:300] for x in texts[:3]],
+    }
+
+
+def resolve_dtype_name(use_bf16: bool) -> str:
+    return "bfloat16" if use_bf16 else "float16"
+
+
+def tensor_stats(t: torch.Tensor) -> dict[str, Any]:
+    finite_mask = torch.isfinite(t)
+    finite_count = int(finite_mask.sum().item())
+    total_count = t.numel()
+
+    result = {
+        "shape": list(t.shape),
+        "dtype": str(t.dtype),
+        "finiteCount": finite_count,
+        "totalCount": total_count,
+        "hasNaN": bool(torch.isnan(t).any().item()),
+        "hasInf": bool(torch.isinf(t).any().item()),
+        "min": None,
+        "max": None,
+        "absmax": None,
+        "mean": None,
+        "std": None,
+    }
+
+    if finite_count > 0:
+        vals = t[finite_mask].float()
+        result["min"] = float(vals.min().item())
+        result["max"] = float(vals.max().item())
+        result["absmax"] = float(vals.abs().max().item())
+        result["mean"] = float(vals.mean().item())
+        result["std"] = float(vals.std().item()) if vals.numel() > 1 else 0.0
+
+    return result
+
+
+def collect_parameter_health(model) -> dict[str, Any]:
+    bad_tensors: list[dict[str, Any]] = []
+    scanned = 0
+    global_absmax = 0.0
+    trainable_count = 0
+    total_param_count = 0
+    trainable_param_count = 0
+
+    for name, param in model.named_parameters():
+        if param is None:
+            continue
+
+        scanned += 1
+        total_param_count += int(param.numel())
+        if param.requires_grad:
+            trainable_count += 1
+            trainable_param_count += int(param.numel())
+
+        data = param.detach()
+        stats = tensor_stats(data)
+
+        if stats["absmax"] is not None:
+            global_absmax = max(global_absmax, float(stats["absmax"]))
+
+        if stats["hasNaN"] or stats["hasInf"]:
+            bad_tensors.append(
+                {
+                    "name": name,
+                    **stats,
+                }
+            )
+
+    return {
+        "scannedParameters": scanned,
+        "trainableTensorCount": trainable_count,
+        "totalParamCount": total_param_count,
+        "trainableParamCount": trainable_param_count,
+        "badTensorCount": len(bad_tensors),
+        "globalAbsMax": global_absmax,
+        "badTensors": bad_tensors[:50],
+    }
+
+
+def collect_module_weight_summary(model) -> dict[str, Any]:
+    interesting_suffixes = [
+        "input_layernorm.weight",
+        "post_attention_layernorm.weight",
+        "self_attn.q_proj.weight",
+        "self_attn.k_proj.weight",
+        "self_attn.v_proj.weight",
+        "self_attn.o_proj.weight",
+        "mlp.gate_proj.weight",
+        "mlp.up_proj.weight",
+        "mlp.down_proj.weight",
+    ]
+
+    rows = []
+    for name, param in model.named_parameters():
+        if not any(name.endswith(s) for s in interesting_suffixes):
+            continue
+        stats = tensor_stats(param.detach())
+        rows.append(
+            {
+                "name": name,
+                "shape": stats["shape"],
+                "dtype": stats["dtype"],
+                "absmax": stats["absmax"],
+                "min": stats["min"],
+                "max": stats["max"],
+                "hasNaN": stats["hasNaN"],
+                "hasInf": stats["hasInf"],
+            }
+        )
+
+    return {
+        "count": len(rows),
+        "rows": rows[:200],
+    }
+
+
+def run_forward_smoke(
+    model,
+    tokenizer,
+    texts: list[str],
+    max_seq_length: int,
+    device: torch.device,
+) -> dict[str, Any]:
+    model.eval()
+    checks = []
+    problems = []
+
+    for idx, text in enumerate(texts):
+        try:
+            encoded = tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=min(max_seq_length, 1024),
+                padding=False,
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+
+            with torch.no_grad():
+                out = model(
+                    **encoded,
+                    output_hidden_states=True,
+                    use_cache=False,
+                    return_dict=True,
+                )
+
+            logits_stats = tensor_stats(out.logits.detach())
+            hidden_rows = []
+            hidden_states = getattr(out, "hidden_states", None)
+
+            if hidden_states:
+                for h_idx, hs in enumerate(hidden_states[: min(len(hidden_states), 6)]):
+                    hs_stats = tensor_stats(hs.detach())
+                    hidden_rows.append(
+                        {
+                            "index": h_idx,
+                            "absmax": hs_stats["absmax"],
+                            "hasNaN": hs_stats["hasNaN"],
+                            "hasInf": hs_stats["hasInf"],
+                            "shape": hs_stats["shape"],
+                        }
+                    )
+
+            row = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "tokenCount": int(encoded["input_ids"].shape[-1]),
+                "logits": {
+                    "absmax": logits_stats["absmax"],
+                    "min": logits_stats["min"],
+                    "max": logits_stats["max"],
+                    "hasNaN": logits_stats["hasNaN"],
+                    "hasInf": logits_stats["hasInf"],
+                    "shape": logits_stats["shape"],
+                },
+                "hiddenStates": hidden_rows,
+            }
+            checks.append(row)
+
+            if logits_stats["hasNaN"] or logits_stats["hasInf"] or any(
+                x["hasNaN"] or x["hasInf"] for x in hidden_rows
+            ):
+                problems.append(row)
+
+        except Exception as exc:
+            err = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "error": str(exc),
+            }
+            checks.append(err)
+            problems.append(err)
+
+    return {
+        "checkedSamples": len(checks),
+        "problemCount": len(problems),
+        "checks": checks,
+        "problems": problems,
+    }
+
+
+def choose_sanity_texts(dataset, fallback_count: int = 3) -> list[str]:
+    texts = []
+    for item in dataset.select(range(min(len(dataset), 20))):
+        text = clean_text(item.get("text", ""))
+        if text:
+            texts.append(text)
+        if len(texts) >= fallback_count:
+            break
+
+    if texts:
+        return texts
+
+    return [
+        "Hello",
+        "Write a short explanation of transformers.",
+        "2 + 2 =",
+    ]
+
+
+class JsonMetricsCallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if not logs:
+            return
+        payload = {"step": int(state.global_step), "epoch": safe_float(state.epoch)}
+        payload.update({k: v for k, v in logs.items()})
+        log_event("train_log", **payload)
+
+    def on_save(self, args, state, control, **kwargs):
+        log_event("train_save", step=int(state.global_step), epoch=safe_float(state.epoch))
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        log_event("train_begin", maxSteps=int(state.max_steps))
+
+    def on_train_end(self, args, state, control, **kwargs):
+        log_event("train_end", step=int(state.global_step), epoch=safe_float(state.epoch))
 
 
 def main():
@@ -56,18 +338,25 @@ def main():
 
     gpu_name = torch.cuda.get_device_name(0)
     total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
-    print(f"Using GPU: {gpu_name} ({total_vram_gb:.2f} GB VRAM)")
-
     use_bf16 = torch.cuda.is_bf16_supported()
-
-    # Делай trust_remote_code управляемым через config:
-    # "trustRemoteCode": false
     trust_remote_code = bool(cfg.get("trustRemoteCode", False))
 
-    # Ключевой фикс:
-    # 1) для 4bit НЕ даём auto + cpu offload
-    # 2) грузим всё на единственную GPU
-    # 3) не задаём max_memory с CPU, чтобы transformers не раскидывал модули на CPU/disk
+    log_event(
+        "train_config",
+        outputDir=output_dir,
+        baseModel=cfg["baseModel"],
+        datasetPath=cfg["datasetPath"],
+        trustRemoteCode=trust_remote_code,
+        gpuName=gpu_name,
+        gpuVramGb=round(total_vram_gb, 2),
+        qlora=qlora_cfg,
+        wandbEnabled=wandb_enabled,
+        wandbMode=wandb_cfg.get("mode", "online"),
+        trainDtype=resolve_dtype_name(use_bf16),
+    )
+
+    report(5)
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=cfg["baseModel"],
         max_seq_length=qlora_cfg["maxSeqLength"],
@@ -83,6 +372,12 @@ def main():
     if getattr(model.config, "pad_token_id", None) is None and tokenizer.pad_token_id is not None:
         model.config.pad_token_id = tokenizer.pad_token_id
 
+    base_health_before = collect_parameter_health(model)
+    log_event("base_model_health_before_lora", **base_health_before)
+    log_event("base_model_weights_before_lora", **collect_module_weight_summary(model))
+
+    report(15)
+
     use_lora = bool(qlora_cfg.get("useLora", True))
 
     if use_lora:
@@ -95,6 +390,11 @@ def main():
             bias="none",
             use_gradient_checkpointing="unsloth",
         )
+
+    post_attach_health = collect_parameter_health(model)
+    log_event("model_health_after_lora_attach", **post_attach_health)
+
+    report(20)
 
     dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
 
@@ -116,6 +416,11 @@ def main():
     if len(dataset) == 0:
         raise ValueError("Dataset is empty after formatting/filtering")
 
+    sample_texts = [clean_text(x["text"]) for x in dataset.select(range(min(len(dataset), 5)))]
+    log_event("dataset_summary", rows=len(dataset), **summarize_texts(sample_texts))
+
+    report(30)
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=qlora_cfg["perDeviceTrainBatchSize"],
@@ -135,7 +440,7 @@ def main():
         lr_scheduler_type=qlora_cfg.get("lrSchedulerType", "cosine"),
         weight_decay=qlora_cfg.get("weightDecay", 0.01),
         max_grad_norm=qlora_cfg.get("maxGradNorm", 1.0),
-        gradient_checkpointing=False,  # Unsloth handles this via get_peft_model(... use_gradient_checkpointing="unsloth")
+        gradient_checkpointing=False,
         dataloader_pin_memory=True,
     )
 
@@ -148,10 +453,42 @@ def main():
         packing=False,
         dataset_num_proc=1,
     )
+    trainer.add_callback(JsonMetricsCallback())
+
+    report(40)
+
+    pre_train_smoke = run_forward_smoke(
+        model=model,
+        tokenizer=tokenizer,
+        texts=choose_sanity_texts(dataset),
+        max_seq_length=qlora_cfg["maxSeqLength"],
+        device=torch.device("cuda:0"),
+    )
+    log_event("forward_smoke_before_train", **pre_train_smoke)
+
+    if pre_train_smoke["problemCount"] > 0:
+        raise RuntimeError("Model failed smoke forward before training. See forward_smoke_before_train logs.")
+
+    report(50)
 
     start_time = time.time()
     train_result = trainer.train()
     end_time = time.time()
+
+    report(80)
+
+    after_train_health = collect_parameter_health(model)
+    log_event("model_health_after_train", **after_train_health)
+    log_event("model_weights_after_train", **collect_module_weight_summary(model))
+
+    post_train_smoke = run_forward_smoke(
+        model=model,
+        tokenizer=tokenizer,
+        texts=choose_sanity_texts(dataset),
+        max_seq_length=qlora_cfg["maxSeqLength"],
+        device=torch.device("cuda:0"),
+    )
+    log_event("forward_smoke_after_train", **post_train_smoke)
 
     if use_lora:
         model.save_pretrained(output_dir)
@@ -159,6 +496,8 @@ def main():
         trainer.save_model(output_dir)
 
     tokenizer.save_pretrained(output_dir)
+
+    report(92)
 
     duration = end_time - start_time
     metrics = train_result.metrics
@@ -195,6 +534,10 @@ def main():
         "gpu_name": gpu_name,
         "gpu_vram_gb": round(total_vram_gb, 2),
         "trust_remote_code": trust_remote_code,
+        "preTrainForwardProblems": pre_train_smoke["problemCount"],
+        "postTrainForwardProblems": post_train_smoke["problemCount"],
+        "postTrainBadTensorCount": after_train_health["badTensorCount"],
+        "postTrainGlobalAbsMax": after_train_health["globalAbsMax"],
     }
 
     with open(os.path.join(output_dir, "summary.json"), "w", encoding="utf-8") as f:
@@ -203,14 +546,23 @@ def main():
     with open(os.path.join(output_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(trainer.state.log_history, f, indent=2, ensure_ascii=False)
 
-    print(json.dumps({
+    report(100)
+
+    result = {
         "ok": True,
         "outputDir": output_dir,
         "summary": summary,
         "wandbEnabled": wandb_enabled,
         "wandbMode": wandb_cfg.get("mode", "online"),
-    }, ensure_ascii=False))
+    }
+
+    log_event("train_success", **result)
+    print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)

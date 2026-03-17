@@ -178,6 +178,36 @@ def summarize_dataset_for_logs(dataset: Any):
     }
 
 
+def tensor_stats(t: torch.Tensor) -> dict[str, Any]:
+    finite_mask = torch.isfinite(t)
+    finite_count = int(finite_mask.sum().item())
+    total_count = t.numel()
+
+    result = {
+        "shape": list(t.shape),
+        "dtype": str(t.dtype),
+        "finiteCount": finite_count,
+        "totalCount": total_count,
+        "hasNaN": bool(torch.isnan(t).any().item()),
+        "hasInf": bool(torch.isinf(t).any().item()),
+        "min": None,
+        "max": None,
+        "absmax": None,
+        "mean": None,
+        "std": None,
+    }
+
+    if finite_count > 0:
+        vals = t[finite_mask].float()
+        result["min"] = float(vals.min().item())
+        result["max"] = float(vals.max().item())
+        result["absmax"] = float(vals.abs().max().item())
+        result["mean"] = float(vals.mean().item())
+        result["std"] = float(vals.std().item()) if vals.numel() > 1 else 0.0
+
+    return result
+
+
 def collect_parameter_health(model) -> dict[str, Any]:
     bad_tensors: list[dict[str, Any]] = []
     scanned = 0
@@ -189,40 +219,13 @@ def collect_parameter_health(model) -> dict[str, Any]:
 
         scanned += 1
         data = param.detach()
+        stats = tensor_stats(data)
 
-        has_nan = torch.isnan(data).any().item()
-        has_inf = torch.isinf(data).any().item()
+        if stats["absmax"] is not None:
+            global_absmax = max(global_absmax, float(stats["absmax"]))
 
-        finite_mask = torch.isfinite(data)
-        finite_count = int(finite_mask.sum().item())
-        total_count = data.numel()
-
-        absmax = None
-        min_val = None
-        max_val = None
-
-        if finite_count > 0:
-          finite_vals = data[finite_mask]
-          absmax = float(finite_vals.abs().max().item())
-          min_val = float(finite_vals.min().item())
-          max_val = float(finite_vals.max().item())
-          global_absmax = max(global_absmax, absmax)
-
-        if has_nan or has_inf:
-            bad_tensors.append(
-                {
-                    "name": name,
-                    "shape": list(data.shape),
-                    "dtype": str(data.dtype),
-                    "hasNaN": bool(has_nan),
-                    "hasInf": bool(has_inf),
-                    "finiteCount": finite_count,
-                    "totalCount": total_count,
-                    "min": min_val,
-                    "max": max_val,
-                    "absmax": absmax,
-                }
-            )
+        if stats["hasNaN"] or stats["hasInf"]:
+            bad_tensors.append({"name": name, **stats})
 
     return {
         "scannedParameters": scanned,
@@ -243,36 +246,11 @@ def choose_sanity_texts(dataset: Any, fallback_count: int = 3) -> list[str]:
     ]
 
 
-def safe_tensor_stats(t: torch.Tensor) -> dict[str, Any]:
-    finite_mask = torch.isfinite(t)
-    finite_count = int(finite_mask.sum().item())
-    total_count = t.numel()
-
-    if finite_count == 0:
-        return {
-            "shape": list(t.shape),
-            "dtype": str(t.dtype),
-            "finiteCount": finite_count,
-            "totalCount": total_count,
-            "min": None,
-            "max": None,
-            "absmax": None,
-            "hasNaN": bool(torch.isnan(t).any().item()),
-            "hasInf": bool(torch.isinf(t).any().item()),
-        }
-
-    finite_vals = t[finite_mask]
-    return {
-        "shape": list(t.shape),
-        "dtype": str(t.dtype),
-        "finiteCount": finite_count,
-        "totalCount": total_count,
-        "min": float(finite_vals.min().item()),
-        "max": float(finite_vals.max().item()),
-        "absmax": float(finite_vals.abs().max().item()),
-        "hasNaN": bool(torch.isnan(t).any().item()),
-        "hasInf": bool(torch.isinf(t).any().item()),
-    }
+def detect_device(model) -> torch.device:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cpu")
 
 
 def run_pre_quant_forward_checks(
@@ -303,24 +281,27 @@ def run_pre_quant_forward_checks(
                     **encoded,
                     output_hidden_states=True,
                     use_cache=False,
+                    return_dict=True,
                 )
 
             logits = out.logits.detach()
-            logits_stats = safe_tensor_stats(logits)
+            logits_stats = tensor_stats(logits)
 
             hidden_summaries = []
             hidden_bad = False
 
             hidden_states = getattr(out, "hidden_states", None)
             if hidden_states:
-                for h_idx, hs in enumerate(hidden_states[: min(len(hidden_states), 6)]):
+                for h_idx, hs in enumerate(hidden_states[: min(len(hidden_states), 8)]):
                     hs_detached = hs.detach()
-                    hs_stats = safe_tensor_stats(hs_detached)
+                    hs_stats = tensor_stats(hs_detached)
                     hidden_summaries.append(
                         {
                             "index": h_idx,
                             "shape": hs_stats["shape"],
                             "absmax": hs_stats["absmax"],
+                            "min": hs_stats["min"],
+                            "max": hs_stats["max"],
                             "hasNaN": hs_stats["hasNaN"],
                             "hasInf": hs_stats["hasInf"],
                         }
@@ -364,11 +345,129 @@ def run_pre_quant_forward_checks(
     }
 
 
-def detect_device(model) -> torch.device:
+def get_target_module_names(model) -> list[str]:
+    names = []
+    for name, module in model.named_modules():
+        if (
+            name.endswith("input_layernorm")
+            or name.endswith("post_attention_layernorm")
+            or name.endswith("self_attn.q_proj")
+            or name.endswith("self_attn.k_proj")
+            or name.endswith("self_attn.v_proj")
+            or name.endswith("self_attn.o_proj")
+            or name.endswith("mlp.gate_proj")
+            or name.endswith("mlp.up_proj")
+            or name.endswith("mlp.down_proj")
+        ):
+            names.append(name)
+    return names
+
+
+def run_hooked_layer_diagnostics(
+    model,
+    tokenizer,
+    texts: list[str],
+    max_seq_len: int,
+    device: torch.device,
+):
+    target_names = set(get_target_module_names(model))
+    captured: dict[str, list[dict[str, Any]]] = {}
+
+    hooks = []
+
+    def make_hook(name: str):
+        def hook(_module, inputs, output):
+            try:
+                value = None
+                if isinstance(output, tuple) and output:
+                    value = output[0]
+                else:
+                    value = output
+
+                if not torch.is_tensor(value):
+                    return
+
+                stats = tensor_stats(value.detach())
+                entry = {
+                    "absmax": stats["absmax"],
+                    "min": stats["min"],
+                    "max": stats["max"],
+                    "hasNaN": stats["hasNaN"],
+                    "hasInf": stats["hasInf"],
+                    "shape": stats["shape"],
+                }
+                captured.setdefault(name, []).append(entry)
+            except Exception as exc:
+                captured.setdefault(name, []).append({"error": str(exc)})
+
+        return hook
+
+    for name, module in model.named_modules():
+        if name in target_names:
+            hooks.append(module.register_forward_hook(make_hook(name)))
+
+    sample_results = []
+
     try:
-        return next(model.parameters()).device
-    except StopIteration:
-        return torch.device("cpu")
+        model.eval()
+        for idx, text in enumerate(texts):
+            encoded = tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_seq_len,
+                padding=False,
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+
+            with torch.no_grad():
+                _ = model(
+                    **encoded,
+                    output_hidden_states=False,
+                    use_cache=False,
+                    return_dict=True,
+                )
+
+            sample_results.append(
+                {
+                    "sampleIndex": idx,
+                    "textPreview": text[:200],
+                    "tokenCount": int(encoded["input_ids"].shape[-1]),
+                }
+            )
+    finally:
+        for h in hooks:
+            h.remove()
+
+    summarized = []
+    problem_modules = []
+
+    for name, entries in captured.items():
+        bad = False
+        last = entries[-1] if entries else {}
+        for e in entries:
+            if e.get("hasNaN") or e.get("hasInf") or e.get("error"):
+                bad = True
+                break
+
+        row = {
+            "name": name,
+            "calls": len(entries),
+            "last": last,
+            "bad": bad,
+        }
+        summarized.append(row)
+        if bad:
+            problem_modules.append(row)
+
+    summarized.sort(key=lambda x: x["name"])
+    return {
+        "checkedSamples": len(sample_results),
+        "moduleCount": len(summarized),
+        "problemModuleCount": len(problem_modules),
+        "modules": summarized,
+        "problemModules": problem_modules[:100],
+    }
 
 
 def main():
@@ -487,6 +586,21 @@ def main():
 
     report(60)
 
+    layer_diag = run_hooked_layer_diagnostics(
+        model=model,
+        tokenizer=tokenizer,
+        texts=sanity_texts[:1],
+        max_seq_len=min(max_seq_len, 512),
+        device=device,
+    )
+    log_event("hooked_layer_diagnostics", **layer_diag)
+
+    if layer_diag["problemModuleCount"] > 0:
+        raise RuntimeError(
+            "Layer diagnostics found non-finite activations before AWQ. "
+            "See `hooked_layer_diagnostics` logs."
+        )
+
     recipe = build_awq_recipe(bits=bits, group_size=group_size, sym=sym)
     log_event(
         "awq_recipe_ready",
@@ -520,7 +634,7 @@ def main():
         raise RuntimeError(
             "AWQ failed during smoothing because the model produced non-finite values "
             "on one of the smoothing targets. This usually points to numerical instability "
-            "in the merged model. Check logs: model_weight_health and forward_precheck."
+            "in the merged model. Check logs: model_weight_health, forward_precheck, hooked_layer_diagnostics."
         ) from exc
 
     report(95)
