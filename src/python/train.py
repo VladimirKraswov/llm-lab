@@ -8,7 +8,7 @@ import torch
 import unsloth
 from datasets import load_dataset
 from unsloth import FastLanguageModel
-from transformers import TrainingArguments, BitsAndBytesConfig
+from transformers import TrainingArguments
 from trl import SFTTrainer
 
 
@@ -43,28 +43,18 @@ def main():
             mode=wandb_cfg.get("mode", "online"),
         )
 
-    # ---------- Критически важные настройки памяти ----------
-    # Включаем expandable segments для уменьшения фрагментации
+    # ---------- Включаем expandable segments для уменьшения фрагментации ----------
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-    # Конфигурация 4-битного квантования с offload на CPU
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=cfg["qlora"]["loadIn4bit"],
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
-        bnb_4bit_use_double_quant=False,          # Отключаем для экономии памяти (≈1 ГБ)
-        llm_int8_enable_fp32_cpu_offload=True,    # Разрешаем offload на CPU
-    )
-
+    # Загрузка модели через Unsloth (без BitsAndBytesConfig, только load_in_4bit)
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=cfg["baseModel"],
         max_seq_length=cfg["qlora"]["maxSeqLength"],
-        quantization_config=bnb_config,
+        load_in_4bit=cfg["qlora"]["loadIn4bit"],   # True
         trust_remote_code=True,
         device_map="auto",
-        max_memory={0: "28GB", "cpu": "12GB"},    # Оставляем ~3 ГБ свободными на GPU
+        max_memory={0: "28GB", "cpu": "12GB"},     # оставляем запас
     )
-    # ---------------------------------------------------------
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -79,10 +69,10 @@ def main():
             lora_alpha=cfg["qlora"]["loraAlpha"],
             lora_dropout=cfg["qlora"]["loraDropout"],
             bias="none",
-            use_gradient_checkpointing="unsloth",   # Экономит память за счёт пересчёта активаций
+            use_gradient_checkpointing="unsloth",
         )
 
-    # Явный вызов model.to("cuda") не требуется – device_map уже разместил модель
+    # Явный вызов to("cuda") не нужен
 
     dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
 
@@ -120,7 +110,7 @@ def main():
         report_to=["wandb"] if wandb_enabled else [],
         remove_unused_columns=False,
         group_by_length=False,
-        optim="paged_adamw_8bit",   # Выгружает состояния оптимизатора на CPU
+        optim="paged_adamw_8bit",   # экономит память
     )
 
     trainer = SFTTrainer(
