@@ -58,11 +58,11 @@ export default function ModelsPage() {
 
   const quantizeMutation = useMutation({
     mutationFn: api.quantizeModel,
-    onSuccess: async (data) => {
+    onSuccess: async (data: any) => {
       await qc.invalidateQueries({ queryKey: ['models'] });
       await qc.invalidateQueries({ queryKey: ['jobs'] });
 
-      if (data.jobId) {
+      if (data?.jobId) {
         navigate(`/app/jobs?selected=${encodeURIComponent(data.jobId)}`);
       }
     },
@@ -115,26 +115,24 @@ export default function ModelsPage() {
 
   const hasActiveBuild = quantizeMutation.isPending;
 
-  const runQuickAwq = (modelId: string, modelName: string) => {
-    const awq = settingsQuery.data?.quantization?.awq;
+  const awqDefaults = (settingsQuery.data as any)?.quantization?.awq;
 
+  const runQuickAwq = (modelId: string, modelName: string) => {
     quantizeMutation.mutate({
       modelId,
       method: 'awq',
       name: `${modelName} AWQ`,
-      bits: awq?.bits ?? 4,
-      groupSize: awq?.groupSize ?? 128,
-      numSamples: awq?.numSamples ?? 32,
-      maxSeqLen: awq?.maxSeqLen ?? 1024,
-      sym: awq?.sym ?? false,
-      dtype: awq?.dtype ?? 'float16',
-      calibrationMode: awq?.calibrationMode ?? 'text_only',
-      trustRemoteCode: awq?.trustRemoteCode ?? true,
+      bits: awqDefaults?.bits ?? 4,
+      groupSize: awqDefaults?.groupSize ?? 128,
+      numSamples: awqDefaults?.numSamples ?? 32,
+      maxSeqLen: awqDefaults?.maxSeqLen ?? 1024,
+      sym: awqDefaults?.sym ?? false,
+      dtype: awqDefaults?.dtype ?? 'float16',
+      calibrationMode: awqDefaults?.calibrationMode ?? 'text_only',
+      trustRemoteCode: awqDefaults?.trustRemoteCode ?? true,
       runner: 'quant_env',
     });
   };
-
-  const awqDefaults = settingsQuery.data?.quantization?.awq;
 
   return (
     <div className="space-y-6">
@@ -188,7 +186,9 @@ export default function ModelsPage() {
           </div>
 
           <div className="text-xs text-slate-400">
-            Default: {awqDefaults?.dtype || 'float16'} · {awqDefaults?.bits ?? 4}-bit · group {awqDefaults?.groupSize ?? 128} · {awqDefaults?.numSamples ?? 32} samples · seq {awqDefaults?.maxSeqLen ?? 1024}
+            Default: {awqDefaults?.dtype || 'float16'} · {awqDefaults?.bits ?? 4}-bit · group{' '}
+            {awqDefaults?.groupSize ?? 128} · {awqDefaults?.numSamples ?? 32} samples · seq{' '}
+            {awqDefaults?.maxSeqLen ?? 1024}
           </div>
         </CardContent>
       </Card>
@@ -229,8 +229,8 @@ export default function ModelsPage() {
                   >
                     <div className="flex items-start justify-between gap-3 text-sm">
                       <div className="min-w-0">
-                        <div className="font-semibold text-white truncate">{item.name}</div>
-                        <div className="mt-1 text-xs text-slate-400 truncate">{item.repoId}</div>
+                        <div className="truncate font-semibold text-white">{item.name}</div>
+                        <div className="mt-1 truncate text-xs text-slate-400">{item.repoId}</div>
                         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
                           {item.sizeHuman && (
                             <div className="text-slate-400">
@@ -243,7 +243,7 @@ export default function ModelsPage() {
                             </div>
                           )}
                           {item.vramEstimate && (
-                            <div className={tooLarge ? 'text-rose-400 font-bold' : 'text-slate-400'}>
+                            <div className={tooLarge ? 'font-bold text-rose-400' : 'text-slate-400'}>
                               VRAM:{' '}
                               <span className={tooLarge ? 'text-rose-300' : 'text-slate-200'}>
                                 ~{item.vramEstimate}
@@ -258,9 +258,7 @@ export default function ModelsPage() {
                         </div>
 
                         {capability?.reason ? (
-                          <div className="mt-2 text-[11px] text-slate-500">
-                            {capability.reason}
-                          </div>
+                          <div className="mt-2 text-[11px] text-slate-500">{capability.reason}</div>
                         ) : null}
 
                         {capability?.experimental ? (
@@ -280,7 +278,7 @@ export default function ModelsPage() {
                             activateMutation.mutate({ id: item.id });
                           }}
                           disabled={item.status !== 'ready' || activateMutation.isPending}
-                          className="h-8 px-3 text-xs bg-blue-600 hover:bg-blue-500"
+                          className="h-8 bg-blue-600 px-3 text-xs hover:bg-blue-500"
                         >
                           Use in runtime
                         </Button>
@@ -299,7 +297,7 @@ export default function ModelsPage() {
                             deleteMutation.mutate(item.id);
                           }}
                           disabled={deleteMutation.isPending}
-                          className="h-8 px-3 text-xs bg-rose-700 hover:bg-rose-600"
+                          className="h-8 bg-rose-700 px-3 text-xs hover:bg-rose-600"
                         >
                           Delete
                         </Button>
@@ -312,7 +310,7 @@ export default function ModelsPage() {
                                 runQuickAwq(item.id, item.name);
                               }}
                               disabled={hasActiveBuild}
-                              className="h-8 px-3 text-xs bg-amber-600 hover:bg-amber-500"
+                              className="h-8 bg-amber-600 px-3 text-xs hover:bg-amber-500"
                             >
                               Quick AWQ
                             </Button>
@@ -324,7 +322,7 @@ export default function ModelsPage() {
                                 setIsQuantizeModalOpen(true);
                               }}
                               disabled={hasActiveBuild}
-                              className="h-8 px-3 text-xs bg-slate-800 hover:bg-slate-700"
+                              className="h-8 bg-slate-800 px-3 text-xs hover:bg-slate-700"
                             >
                               AWQ…
                             </Button>
@@ -356,7 +354,7 @@ export default function ModelsPage() {
                 >
                   <div className="flex items-start justify-between gap-3 text-sm">
                     <div className="min-w-0">
-                      <div className="font-semibold text-white truncate">{lora.name}</div>
+                      <div className="truncate font-semibold text-white">{lora.name}</div>
                       <div className="mt-1 text-xs text-slate-500">
                         Created {fmtDate(lora.createdAt)}
                       </div>
@@ -373,7 +371,7 @@ export default function ModelsPage() {
                     <Button
                       onClick={() => activateLoraMutation.mutate(lora.id)}
                       disabled={activateLoraMutation.isPending}
-                      className="h-8 w-full px-3 text-xs bg-emerald-600 hover:bg-emerald-500"
+                      className="h-8 w-full bg-emerald-600 px-3 text-xs hover:bg-emerald-500"
                     >
                       {activateLoraMutation.isPending ? 'Activating…' : 'Use with this LoRA'}
                     </Button>
@@ -389,10 +387,13 @@ export default function ModelsPage() {
         <QuantizeModelModal
           modelId={selectedModel.id}
           modelName={selectedModel.name}
-          defaultRunner={(selectedModel.quantizationCapability?.runner as 'ml_env' | 'quant_env' | undefined) || 'quant_env'}
+          defaultRunner={
+            (selectedModel.quantizationCapability?.runner as 'ml_env' | 'quant_env' | undefined) ||
+            'quant_env'
+          }
           onClose={() => setIsQuantizeModalOpen(false)}
           onQuantize={(params) => {
-            quantizeMutation.mutate(params);
+            quantizeMutation.mutate(params as any);
             setIsQuantizeModalOpen(false);
           }}
           isPending={quantizeMutation.isPending}

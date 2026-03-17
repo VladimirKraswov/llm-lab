@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Sparkles, Zap, Gauge, SlidersHorizontal } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
-import { api, type AwqCalibrationMode } from '../../lib/api';
+import { api } from '../../lib/api';
 
 interface QuantizeModelModalProps {
   modelId: string;
@@ -21,40 +21,40 @@ interface QuantizeModelModalProps {
     groupSize?: number;
     sym?: boolean;
     runner?: 'ml_env' | 'quant_env';
-    dtype?: string;
-    calibrationMode?: AwqCalibrationMode;
+    dtype?: 'float16' | 'bfloat16' | 'float32' | 'auto';
+    calibrationMode?: 'text_only' | 'auto';
     trustRemoteCode?: boolean;
   }) => void;
   isPending: boolean;
 }
 
-type Preset = 'safe' | 'balanced' | 'quality';
+type Preset = 'fast' | 'balanced' | 'quality';
 
 const PRESET_VALUES: Record<Preset, { numSamples: number; maxSeqLen: number }> = {
-  safe: { numSamples: 32, maxSeqLen: 1024 },
+  fast: { numSamples: 32, maxSeqLen: 1024 },
   balanced: { numSamples: 64, maxSeqLen: 1024 },
-  quality: { numSamples: 64, maxSeqLen: 2048 },
+  quality: { numSamples: 128, maxSeqLen: 2048 },
 };
 
 function presetMeta(preset: Preset) {
-  if (preset === 'safe') {
+  if (preset === 'fast') {
     return {
       icon: Zap,
-      title: 'Safe',
-      description: 'Наиболее стабильный старт для AWQ',
+      title: 'Fast',
+      description: 'Быстрый старт, минимальная калибровка',
     };
   }
   if (preset === 'quality') {
     return {
       icon: Gauge,
       title: 'Quality',
-      description: 'Больше калибровки, медленнее',
+      description: 'Больше сэмплов и контекста, медленнее',
     };
   }
   return {
     icon: Sparkles,
     title: 'Balanced',
-    description: 'Компромисс между скоростью и качеством',
+    description: 'Рекомендуемый вариант для большинства моделей',
   };
 }
 
@@ -71,38 +71,19 @@ export function QuantizeModelModal({
     queryFn: api.getDatasets,
   });
 
-  const settingsQuery = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
-  });
-
-  const [preset, setPreset] = useState<Preset>('safe');
+  const [preset, setPreset] = useState<Preset>('fast');
   const [customName, setCustomName] = useState('');
   const [selectedDatasetPath, setSelectedDatasetPath] = useState('');
-  const [numSamples, setNumSamples] = useState(PRESET_VALUES.safe.numSamples);
-  const [maxSeqLen, setMaxSeqLen] = useState(PRESET_VALUES.safe.maxSeqLen);
+  const [numSamples, setNumSamples] = useState(PRESET_VALUES.fast.numSamples);
+  const [maxSeqLen, setMaxSeqLen] = useState(PRESET_VALUES.fast.maxSeqLen);
   const [bits, setBits] = useState(4);
   const [groupSize, setGroupSize] = useState(128);
   const [sym, setSym] = useState(false);
-  const [dtype, setDtype] = useState('float16');
-  const [calibrationMode, setCalibrationMode] = useState<AwqCalibrationMode>('text_only');
-  const [trustRemoteCode, setTrustRemoteCode] = useState(true);
-  const [advanced, setAdvanced] = useState(false);
+  const [advanced, setAdvanced] = useState(true);
   const [runner, setRunner] = useState<'ml_env' | 'quant_env'>(defaultRunner);
-
-  useEffect(() => {
-    const awq = settingsQuery.data?.quantization?.awq;
-    if (!awq) return;
-
-    setNumSamples(awq.numSamples ?? 32);
-    setMaxSeqLen(awq.maxSeqLen ?? 1024);
-    setBits(awq.bits ?? 4);
-    setGroupSize(awq.groupSize ?? 128);
-    setSym(awq.sym ?? false);
-    setDtype(awq.dtype || 'float16');
-    setCalibrationMode(awq.calibrationMode || 'text_only');
-    setTrustRemoteCode(awq.trustRemoteCode ?? true);
-  }, [settingsQuery.data]);
+  const [dtype, setDtype] = useState<'float16' | 'bfloat16' | 'float32' | 'auto'>('float16');
+  const [calibrationMode, setCalibrationMode] = useState<'text_only' | 'auto'>('text_only');
+  const [trustRemoteCode, setTrustRemoteCode] = useState(true);
 
   useEffect(() => {
     const values = PRESET_VALUES[preset];
@@ -143,16 +124,16 @@ export function QuantizeModelModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 p-4 backdrop-blur-sm">
-      <div className="flex h-full items-center justify-center">
-        <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
-          <div className="shrink-0 border-b border-slate-800 px-6 py-5">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/70 p-4 backdrop-blur-sm">
+      <div className="flex min-h-full items-start justify-center py-4">
+        <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl max-h-[calc(100vh-2rem)]">
+          <div className="border-b border-slate-800 px-6 py-5">
             <h3 className="text-xl font-semibold text-white">Convert model to AWQ</h3>
             <p className="mt-1 text-sm text-slate-400">{modelName}</p>
           </div>
 
-          <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-6">
+          <form onSubmit={submit} className="flex max-h-[calc(100vh-2rem)] flex-col">
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
               <div>
                 <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-slate-500">
                   Output model name
@@ -181,7 +162,7 @@ export function QuantizeModelModal({
                   <option value="ml_env">ml_env</option>
                 </select>
                 <p className="mt-2 text-xs text-slate-500">
-                  quant_env позволяет держать квантизацию отдельно от основного training environment.
+                  quant_env позволяет держать квантизацию отдельно от основного окружения.
                 </p>
               </div>
 
@@ -191,7 +172,7 @@ export function QuantizeModelModal({
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-3">
-                  {(['safe', 'balanced', 'quality'] as Preset[]).map((key) => {
+                  {(['fast', 'balanced', 'quality'] as Preset[]).map((key) => {
                     const meta = presetMeta(key);
                     const Icon = meta.icon;
                     const active = preset === key;
@@ -334,7 +315,7 @@ export function QuantizeModelModal({
                       </label>
                       <select
                         value={dtype}
-                        onChange={(e) => setDtype(e.target.value)}
+                        onChange={(e) => setDtype(e.target.value as 'float16' | 'bfloat16' | 'float32' | 'auto')}
                         className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
                       >
                         <option value="float16">float16</option>
@@ -350,11 +331,11 @@ export function QuantizeModelModal({
                       </label>
                       <select
                         value={calibrationMode}
-                        onChange={(e) => setCalibrationMode(e.target.value as AwqCalibrationMode)}
+                        onChange={(e) => setCalibrationMode(e.target.value as 'text_only' | 'auto')}
                         className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
                       >
                         <option value="text_only">text_only</option>
-                        <option value="permissive">permissive</option>
+                        <option value="auto">auto</option>
                       </select>
                     </div>
 
@@ -364,8 +345,8 @@ export function QuantizeModelModal({
                       </label>
                       <Input
                         type="number"
-                        min={4}
-                        max={4}
+                        min={2}
+                        max={8}
                         value={bits}
                         onChange={(e) => setBits(Number(e.target.value))}
                         className="bg-slate-950"
@@ -387,7 +368,7 @@ export function QuantizeModelModal({
                     </div>
 
                     <div className="md:col-span-2 flex flex-col gap-3">
-                      <label className="flex items-center gap-3">
+                      <label className="flex items-center gap-3 text-sm text-slate-300">
                         <input
                           id="awq-sym"
                           type="checkbox"
@@ -395,18 +376,18 @@ export function QuantizeModelModal({
                           onChange={(e) => setSym(e.target.checked)}
                           className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-blue-600"
                         />
-                        <span className="text-sm text-slate-300">Symmetric quantization</span>
+                        Symmetric quantization
                       </label>
 
-                      <label className="flex items-center gap-3">
+                      <label className="flex items-center gap-3 text-sm text-slate-300">
                         <input
-                          id="awq-trust-remote"
+                          id="awq-trust-remote-code"
                           type="checkbox"
                           checked={trustRemoteCode}
                           onChange={(e) => setTrustRemoteCode(e.target.checked)}
                           className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-blue-600"
                         />
-                        <span className="text-sm text-slate-300">Trust remote code</span>
+                        Trust remote code
                       </label>
                     </div>
                   </div>
@@ -414,11 +395,11 @@ export function QuantizeModelModal({
               </div>
 
               <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-100">
-                Для Qwen-family и нестабильных моделей safest path: <strong>float16 + text_only + 32–64 samples + 1024–2048 seq</strong>.
+                Для нестабильных моделей safest defaults: <b>float16</b>, <b>text_only</b>, немного samples и короткий seq len.
               </div>
             </div>
 
-            <div className="shrink-0 border-t border-slate-800 px-6 py-4">
+            <div className="border-t border-slate-800 px-6 py-4">
               <div className="flex justify-end gap-3">
                 <Button
                   type="button"
