@@ -239,27 +239,16 @@ async function quantizeModel({
 
   const effectiveRunner = runner || 'quant_env';
 
-  const { getSettings } = require('./state');
-  const settings = await getSettings();
-  const awqDefaults = settings.quantization?.awq || {};
-
-  const effectiveBits = bits ?? awqDefaults.bits ?? 4;
-  const effectiveGroupSize = groupSize ?? awqDefaults.groupSize ?? 128;
-  const effectiveSym = sym ?? awqDefaults.sym ?? false;
-  const effectiveNumSamples = numSamples ?? awqDefaults.numSamples ?? 32;
-  const effectiveMaxSeqLen = maxSeqLen ?? awqDefaults.maxSeqLen ?? 1024;
-  const effectiveDtype = dtype ?? awqDefaults.dtype ?? 'float16';
-  const effectiveCalibrationMode = calibrationMode ?? awqDefaults.calibrationMode ?? 'text_only';
-  const effectiveTrustRemoteCode = trustRemoteCode ?? awqDefaults.trustRemoteCode ?? true;
-
   const existing = (await getModels()).find(m =>
     m.sourceModelId === modelId &&
     m.quantization === effectiveMethod &&
     m.status === 'ready' &&
     m.runner === effectiveRunner &&
-    m.bits === effectiveBits &&
-    m.groupSize === effectiveGroupSize &&
-    m.sym === effectiveSym
+    (!bits || m.bits === bits) &&
+    (!groupSize || m.groupSize === groupSize) &&
+    (sym === undefined || m.sym === sym) &&
+    (!dtype || m.dtype === dtype) &&
+    (!calibrationMode || m.calibrationMode === calibrationMode)
   );
   if (existing) {
     return {
@@ -285,13 +274,15 @@ async function quantizeModel({
     pid: null,
     error: null,
     quantization: effectiveMethod,
-    bits: effectiveBits,
-    groupSize: effectiveGroupSize,
-    sym: effectiveSym,
+    bits: bits || 4,
+    groupSize: groupSize || 128,
+    sym: sym !== undefined ? sym : false,
     sourceModelId: modelId,
     configPath: null,
     runner: effectiveRunner,
     envName: effectiveRunner,
+    dtype: dtype || 'float16',
+    calibrationMode: calibrationMode || 'text_only',
   });
 
   emitEvent('model_updated', item);
@@ -306,14 +297,14 @@ async function quantizeModel({
     outputDir: modelPath,
     method: effectiveMethod,
     datasetPath,
-    numSamples: effectiveNumSamples,
-    maxSeqLen: effectiveMaxSeqLen,
-    bits: effectiveBits,
-    groupSize: effectiveGroupSize,
-    sym: effectiveSym,
-    dtype: effectiveDtype,
-    calibrationMode: effectiveCalibrationMode,
-    trustRemoteCode: effectiveTrustRemoteCode,
+    numSamples: numSamples ?? 32,
+    maxSeqLen: maxSeqLen ?? 1024,
+    bits: bits ?? 4,
+    groupSize: groupSize ?? 128,
+    sym: sym ?? false,
+    dtype: dtype || 'float16',
+    calibrationMode: calibrationMode || 'text_only',
+    trustRemoteCode: trustRemoteCode ?? true,
   };
 
   const scriptPath = path.join(__dirname, '..', 'python', scriptFile);
@@ -399,6 +390,8 @@ async function quantizeModel({
       configPath,
       runner: effectiveRunner,
       envName: effectiveRunner,
+      dtype: payload.dtype,
+      calibrationMode: payload.calibrationMode,
     });
 
     const { upsertJob: upsertJobSync } = require('./state');
@@ -456,6 +449,8 @@ async function quantizeModel({
       configPath,
       runner: effectiveRunner,
       envName: effectiveRunner,
+      dtype: payload.dtype,
+      calibrationMode: payload.calibrationMode,
     });
 
     const { upsertJob: upsertJobErr } = require('./state');

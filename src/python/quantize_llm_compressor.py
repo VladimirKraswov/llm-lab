@@ -2,8 +2,8 @@ import json
 import os
 import sys
 import traceback
-import torch
 
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from llmcompressor import oneshot
 from llmcompressor.modifiers.awq import AWQModifier
@@ -13,31 +13,34 @@ def report(p: int):
     print(f"__PROGRESS__:{p}", flush=True)
 
 
-def resolve_torch_dtype(dtype_value):
-    value = str(dtype_value or "float16").lower().strip()
-
-    if value in ("float16", "half", "fp16"):
+def resolve_dtype(dtype_value):
+    value = str(dtype_value or "float16").strip().lower()
+    if value in ("float16", "half", "fp16", "torch.float16"):
         return torch.float16
-    if value in ("bfloat16", "bf16"):
+    if value in ("bfloat16", "bf16", "torch.bfloat16"):
         return torch.bfloat16
-    if value in ("float32", "float", "fp32"):
+    if value in ("float32", "float", "fp32", "torch.float32"):
         return torch.float32
     if value == "auto":
         return "auto"
-
     raise ValueError(f"Unsupported dtype: {dtype_value}")
 
 
-def build_local_text_dataset(
-    dataset_path: str | None,
-    num_samples: int,
-    calibration_mode: str = "text_only",
-):
+def _clean_text(value: str, max_chars: int = 12000) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        text = text[:max_chars].strip()
+    return text
+
+
+def build_local_text_dataset(dataset_path: str | None, num_samples: int, calibration_mode: str):
     if not dataset_path or not os.path.exists(dataset_path):
         return "open_platypus"
 
+    mode = str(calibration_mode or "text_only").strip().lower()
     rows: list[str] = []
-    calibration_mode = str(calibration_mode or "text_only").lower().strip()
 
     with open(dataset_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -48,49 +51,53 @@ def build_local_text_dataset(
             if not line:
                 continue
 
-            item = json.loads(line)
+            try:
+                item = json.loads(line)
+            except Exception:
+                continue
 
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str):
-                    text = text.strip()
-                    if text:
-                        rows.append(text)
-                        continue
-
-                if calibration_mode == "text_only":
-                    continue
-
-                messages = item.get("messages")
-                if isinstance(messages, list):
-                    parts = []
-                    for msg in messages:
-                        if not isinstance(msg, dict):
-                            continue
-                        content = str(msg.get("content", "")).strip()
-                        if content:
-                            parts.append(content)
-                    merged = "\n".join(parts).strip()
-                    if merged:
-                        rows.append(merged)
-                        continue
-
-                if "instruction" in item and "output" in item:
-                    merged = f"{item.get('instruction', '')}\n\n{item.get('output', '')}".strip()
-                    if merged:
-                        rows.append(merged)
-                        continue
-
-                if "prompt" in item and "completion" in item:
-                    merged = f"{item.get('prompt', '')}\n\n{item.get('completion', '')}".strip()
-                    if merged:
-                        rows.append(merged)
-                        continue
-
-            elif calibration_mode != "text_only":
-                text = str(item).strip()
+            if not isinstance(item, dict):
+                text = _clean_text(str(item))
                 if text:
                     rows.append(text)
+                continue
+
+            text = item.get("text")
+            if isinstance(text, str):
+                text = _clean_text(text)
+                if text:
+                    rows.append(text)
+                    continue
+
+            if mode == "text_only":
+                # Строгий режим: только plain text поле.
+                continue
+
+            messages = item.get("messages")
+            if isinstance(messages, list):
+                parts = []
+                for msg in messages:
+                    if not isinstance(msg, dict):
+                        continue
+                    content = _clean_text(msg.get("content", ""))
+                    if content:
+                        parts.append(content)
+                joined = _clean_text("\n".join(parts))
+                if joined:
+                    rows.append(joined)
+                    continue
+
+            if "instruction" in item and "output" in item:
+                joined = _clean_text(f"{item.get('instruction', '')}\n\n{item.get('output', '')}")
+                if joined:
+                    rows.append(joined)
+                    continue
+
+            if "prompt" in item and "completion" in item:
+                joined = _clean_text(f"{item.get('prompt', '')}\n\n{item.get('completion', '')}")
+                if joined:
+                    rows.append(joined)
+                    continue
 
     return rows if rows else "open_platypus"
 
@@ -140,9 +147,9 @@ def main():
     bits = int(cfg.get("bits", 4))
     group_size = int(cfg.get("groupSize", 128))
     sym = bool(cfg.get("sym", False))
-    dtype = cfg.get("dtype", "float16")
-    calibration_mode = cfg.get("calibrationMode", "text_only")
     trust_remote_code = bool(cfg.get("trustRemoteCode", True))
+    dtype = resolve_dtype(cfg.get("dtype", "float16"))
+    calibration_mode = str(cfg.get("calibrationMode", "text_only")).strip().lower()
 
     if method != "awq":
         raise ValueError(
@@ -153,6 +160,20 @@ def main():
 
     os.makedirs(output_dir, exist_ok=True)
     report(5)
+
+    print(json.dumps({
+        "modelPath": model_path,
+        "outputDir": output_dir,
+        "datasetPath": dataset_path,
+        "numSamples": num_samples,
+        "maxSeqLen": max_seq_len,
+        "bits": bits,
+        "groupSize": group_size,
+        "sym": sym,
+        "dtype": str(cfg.get("dtype", "float16")),
+        "calibrationMode": calibration_mode,
+        "trustRemoteCode": trust_remote_code,
+    }, ensure_ascii=False), flush=True)
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
@@ -165,7 +186,7 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=resolve_torch_dtype(dtype),
+        torch_dtype=dtype,
         trust_remote_code=trust_remote_code,
     )
 
@@ -176,6 +197,15 @@ def main():
         num_samples=num_samples,
         calibration_mode=calibration_mode,
     )
+
+    if isinstance(dataset, list):
+        dataset = [x for x in dataset if x and x.strip()]
+        dataset = dataset[:num_samples]
+
+    print(json.dumps({
+        "resolvedDatasetType": "local_list" if isinstance(dataset, list) else dataset,
+        "resolvedSamples": len(dataset) if isinstance(dataset, list) else num_samples,
+    }, ensure_ascii=False), flush=True)
 
     report(50)
 
