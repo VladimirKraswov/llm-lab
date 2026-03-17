@@ -543,7 +543,6 @@ def main():
     offload_folder_name = str(cfg.get("offloadFolderName", "_offload")).strip() or "_offload"
     base_model_override = str(cfg.get("baseModelOverride") or "").strip() or None
 
-    # Доп. режимы диагностики
     load_clean_base_for_diff = bool(cfg.get("loadCleanBaseForDiff", True))
     clean_base_dtype_name = str(cfg.get("cleanBaseDtype", "float32")).strip()
     clean_base_on_cpu = bool(cfg.get("cleanBaseOnCpu", True))

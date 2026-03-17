@@ -12,6 +12,7 @@ const {
   upsertLora,
   addModel,
   getLoras,
+  getSettings,
 } = require('./state');
 const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');
@@ -54,12 +55,18 @@ async function registerLoraFromJob(jobId, customName = null) {
     createdAt: nowIso(),
     status: 'ready',
     mergeStatus: 'not_built',
+    mergeProgress: 0,
+    mergePid: null,
     packageStatus: 'not_built',
+    packagePid: null,
     error: null,
     configPath: null,
     mergeLogFile: null,
     mergeOptions: null,
     mergeArtifacts: [],
+    mergedModelId: null,
+    mergedModelSize: null,
+    mergedModelSizeHuman: null,
   });
 
   const size = fs.existsSync(item.adapterPath) ? getDirSize(item.adapterPath) : 0;
@@ -125,6 +132,11 @@ async function finalizeMergeSuccess(loraId, mergedPath, configPath, mergeLogFile
 
   const artifacts = getMergeArtifacts(mergedPath);
   const size = fs.existsSync(mergedPath) ? getDirSize(mergedPath) : 0;
+  const settings = await getSettings();
+  const shouldRegisterAsModel =
+    current?.mergeOptions?.registerAsModel ??
+    settings?.merge?.registerAsModel ??
+    true;
 
   const next = await upsertLora({
     ...current,
@@ -139,6 +151,10 @@ async function finalizeMergeSuccess(loraId, mergedPath, configPath, mergeLogFile
   });
 
   emitEvent('lora_updated', next);
+
+  if (!shouldRegisterAsModel) {
+    return next;
+  }
 
   const alreadyRegistered = current.mergedModelId
     ? await getModelById(current.mergedModelId)
@@ -190,6 +206,7 @@ async function finalizeMergeFailure(loraId, error, configPath, mergeLogFile) {
     ...current,
     mergeStatus: 'failed',
     mergePid: null,
+    mergeProgress: 0,
     error: String(error || 'merge failed'),
     configPath,
     mergeLogFile,
@@ -247,12 +264,35 @@ async function getLoraByIdSafe(id) {
   return reconcileLoraMergeState(item);
 }
 
+function getMergeOptionsInfo() {
+  return {
+    deviceStrategies: ['cpu', 'cuda', 'auto'],
+    dtypes: ['auto', 'float16', 'bfloat16', 'float32'],
+    defaultOptions: {
+      deviceStrategy: 'cpu',
+      cudaDevice: 0,
+      dtype: 'float16',
+      lowCpuMemUsage: true,
+      safeSerialization: true,
+      overwriteOutput: false,
+      maxShardSize: '5GB',
+      offloadFolderName: '_offload',
+      clearGpuBeforeMerge: false,
+      trustRemoteCode: false,
+      registerAsModel: true,
+      customOutputName: '',
+      baseModelSource: 'auto',
+      baseModelOverride: '',
+    },
+    gpus: [],
+  };
+}
+
 async function buildMergedLora(loraId, options = {}) {
   const item = await getLoraById(loraId);
   if (!item) throw new Error('lora not found');
 
-  const settings = require('./state');
-  const userSettings = await settings.getSettings();
+  const userSettings = await getSettings();
   const mergeOptions = {
     ...(userSettings.merge || {}),
     ...(options || {}),
@@ -318,6 +358,7 @@ async function buildMergedLora(loraId, options = {}) {
     logLabel: `merge-lora:${loraId}`,
   });
 
+  fs.closeSync(outFd);
   child.unref();
 
   await registerManagedProcess({
@@ -368,6 +409,44 @@ async function buildMergedLora(loraId, options = {}) {
   });
 
   return building;
+}
+
+async function cancelMergedLora(loraId) {
+  const item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+
+  if (item.mergeStatus !== 'building' || !item.mergePid) {
+    return item;
+  }
+
+  try {
+    if (isPidRunning(item.mergePid)) {
+      try {
+        process.kill(item.mergePid, 'SIGTERM');
+      } catch {}
+
+      await sleep(1000);
+
+      if (isPidRunning(item.mergePid)) {
+        try {
+          process.kill(item.mergePid, 'SIGKILL');
+        } catch {}
+      }
+    }
+  } finally {
+    await unregisterManagedProcess(item.mergePid).catch(() => {});
+  }
+
+  const next = await upsertLora({
+    ...item,
+    mergeStatus: 'failed',
+    mergeProgress: 0,
+    mergePid: null,
+    error: 'Merge cancelled by user',
+  });
+
+  emitEvent('lora_updated', next);
+  return next;
 }
 
 async function ensureMergedLora(loraId) {
@@ -500,9 +579,11 @@ async function reconcileAllLoras() {
 module.exports = {
   registerLoraFromJob,
   buildMergedLora,
+  cancelMergedLora,
   ensureMergedLora,
   packageMergedLora,
   reconcileLoraMergeState,
   reconcileAllLoras,
   getLoraByIdSafe,
+  getMergeOptionsInfo,
 };
