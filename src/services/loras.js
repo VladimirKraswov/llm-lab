@@ -269,7 +269,7 @@ function getMergeOptionsInfo() {
     deviceStrategies: ['cpu', 'cuda', 'auto'],
     dtypes: ['auto', 'float16', 'bfloat16', 'float32'],
     defaultOptions: {
-      deviceStrategy: 'cpu',
+      deviceStrategy: 'auto',
       cudaDevice: 0,
       dtype: 'float16',
       lowCpuMemUsage: true,

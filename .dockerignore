@@ -1,0 +1,12 @@
+node_modules
+web/node_modules
+web/dist
+.git
+.llm-lab
+workspace
+test_workspace
+*.log
+*.pid
+.env
+.env.*
+!.env.docker.example

@@ -38,7 +38,7 @@ const DEFAULT_SETTINGS = {
     targetModules: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
   },
   merge: {
-    deviceStrategy: 'cpu',
+    deviceStrategy: 'auto',
     cudaDevice: 0,
     dtype: 'float16',
     lowCpuMemUsage: true,

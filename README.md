@@ -36,3 +36,22 @@ npm run dev
 ```bash
 VITE_API_BASE=http://127.0.0.1:8787 npm run dev
 ```
+
+## Развертывание через Docker Compose
+
+Для удобного удаленного развертывания со всеми зависимостями (vLLM, Unsloth, CUDA 12.8):
+
+1. **Подготовка**:
+   Убедитесь, что у вас установлены [Docker](https://docs.docker.com/get-docker/) и [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+2. **Запуск**:
+   ```bash
+   docker compose up -d
+   ```
+
+3. **Доступ**:
+   UI и API будут доступны на порту `8787`.
+
+Все данные (модели, датасеты, логи) сохраняются в директорию `./workspace` на хосте.
+
+Параметры GPU (резервирование всех доступных GPU) настроены в `docker-compose.yml`.
