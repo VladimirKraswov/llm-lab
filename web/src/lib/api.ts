@@ -503,7 +503,7 @@ export const api = {
   getLora: (id: string) => request<LoraItem>(`/loras/${id}`),
   getLoraMergeOptions: () => request<MergeOptionsInfo>('/loras/merge-options'),
   getLoraMergeLogs: (id: string, tail = 200) =>
-    request<{ id: string; logFile: string | null; content: string }>(`/loras/${id}/merge-logs?tail=${tail}`),
+    request<{ id: string; logFile: string | null; content: string }>(`/loras/${id}/logs?tail=${tail}`),
   registerLoraFromJob: (payload: { jobId: string; name?: string }) =>
     request<LoraItem>('/loras/from-job', {
       method: 'POST',

@@ -154,6 +154,9 @@ export default function LorasPage() {
         : '',
   };
 
+  const mergeLogText = (mergeLogsQuery.data?.content || 'No logs yet').replace(/\r/g, '\n');
+
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -656,8 +659,14 @@ export default function LorasPage() {
               {mergeLogsQuery.data?.logFile || 'No merge log file yet'}
             </div>
 
+            {mergeLogsQuery.isError ? (
+              <div className="text-sm text-rose-300">
+                {mergeLogsQuery.error instanceof Error ? mergeLogsQuery.error.message : 'Failed to load logs'}
+              </div>
+            ) : null}
+
             <pre className="max-h-[500px] overflow-auto whitespace-pre-wrap break-all rounded-2xl border border-slate-800 bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-200">
-              {mergeLogsQuery.data?.content || 'No logs yet'}
+              {(mergeLogsQuery.data?.content || 'No logs yet').replace(/\r/g, '\n')}
             </pre>
 
             <div className="flex gap-2">

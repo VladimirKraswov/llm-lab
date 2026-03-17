@@ -151,18 +151,13 @@ async function finalizeMergeSuccess(loraId, mergedPath, configPath, mergeLogFile
 
       await addModel({
         id: modelId,
-        name: current.mergeOptions?.customOutputName?.trim()
-          ? current.mergeOptions.customOutputName.trim()
-          : `Merged: ${current.name}`,
+        name: `Merged: ${current.name}`,
         repoId: `local/merged/${current.id}`,
         createdAt: nowIso(),
         status: 'ready',
         path: mergedPath,
         error: null,
         fromLoraId: loraId,
-        source: 'merged-lora',
-        baseModelId: current.baseModelId || null,
-        baseModelName: current.baseModelName || null,
         configPath,
         ...modelMeta,
       });
