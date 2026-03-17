@@ -229,8 +229,11 @@ async function quantizeModel({
   if (!source) throw new Error('source model not found');
   if (source.status !== 'ready') throw new Error('source model is not ready');
 
-  const requestedMethod = method;
-  const effectiveMethod = requestedMethod;
+  const effectiveMethod = String(method || 'awq').toLowerCase();
+  if (effectiveMethod !== 'awq') {
+    throw new Error(`Unsupported quantization method: ${method}`);
+  }
+
   const effectiveRunner = runner || 'quant_env';
 
   const existing = (await getModels()).find(m =>
@@ -250,7 +253,7 @@ async function quantizeModel({
   }
 
   const newId = uid('model');
-  const methodLabel = effectiveMethod === 'awq-legacy' ? `awq-${bits || 4}bit` : effectiveMethod;
+  const methodLabel = effectiveMethod;
   const slug = safeSlug(name || `${source.name}-${methodLabel}`);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${newId}`);
   const logFile = path.join(CONFIG.logsDir, `${newId}.log`);
@@ -266,9 +269,9 @@ async function quantizeModel({
     pid: null,
     error: null,
     quantization: effectiveMethod,
-    bits: bits || (effectiveMethod === 'fp8' ? 8 : 4),
+    bits: bits || 4,
     groupSize: groupSize || 128,
-    sym: sym !== undefined ? sym : true,
+    sym: sym !== undefined ? sym : false,
     sourceModelId: modelId,
     configPath: null,
     runner: effectiveRunner,
@@ -281,8 +284,8 @@ async function quantizeModel({
   fs.mkdirSync(CONFIG.logsDir, { recursive: true });
   fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
 
-  let scriptFile = 'quantize_llm_compressor.py';
-  let payload = {
+  const scriptFile = 'quantize_llm_compressor.py';
+  const payload = {
     modelPath: source.path,
     outputDir: modelPath,
     method: effectiveMethod,
@@ -294,21 +297,6 @@ async function quantizeModel({
     sym,
     trustRemoteCode: true,
   };
-
-  if (effectiveMethod === 'awq-legacy') {
-    scriptFile = 'quantize_awq.py';
-    payload = {
-      modelPath: source.path,
-      outputDir: modelPath,
-      quantConfig: {
-        zero_point: true,
-        q_group_size: groupSize || 128,
-        w_bit: bits || 4,
-        version: 'GEMM',
-      },
-      trustRemoteCode: true,
-    };
-  }
 
   const scriptPath = path.join(__dirname, '..', 'python', scriptFile);
   const outFd = fs.openSync(logFile, 'a');
@@ -336,7 +324,6 @@ async function quantizeModel({
       modelId: newId,
       sourceModelId: modelId,
       method: effectiveMethod,
-      requestedMethod,
       runner: effectiveRunner,
       modelPath,
       logFile,
@@ -366,7 +353,6 @@ async function quantizeModel({
     paramsSnapshot: {
       ...payload,
       runner: effectiveRunner,
-      requestedMethod,
       effectiveMethod,
     },
   });
@@ -380,7 +366,6 @@ async function quantizeModel({
       sourceModelId: modelId,
       code,
       method: effectiveMethod,
-      requestedMethod,
       runner: effectiveRunner,
       configPath,
     });
@@ -418,7 +403,6 @@ async function quantizeModel({
         modelId: newId,
         sourceModelId: modelId,
         method: effectiveMethod,
-        requestedMethod,
         runner: effectiveRunner,
         configPath,
       });
@@ -427,7 +411,6 @@ async function quantizeModel({
         modelId: newId,
         sourceModelId: modelId,
         method: effectiveMethod,
-        requestedMethod,
         runner: effectiveRunner,
         error: next.error,
         configPath,
@@ -442,7 +425,6 @@ async function quantizeModel({
       modelId: newId,
       sourceModelId: modelId,
       method: effectiveMethod,
-      requestedMethod,
       runner: effectiveRunner,
       configPath,
       error: String(err.message || err),

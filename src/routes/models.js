@@ -13,7 +13,6 @@ const router = express.Router();
 router.get('/', async (_req, res) => {
   const models = await getModels();
 
-  // Backfill metadata for models missing it
   const { getModelMetadata } = require('../utils/model-meta');
   const { upsertModel } = require('../services/state');
 
@@ -153,7 +152,6 @@ router.get('/:id/download', async (req, res) => {
     return res.status(404).json({ error: 'model not found or not ready' });
   }
 
-  // Models are directories, so we need to tar them
   const archiveName = `${item.name.replace(/[^a-z0-9]/gi, '_')}.tar.gz`;
   res.setHeader('Content-Disposition', `attachment; filename="${archiveName}"`);
   res.setHeader('Content-Type', 'application/gzip');
