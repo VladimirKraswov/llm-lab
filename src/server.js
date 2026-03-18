@@ -17,6 +17,7 @@ const lorasRoute = require('./routes/loras');
 const logsRoute = require('./routes/logs');
 const monitorRoute = require('./routes/monitor');
 const syntheticRoute = require('./routes/synthetic');
+const comparisonsRoute = require('./routes/comparisons');
 
 function buildCorsOrigin() {
   if (!CONFIG.webUiOrigin || CONFIG.webUiOrigin === '*') {
@@ -59,6 +60,7 @@ async function main() {
   app.use('/logs', logsRoute);
   app.use('/monitor', monitorRoute);
   app.use('/synthetic', syntheticRoute);
+  app.use('/comparisons', comparisonsRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -78,7 +80,8 @@ async function main() {
         req.path.startsWith('/loras') ||
         req.path.startsWith('/logs') ||
         req.path.startsWith('/monitor') ||
-        req.path.startsWith('/synthetic')
+        req.path.startsWith('/synthetic') ||
+        req.path.startsWith('/comparisons')
       ) {
         return next();
       }

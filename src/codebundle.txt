@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-17T10:42:20.271Z
+generated: 2026-03-18T08:36:53.608Z
 
 
 
@@ -280,40 +280,31 @@ function normalizeOrigin(value) {
   if (!raw || raw === '*') return '*';
 
   try {
-    const url = new URL(raw);
-    return url.origin;
+    return new URL(raw).origin;
   } catch {
     return '*';
   }
 }
 
+const workspace = process.env.WORKSPACE || '/opt/deepseek-workspace';
+const environmentsDir = path.join(workspace, 'environments');
+
 const CONFIG = {
   host: process.env.SVC_HOST || '0.0.0.0',
   port: toNumber(process.env.SVC_PORT, 8787),
-  workspace: process.env.WORKSPACE || '/opt/deepseek-workspace',
 
-  mlEnv: process.env.ML_ENV || '/opt/deepseek-workspace/environments/ml_env',
-  quantizeEnv:
-    process.env.QUANTIZE_ENV || '/opt/deepseek-workspace/environments/quant_env',
+  workspace,
 
+  mlEnv: process.env.ML_ENV || path.join(environmentsDir, 'ml_env'),
+  quantizeEnv: process.env.QUANTIZE_ENV || path.join(environmentsDir, 'quant_env'),
   transformersEnv:
-    process.env.TRANSFORMERS_ENV ||
-    process.env.ML_ENV ||
-    '/opt/deepseek-workspace/environments/transformers_env',
+    process.env.TRANSFORMERS_ENV || path.join(environmentsDir, 'transformers_env'),
 
   openWebUiPort: toNumber(process.env.OPENWEBUI_PORT, 3000),
   vllmPort: toNumber(process.env.VLLM_PORT, 8000),
   defaultBaseModel: process.env.DEFAULT_BASE_MODEL || 'Qwen/Qwen2.5-7B-Instruct',
   maxJsonMb: toNumber(process.env.MAX_JSON_MB, 25),
   webUiOrigin: normalizeOrigin(process.env.WEB_UI_ORIGIN || '*'),
-
-  syntheticDataKitBin:
-    process.env.SYNTHETIC_DATA_KIT_BIN ||
-    path.join(
-      process.env.ML_ENV || '/opt/deepseek-workspace/environments/ml_env',
-      'bin',
-      'synthetic-data-kit',
-    ),
 };
 
 CONFIG.stateDir = path.join(CONFIG.workspace, '.llm-lab');
@@ -346,9 +337,9 @@ CONFIG.vllmLogFile = path.join(CONFIG.logsDir, 'vllm.log');
 
 CONFIG.pythonBin = path.join(CONFIG.mlEnv, 'bin', 'python');
 CONFIG.quantizePythonBin = path.join(CONFIG.quantizeEnv, 'bin', 'python');
-CONFIG.vllmBin = path.join(CONFIG.mlEnv, 'bin', 'vllm');
-
 CONFIG.transformersPythonBin = path.join(CONFIG.transformersEnv, 'bin', 'python');
+CONFIG.vllmBin = path.join(CONFIG.mlEnv, 'bin', 'vllm');
+CONFIG.syntheticDataKitBin = process.env.SYNTHETIC_DATA_KIT_BIN || path.join(CONFIG.mlEnv, 'bin', 'synthetic-data-kit');
 
 module.exports = { CONFIG };
 
@@ -358,7 +349,9 @@ path: /python/download_model.py
 import json
 import os
 import sys
+import traceback
 from huggingface_hub import snapshot_download
+
 
 def main():
     if len(sys.argv) < 2:
@@ -367,18 +360,40 @@ def main():
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         cfg = json.load(f)
 
-    repo_id = cfg["repoId"]
-    local_dir = cfg["localDir"]
+    repo_id = str(cfg["repoId"]).strip()
+    local_dir = str(cfg["localDir"]).strip()
+    hf_token = (
+        cfg.get("hfToken")
+        or os.getenv("HF_TOKEN")
+        or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        or os.getenv("HUGGINGFACE_TOKEN")
+    )
+
+    if not repo_id:
+        raise ValueError("repoId is empty")
+
+    if not local_dir:
+        raise ValueError("localDir is empty")
 
     os.makedirs(local_dir, exist_ok=True)
 
-    snapshot_download(
-        repo_id=repo_id,
-        local_dir=local_dir,
-        local_dir_use_symlinks=False,
-        resume_download=True,
-    )
-    print(local_dir)
+    print(f"Starting HF download: repo_id={repo_id}", flush=True)
+    print(f"Target dir: {local_dir}", flush=True)
+    print(f"HF token provided: {'yes' if bool(hf_token) else 'no'}", flush=True)
+
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=local_dir,
+            token=hf_token,
+            resume_download=True,
+        )
+        print(local_dir, flush=True)
+    except Exception as exc:
+        print(f"HF download failed for repo '{repo_id}': {exc}", flush=True)
+        traceback.print_exc()
+        raise
+
 
 if __name__ == "__main__":
     main()
@@ -391,12 +406,25 @@ import os
 import shutil
 import sys
 import traceback
+from typing import Any
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 def report(p: int):
     print(f"__PROGRESS__:{p}", flush=True)
+
+
+def log_event(kind: str, **payload: Any):
+    print(
+        json.dumps(
+            {"event": kind, **payload},
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
 
 
 def read_cfg():
@@ -418,6 +446,12 @@ def resolve_dtype(dtype_value, torch):
     if value in ("float32", "float", "fp32"):
         return torch.float32
     raise ValueError(f"Unsupported dtype: {dtype_value}")
+
+
+def dtype_name(dtype_value) -> str:
+    if dtype_value == "auto":
+        return "auto"
+    return str(dtype_value).replace("torch.", "")
 
 
 def resolve_device_map(cfg, torch):
@@ -473,6 +507,432 @@ def save_result(output_dir: str, payload: dict):
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
+def tensor_stats(t) -> dict[str, Any]:
+    finite_mask = t.isfinite()
+    finite_count = int(finite_mask.sum().item())
+    total_count = t.numel()
+
+    result = {
+        "shape": list(t.shape),
+        "dtype": str(t.dtype),
+        "finiteCount": finite_count,
+        "totalCount": total_count,
+        "hasNaN": bool(t.isnan().any().item()),
+        "hasInf": bool(t.isinf().any().item()),
+        "min": None,
+        "max": None,
+        "absmax": None,
+        "mean": None,
+        "std": None,
+    }
+
+    if finite_count > 0:
+        vals = t[finite_mask].float()
+        result["min"] = float(vals.min().item())
+        result["max"] = float(vals.max().item())
+        result["absmax"] = float(vals.abs().max().item())
+        result["mean"] = float(vals.mean().item())
+        result["std"] = float(vals.std().item()) if vals.numel() > 1 else 0.0
+
+    return result
+
+
+def collect_parameter_health(model) -> dict[str, Any]:
+    bad_tensors = []
+    scanned = 0
+    global_absmax = 0.0
+
+    for name, param in model.named_parameters():
+        if param is None:
+            continue
+        scanned += 1
+        stats = tensor_stats(param.detach())
+        if stats["absmax"] is not None:
+            global_absmax = max(global_absmax, stats["absmax"])
+        if stats["hasNaN"] or stats["hasInf"]:
+            bad_tensors.append({"name": name, **stats})
+
+    return {
+        "scannedParameters": scanned,
+        "badTensorCount": len(bad_tensors),
+        "globalAbsMax": global_absmax,
+        "badTensors": bad_tensors[:100],
+    }
+
+
+def collect_module_weight_summary(model) -> dict[str, Any]:
+    interesting_suffixes = [
+        "input_layernorm.weight",
+        "post_attention_layernorm.weight",
+        "self_attn.q_proj.weight",
+        "self_attn.k_proj.weight",
+        "self_attn.v_proj.weight",
+        "self_attn.o_proj.weight",
+        "mlp.gate_proj.weight",
+        "mlp.up_proj.weight",
+        "mlp.down_proj.weight",
+        "lm_head.weight",
+        "model.norm.weight",
+    ]
+    rows = []
+    for name, param in model.named_parameters():
+        if not any(name.endswith(s) for s in interesting_suffixes):
+            continue
+        stats = tensor_stats(param.detach())
+        rows.append(
+            {
+                "name": name,
+                "shape": stats["shape"],
+                "dtype": stats["dtype"],
+                "absmax": stats["absmax"],
+                "min": stats["min"],
+                "max": stats["max"],
+                "mean": stats["mean"],
+                "std": stats["std"],
+                "hasNaN": stats["hasNaN"],
+                "hasInf": stats["hasInf"],
+            }
+        )
+    return {"count": len(rows), "rows": rows[:300]}
+
+
+def choose_probe_texts():
+    return [
+        "Hello",
+        "Write a short explanation of transformers.",
+        "2 + 2 =",
+        "Tell me three facts about the Moon.",
+        "Complete: The capital of France is",
+    ]
+
+
+def detect_device(model, torch):
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cpu")
+
+
+def count_lora_modules(model) -> dict[str, Any]:
+    rows = []
+    for name, module in model.named_modules():
+        cls_name = module.__class__.__name__
+        cls_lower = cls_name.lower()
+        if "lora" in cls_lower:
+            rows.append(
+                {
+                    "name": name,
+                    "class": cls_name,
+                }
+            )
+    return {
+        "count": len(rows),
+        "rows": rows[:300],
+    }
+
+
+def run_forward_smoke(model, tokenizer, texts, max_seq_len: int, device, torch) -> dict[str, Any]:
+    model.eval()
+    checks = []
+    problems = []
+
+    for idx, text in enumerate(texts):
+        try:
+            encoded = tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_seq_len,
+                padding=False,
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+
+            with torch.no_grad():
+                out = model(
+                    **encoded,
+                    output_hidden_states=True,
+                    use_cache=False,
+                    return_dict=True,
+                )
+
+            logits = out.logits.detach()
+            logits_stats = tensor_stats(logits)
+            last_token_logits = logits[:, -1, :]
+            last_token_stats = tensor_stats(last_token_logits)
+
+            hidden_rows = []
+            hidden_states = getattr(out, "hidden_states", None)
+            if hidden_states:
+                for h_idx, hs in enumerate(hidden_states[: min(len(hidden_states), 8)]):
+                    hs_stats = tensor_stats(hs.detach())
+                    hidden_rows.append(
+                        {
+                            "index": h_idx,
+                            "absmax": hs_stats["absmax"],
+                            "min": hs_stats["min"],
+                            "max": hs_stats["max"],
+                            "hasNaN": hs_stats["hasNaN"],
+                            "hasInf": hs_stats["hasInf"],
+                            "shape": hs_stats["shape"],
+                        }
+                    )
+
+            topk_vals, topk_ids = torch.topk(last_token_logits[0].float(), k=min(5, last_token_logits.shape[-1]))
+            topk_tokens = []
+            for tok_id, tok_val in zip(topk_ids.tolist(), topk_vals.tolist()):
+                try:
+                    tok_text = tokenizer.decode([tok_id])
+                except Exception:
+                    tok_text = ""
+                topk_tokens.append(
+                    {
+                        "id": int(tok_id),
+                        "text": tok_text,
+                        "logit": float(tok_val),
+                    }
+                )
+
+            row = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "tokenCount": int(encoded["input_ids"].shape[-1]),
+                "logits": {
+                    "shape": logits_stats["shape"],
+                    "absmax": logits_stats["absmax"],
+                    "min": logits_stats["min"],
+                    "max": logits_stats["max"],
+                    "hasNaN": logits_stats["hasNaN"],
+                    "hasInf": logits_stats["hasInf"],
+                },
+                "lastTokenLogits": {
+                    "shape": last_token_stats["shape"],
+                    "absmax": last_token_stats["absmax"],
+                    "min": last_token_stats["min"],
+                    "max": last_token_stats["max"],
+                    "hasNaN": last_token_stats["hasNaN"],
+                    "hasInf": last_token_stats["hasInf"],
+                    "topTokens": topk_tokens,
+                },
+                "hiddenStates": hidden_rows,
+            }
+            checks.append(row)
+
+            if logits_stats["hasNaN"] or logits_stats["hasInf"] or any(
+                x["hasNaN"] or x["hasInf"] for x in hidden_rows
+            ):
+                problems.append(row)
+
+        except Exception as exc:
+            err = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "error": str(exc),
+            }
+            checks.append(err)
+            problems.append(err)
+
+    return {
+        "checkedSamples": len(checks),
+        "problemCount": len(problems),
+        "checks": checks,
+        "problems": problems,
+    }
+
+
+def compare_last_token_logits(model_a, model_b, tokenizer, texts, max_seq_len, device_a, device_b, torch):
+    rows = []
+
+    model_a.eval()
+    model_b.eval()
+
+    for idx, text in enumerate(texts):
+        try:
+            enc_a = tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_seq_len,
+                padding=False,
+            )
+            enc_b = {k: v.to(device_b) for k, v in enc_a.items()}
+            enc_a = {k: v.to(device_a) for k, v in enc_a.items()}
+
+            with torch.no_grad():
+                out_a = model_a(
+                    **enc_a,
+                    use_cache=False,
+                    return_dict=True,
+                )
+                out_b = model_b(
+                    **enc_b,
+                    use_cache=False,
+                    return_dict=True,
+                )
+
+            la = out_a.logits[:, -1, :].detach().float().cpu()
+            lb = out_b.logits[:, -1, :].detach().float().cpu()
+            delta = la - lb
+
+            greedy_a = int(torch.argmax(la, dim=-1).item())
+            greedy_b = int(torch.argmax(lb, dim=-1).item())
+
+            rows.append(
+                {
+                    "sampleIndex": idx,
+                    "textPreview": text[:300],
+                    "greedyTokenA": greedy_a,
+                    "greedyTokenB": greedy_b,
+                    "greedyTokenAText": tokenizer.decode([greedy_a]),
+                    "greedyTokenBText": tokenizer.decode([greedy_b]),
+                    "sameGreedy": greedy_a == greedy_b,
+                    "deltaAbsMax": float(delta.abs().max().item()),
+                    "deltaMean": float(delta.mean().item()),
+                    "deltaStd": float(delta.std().item()) if delta.numel() > 1 else 0.0,
+                    "deltaL2": float(torch.norm(delta).item()),
+                    "hasNaN": bool(torch.isnan(delta).any().item()),
+                    "hasInf": bool(torch.isinf(delta).any().item()),
+                }
+            )
+        except Exception as exc:
+            rows.append(
+                {
+                    "sampleIndex": idx,
+                    "textPreview": text[:300],
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "count": len(rows),
+        "rows": rows,
+    }
+
+
+def generate_preview(model, tokenizer, texts, device, torch, max_input_len=256, max_new_tokens=24):
+    rows = []
+    model.eval()
+
+    for idx, text in enumerate(texts):
+        try:
+            encoded = tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_input_len,
+                padding=False,
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+
+            with torch.no_grad():
+                generated = model.generate(
+                    **encoded,
+                    do_sample=False,
+                    max_new_tokens=max_new_tokens,
+                    use_cache=True,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+
+            decoded = tokenizer.decode(generated[0], skip_special_tokens=True)
+            rows.append(
+                {
+                    "sampleIndex": idx,
+                    "prompt": text,
+                    "output": decoded,
+                }
+            )
+        except Exception as exc:
+            rows.append(
+                {
+                    "sampleIndex": idx,
+                    "prompt": text,
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "count": len(rows),
+        "rows": rows,
+    }
+
+
+def collect_merge_delta_stats(base_model_clean, merged_model) -> dict[str, Any]:
+    base_state = dict(base_model_clean.named_parameters())
+    merged_state = dict(merged_model.named_parameters())
+
+    rows = []
+    global_delta_absmax = 0.0
+    changed_count = 0
+    unchanged_count = 0
+
+    interesting_suffixes = [
+        "input_layernorm.weight",
+        "post_attention_layernorm.weight",
+        "self_attn.q_proj.weight",
+        "self_attn.k_proj.weight",
+        "self_attn.v_proj.weight",
+        "self_attn.o_proj.weight",
+        "mlp.gate_proj.weight",
+        "mlp.up_proj.weight",
+        "mlp.down_proj.weight",
+        "lm_head.weight",
+        "model.norm.weight",
+    ]
+
+    for name, merged_param in merged_state.items():
+        base_param = base_state.get(name)
+        if base_param is None:
+            continue
+        if merged_param.shape != base_param.shape:
+            continue
+
+        delta = merged_param.detach().float().cpu() - base_param.detach().float().cpu()
+        stats = tensor_stats(delta)
+        absmax = stats["absmax"] or 0.0
+        global_delta_absmax = max(global_delta_absmax, absmax)
+
+        if absmax > 0:
+            changed_count += 1
+        else:
+            unchanged_count += 1
+
+        if any(name.endswith(s) for s in interesting_suffixes):
+            rows.append(
+                {
+                    "name": name,
+                    "deltaAbsMax": stats["absmax"],
+                    "deltaMin": stats["min"],
+                    "deltaMax": stats["max"],
+                    "deltaMean": stats["mean"],
+                    "deltaStd": stats["std"],
+                    "hasNaN": stats["hasNaN"],
+                    "hasInf": stats["hasInf"],
+                }
+            )
+
+    rows_sorted = sorted(rows, key=lambda x: (x["deltaAbsMax"] or 0.0), reverse=True)
+
+    return {
+        "changedTensorCount": changed_count,
+        "unchangedTensorCount": unchanged_count,
+        "globalDeltaAbsMax": global_delta_absmax,
+        "topChangedRows": rows_sorted[:200],
+        "smallestChangedRows": [r for r in reversed(rows_sorted[-50:])],
+    }
+
+
+def load_base_model(base_model_path, dtype, device_map, low_cpu_mem_usage, offload_dir, trust_remote_code, AutoModelForCausalLM):
+    kwargs = {
+        "torch_dtype": dtype,
+        "device_map": device_map,
+        "low_cpu_mem_usage": low_cpu_mem_usage,
+        "trust_remote_code": trust_remote_code,
+    }
+    if offload_dir is not None and device_map != "cpu":
+        kwargs["offload_folder"] = offload_dir
+    return AutoModelForCausalLM.from_pretrained(base_model_path, **kwargs)
+
+
 def main():
     cfg = read_cfg()
 
@@ -486,6 +946,13 @@ def main():
     offload_folder_name = str(cfg.get("offloadFolderName", "_offload")).strip() or "_offload"
     base_model_override = str(cfg.get("baseModelOverride") or "").strip() or None
 
+    load_clean_base_for_diff = bool(cfg.get("loadCleanBaseForDiff", True))
+    clean_base_dtype_name = str(cfg.get("cleanBaseDtype", "float32")).strip()
+    clean_base_on_cpu = bool(cfg.get("cleanBaseOnCpu", True))
+    run_generation_checks = bool(cfg.get("runGenerationChecks", True))
+    generation_max_new_tokens = int(cfg.get("generationMaxNewTokens", 24))
+    smoke_max_seq_len = int(cfg.get("smokeMaxSeqLen", 512))
+
     maybe_clear_output_dir(output_dir, overwrite_output)
     offload_dir = os.path.join(output_dir, offload_folder_name)
     os.makedirs(offload_dir, exist_ok=True)
@@ -493,42 +960,140 @@ def main():
     report(5)
 
     import torch
+    import transformers
+    import peft
+
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
 
-    report(15)
+    try:
+        import accelerate
+        accelerate_version = accelerate.__version__
+    except Exception:
+        accelerate_version = "unknown"
+
+    report(10)
 
     dtype = resolve_dtype(cfg.get("dtype", "auto"), torch)
     device_map = resolve_device_map(cfg, torch)
     base_model_path = resolve_base_model_path(adapter_path, base_model_override)
 
-    print(json.dumps({
-        "adapterPath": adapter_path,
-        "outputDir": output_dir,
-        "baseModelPath": base_model_path,
-        "baseModelOverride": base_model_override,
-        "deviceStrategy": cfg.get("deviceStrategy", "cpu"),
-        "resolvedDeviceMap": device_map,
-        "dtype": str(cfg.get("dtype", "auto")),
-        "lowCpuMemUsage": low_cpu_mem_usage,
-        "safeSerialization": safe_serialization,
-        "maxShardSize": max_shard_size,
-        "trustRemoteCode": trust_remote_code,
-    }, ensure_ascii=False), flush=True)
+    clean_base_dtype = resolve_dtype(clean_base_dtype_name, torch)
+    clean_base_device_map = "cpu" if clean_base_on_cpu else device_map
 
-    report(25)
+    log_event(
+        "library_versions",
+        torch=torch.__version__,
+        transformers=transformers.__version__,
+        peft=peft.__version__,
+        accelerate=accelerate_version,
+    )
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    log_event(
+        "merge_config",
+        adapterPath=adapter_path,
+        outputDir=output_dir,
+        baseModelPath=base_model_path,
+        baseModelOverride=base_model_override,
+        deviceStrategy=cfg.get("deviceStrategy", "cpu"),
+        resolvedDeviceMap=device_map,
+        dtype=dtype_name(dtype),
+        lowCpuMemUsage=low_cpu_mem_usage,
+        safeSerialization=safe_serialization,
+        maxShardSize=max_shard_size,
+        trustRemoteCode=trust_remote_code,
+        loadCleanBaseForDiff=load_clean_base_for_diff,
+        cleanBaseDtype=dtype_name(clean_base_dtype),
+        cleanBaseDeviceMap=clean_base_device_map,
+        runGenerationChecks=run_generation_checks,
+        generationMaxNewTokens=generation_max_new_tokens,
+        smokeMaxSeqLen=smoke_max_seq_len,
+    )
+
+    adapter_config = read_adapter_config(adapter_path)
+    log_event("adapter_config", **adapter_config)
+
+    report(20)
+
+    tokenizer = AutoTokenizer.from_pretrained(
         base_model_path,
+        trust_remote_code=trust_remote_code,
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    base_model_clean = None
+    if load_clean_base_for_diff:
+        log_event(
+            "clean_base_load_start",
+            baseModelPath=base_model_path,
+            dtype=dtype_name(clean_base_dtype),
+            deviceMap=clean_base_device_map,
+        )
+        base_model_clean = load_base_model(
+            base_model_path=base_model_path,
+            dtype=clean_base_dtype,
+            device_map=clean_base_device_map,
+            low_cpu_mem_usage=False,
+            offload_dir=None,
+            trust_remote_code=trust_remote_code,
+            AutoModelForCausalLM=AutoModelForCausalLM,
+        )
+        clean_device = detect_device(base_model_clean, torch)
+        log_event("clean_base_model_health", **collect_parameter_health(base_model_clean))
+        log_event("clean_base_model_weights", **collect_module_weight_summary(base_model_clean))
+        log_event(
+            "clean_base_forward",
+            **run_forward_smoke(
+                model=base_model_clean,
+                tokenizer=tokenizer,
+                texts=choose_probe_texts(),
+                max_seq_len=smoke_max_seq_len,
+                device=clean_device,
+                torch=torch,
+            ),
+        )
+
+    report(35)
+
+    log_event(
+        "base_model_load_start",
+        baseModelPath=base_model_path,
+        dtype=dtype_name(dtype),
+        deviceMap=device_map,
+        lowCpuMemUsage=low_cpu_mem_usage,
+    )
+
+    base_model = load_base_model(
+        base_model_path=base_model_path,
         dtype=dtype,
         device_map=device_map,
         low_cpu_mem_usage=low_cpu_mem_usage,
-        offload_folder=offload_dir,
+        offload_dir=offload_dir,
         trust_remote_code=trust_remote_code,
+        AutoModelForCausalLM=AutoModelForCausalLM,
+    )
+
+    base_device = detect_device(base_model, torch)
+
+    log_event("base_model_health_before_peft", **collect_parameter_health(base_model))
+    log_event("base_model_weights_before_peft", **collect_module_weight_summary(base_model))
+    log_event("base_model_lora_modules_before_peft", **count_lora_modules(base_model))
+    log_event(
+        "base_model_forward_before_peft",
+        **run_forward_smoke(
+            model=base_model,
+            tokenizer=tokenizer,
+            texts=choose_probe_texts(),
+            max_seq_len=smoke_max_seq_len,
+            device=base_device,
+            torch=torch,
+        ),
     )
 
     report(50)
 
+    log_event("peft_load_start", adapterPath=adapter_path)
     model = PeftModel.from_pretrained(
         base_model,
         adapter_path,
@@ -536,51 +1101,169 @@ def main():
         offload_folder=offload_dir,
     )
 
-    report(70)
+    peft_device = detect_device(model, torch)
 
+    log_event("peft_model_health_before_merge", **collect_parameter_health(model))
+    log_event("peft_model_weights_before_merge", **collect_module_weight_summary(model))
+    log_event("peft_model_lora_modules_before_merge", **count_lora_modules(model))
+    log_event(
+        "peft_forward_before_merge",
+        **run_forward_smoke(
+            model=model,
+            tokenizer=tokenizer,
+            texts=choose_probe_texts(),
+            max_seq_len=smoke_max_seq_len,
+            device=peft_device,
+            torch=torch,
+        ),
+    )
+
+    if run_generation_checks:
+        log_event(
+            "peft_generation_preview_before_merge",
+            **generate_preview(
+                model=model,
+                tokenizer=tokenizer,
+                texts=[
+                    "Explain what a transformer is in one sentence.",
+                    "The capital of Germany is",
+                    "List three colors:",
+                ],
+                device=peft_device,
+                torch=torch,
+                max_input_len=min(smoke_max_seq_len, 256),
+                max_new_tokens=generation_max_new_tokens,
+            ),
+        )
+
+    if base_model_clean is not None:
+        clean_device = detect_device(base_model_clean, torch)
+        log_event(
+            "compare_clean_vs_peft_last_token_logits",
+            **compare_last_token_logits(
+                model_a=base_model_clean,
+                model_b=model,
+                tokenizer=tokenizer,
+                texts=choose_probe_texts(),
+                max_seq_len=smoke_max_seq_len,
+                device_a=clean_device,
+                device_b=peft_device,
+                torch=torch,
+            ),
+        )
+
+    report(65)
+
+    log_event("merge_start")
     merged = model.merge_and_unload()
+    merged_device = detect_device(merged, torch)
+
+    report(75)
+
+    log_event("merged_model_health", **collect_parameter_health(merged))
+    log_event("merged_model_weights", **collect_module_weight_summary(merged))
+    log_event("merged_model_lora_modules_after_merge", **count_lora_modules(merged))
+    log_event(
+        "merged_forward_after_merge",
+        **run_forward_smoke(
+            model=merged,
+            tokenizer=tokenizer,
+            texts=choose_probe_texts(),
+            max_seq_len=smoke_max_seq_len,
+            device=merged_device,
+            torch=torch,
+        ),
+    )
+
+    if run_generation_checks:
+        log_event(
+            "merged_generation_preview_after_merge",
+            **generate_preview(
+                model=merged,
+                tokenizer=tokenizer,
+                texts=[
+                    "Explain what a transformer is in one sentence.",
+                    "The capital of Germany is",
+                    "List three colors:",
+                ],
+                device=merged_device,
+                torch=torch,
+                max_input_len=min(smoke_max_seq_len, 256),
+                max_new_tokens=generation_max_new_tokens,
+            ),
+        )
 
     report(82)
+
+    if base_model_clean is not None:
+        clean_device = detect_device(base_model_clean, torch)
+
+        log_event(
+            "merge_delta_stats_against_clean_base",
+            **collect_merge_delta_stats(base_model_clean, merged),
+        )
+
+        log_event(
+            "compare_clean_vs_merged_last_token_logits",
+            **compare_last_token_logits(
+                model_a=base_model_clean,
+                model_b=merged,
+                tokenizer=tokenizer,
+                texts=choose_probe_texts(),
+                max_seq_len=smoke_max_seq_len,
+                device_a=clean_device,
+                device_b=merged_device,
+                torch=torch,
+            ),
+        )
+
+        log_event(
+            "compare_peft_vs_merged_last_token_logits",
+            **compare_last_token_logits(
+                model_a=model,
+                model_b=merged,
+                tokenizer=tokenizer,
+                texts=choose_probe_texts(),
+                max_seq_len=smoke_max_seq_len,
+                device_a=peft_device,
+                device_b=merged_device,
+                torch=torch,
+            ),
+        )
+
+    report(88)
 
     merged.save_pretrained(
         output_dir,
         safe_serialization=safe_serialization,
         max_shard_size=max_shard_size,
     )
-
-    report(92)
-
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(
-            base_model_path,
-            trust_remote_code=trust_remote_code,
-            fix_mistral_regex=True,
-        )
-    except TypeError:
-        tokenizer = AutoTokenizer.from_pretrained(
-            base_model_path,
-            trust_remote_code=trust_remote_code,
-        )
-
     tokenizer.save_pretrained(output_dir)
 
     result = {
-      "ok": True,
-      "adapterPath": adapter_path,
-      "outputDir": output_dir,
-      "baseModelPath": base_model_path,
-      "baseModelOverride": base_model_override,
-      "deviceStrategy": cfg.get("deviceStrategy", "cpu"),
-      "resolvedDeviceMap": device_map,
-      "dtype": str(cfg.get("dtype", "auto")),
-      "lowCpuMemUsage": low_cpu_mem_usage,
-      "safeSerialization": safe_serialization,
-      "maxShardSize": max_shard_size,
-      "trustRemoteCode": trust_remote_code,
+        "ok": True,
+        "adapterPath": adapter_path,
+        "outputDir": output_dir,
+        "baseModelPath": base_model_path,
+        "baseModelOverride": base_model_override,
+        "deviceStrategy": cfg.get("deviceStrategy", "cpu"),
+        "resolvedDeviceMap": device_map,
+        "dtype": dtype_name(dtype),
+        "lowCpuMemUsage": low_cpu_mem_usage,
+        "safeSerialization": safe_serialization,
+        "maxShardSize": max_shard_size,
+        "trustRemoteCode": trust_remote_code,
+        "loadCleanBaseForDiff": load_clean_base_for_diff,
+        "cleanBaseDtype": dtype_name(clean_base_dtype),
+        "cleanBaseDeviceMap": clean_base_device_map,
+        "runGenerationChecks": run_generation_checks,
+        "generationMaxNewTokens": generation_max_new_tokens,
+        "smokeMaxSeqLen": smoke_max_seq_len,
     }
     save_result(output_dir, result)
 
     report(100)
+    log_event("merge_success", **result)
     print(f"__RESULT__:{output_dir}")
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
@@ -588,18 +1271,26 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception as exc:
         traceback.print_exc()
+        log_event(
+            "merge_failure",
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
         sys.exit(1)
 
 
 path: /python/quantize_llm_compressor.py
 ----------------------------------------
 import json
+import math
 import os
 import sys
 import traceback
+from typing import Any
 
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from llmcompressor import oneshot
 from llmcompressor.modifiers.awq import AWQModifier
@@ -609,51 +1300,113 @@ def report(p: int):
     print(f"__PROGRESS__:{p}", flush=True)
 
 
-def build_local_text_dataset(dataset_path: str | None, num_samples: int):
+def log_event(kind: str, **payload: Any):
+    print(
+        json.dumps(
+            {"event": kind, **payload},
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
+
+
+def resolve_dtype(dtype_value):
+    value = str(dtype_value or "float16").strip().lower()
+    if value in ("float16", "half", "fp16", "torch.float16"):
+        return torch.float16
+    if value in ("bfloat16", "bf16", "torch.bfloat16"):
+        return torch.bfloat16
+    if value in ("float32", "float", "fp32", "torch.float32"):
+        return torch.float32
+    if value == "auto":
+        return "auto"
+    raise ValueError(f"Unsupported dtype: {dtype_value}")
+
+
+def dtype_name(dtype_value: Any) -> str:
+    if dtype_value == "auto":
+        return "auto"
+    if dtype_value is torch.float16:
+        return "float16"
+    if dtype_value is torch.bfloat16:
+        return "bfloat16"
+    if dtype_value is torch.float32:
+        return "float32"
+    return str(dtype_value)
+
+
+def _clean_text(value: str, max_chars: int = 12000) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        text = text[:max_chars].strip()
+    return text
+
+
+def build_local_text_dataset(dataset_path: str | None, num_samples: int, calibration_mode: str):
     if not dataset_path or not os.path.exists(dataset_path):
         return "open_platypus"
 
+    mode = str(calibration_mode or "text_only").strip().lower()
     rows: list[str] = []
+
     with open(dataset_path, "r", encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            if i >= num_samples:
+        for line in f:
+            if len(rows) >= num_samples:
                 break
 
             line = line.strip()
             if not line:
                 continue
 
-            item = json.loads(line)
+            try:
+                item = json.loads(line)
+            except Exception:
+                continue
 
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
+            if not isinstance(item, dict):
+                text = _clean_text(str(item))
+                if text:
+                    rows.append(text)
+                continue
+
+            text = item.get("text")
+            if isinstance(text, str):
+                text = _clean_text(text)
+                if text:
                     rows.append(text)
                     continue
 
-                messages = item.get("messages")
-                if isinstance(messages, list):
-                    parts = []
-                    for msg in messages:
-                        if not isinstance(msg, dict):
-                            continue
-                        role = str(msg.get("role", "")).strip()
-                        content = str(msg.get("content", "")).strip()
-                        if content:
-                            parts.append(f"{role}: {content}" if role else content)
-                    if parts:
-                        rows.append("\n".join(parts))
+            if mode == "text_only":
+                continue
+
+            messages = item.get("messages")
+            if isinstance(messages, list):
+                parts = []
+                for msg in messages:
+                    if not isinstance(msg, dict):
                         continue
-
-                if "instruction" in item and "output" in item:
-                    rows.append(f"{item.get('instruction', '')}\n\n{item.get('output', '')}")
+                    content = _clean_text(msg.get("content", ""))
+                    if content:
+                        parts.append(content)
+                joined = _clean_text("\n".join(parts))
+                if joined:
+                    rows.append(joined)
                     continue
 
-                if "prompt" in item and "completion" in item:
-                    rows.append(f"{item.get('prompt', '')}\n\n{item.get('completion', '')}")
+            if "instruction" in item and "output" in item:
+                joined = _clean_text(f"{item.get('instruction', '')}\n\n{item.get('output', '')}")
+                if joined:
+                    rows.append(joined)
                     continue
 
-            rows.append(str(item))
+            if "prompt" in item and "completion" in item:
+                joined = _clean_text(f"{item.get('prompt', '')}\n\n{item.get('completion', '')}")
+                if joined:
+                    rows.append(joined)
+                    continue
 
     return rows if rows else "open_platypus"
 
@@ -687,6 +1440,321 @@ def build_awq_recipe(bits: int, group_size: int, sym: bool):
     ]
 
 
+def summarize_dataset_for_logs(dataset: Any):
+    if isinstance(dataset, list):
+        lengths = [len(x) for x in dataset if isinstance(x, str)]
+        return {
+            "datasetKind": "local_list",
+            "count": len(dataset),
+            "emptyCount": sum(1 for x in dataset if not str(x).strip()),
+            "minChars": min(lengths) if lengths else 0,
+            "maxChars": max(lengths) if lengths else 0,
+            "avgChars": round(sum(lengths) / len(lengths), 2) if lengths else 0,
+            "preview": [str(x)[:200] for x in dataset[:3]],
+        }
+    return {
+        "datasetKind": str(dataset),
+        "count": None,
+        "emptyCount": None,
+        "minChars": None,
+        "maxChars": None,
+        "avgChars": None,
+        "preview": [],
+    }
+
+
+def tensor_stats(t: torch.Tensor) -> dict[str, Any]:
+    finite_mask = torch.isfinite(t)
+    finite_count = int(finite_mask.sum().item())
+    total_count = t.numel()
+
+    result = {
+        "shape": list(t.shape),
+        "dtype": str(t.dtype),
+        "finiteCount": finite_count,
+        "totalCount": total_count,
+        "hasNaN": bool(torch.isnan(t).any().item()),
+        "hasInf": bool(torch.isinf(t).any().item()),
+        "min": None,
+        "max": None,
+        "absmax": None,
+        "mean": None,
+        "std": None,
+    }
+
+    if finite_count > 0:
+        vals = t[finite_mask].float()
+        result["min"] = float(vals.min().item())
+        result["max"] = float(vals.max().item())
+        result["absmax"] = float(vals.abs().max().item())
+        result["mean"] = float(vals.mean().item())
+        result["std"] = float(vals.std().item()) if vals.numel() > 1 else 0.0
+
+    return result
+
+
+def collect_parameter_health(model) -> dict[str, Any]:
+    bad_tensors: list[dict[str, Any]] = []
+    scanned = 0
+    global_absmax = 0.0
+
+    for name, param in model.named_parameters():
+        if param is None:
+            continue
+
+        scanned += 1
+        data = param.detach()
+        stats = tensor_stats(data)
+
+        if stats["absmax"] is not None:
+            global_absmax = max(global_absmax, float(stats["absmax"]))
+
+        if stats["hasNaN"] or stats["hasInf"]:
+            bad_tensors.append({"name": name, **stats})
+
+    return {
+        "scannedParameters": scanned,
+        "badTensorCount": len(bad_tensors),
+        "globalAbsMax": global_absmax,
+        "badTensors": bad_tensors[:50],
+    }
+
+
+def choose_sanity_texts(dataset: Any, fallback_count: int = 3) -> list[str]:
+    if isinstance(dataset, list):
+        texts = [x for x in dataset if isinstance(x, str) and x.strip()]
+        return texts[:fallback_count]
+    return [
+        "Hello",
+        "Write a short explanation of transformers.",
+        "2 + 2 =",
+    ]
+
+
+def detect_device(model) -> torch.device:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cpu")
+
+
+def run_pre_quant_forward_checks(
+    model,
+    tokenizer,
+    texts: list[str],
+    max_seq_len: int,
+    device: torch.device,
+):
+    problems: list[dict[str, Any]] = []
+    checks: list[dict[str, Any]] = []
+
+    model.eval()
+
+    for idx, text in enumerate(texts):
+        try:
+            encoded = tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_seq_len,
+                padding=False,
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+
+            with torch.no_grad():
+                out = model(
+                    **encoded,
+                    output_hidden_states=True,
+                    use_cache=False,
+                    return_dict=True,
+                )
+
+            logits = out.logits.detach()
+            logits_stats = tensor_stats(logits)
+
+            hidden_summaries = []
+            hidden_bad = False
+
+            hidden_states = getattr(out, "hidden_states", None)
+            if hidden_states:
+                for h_idx, hs in enumerate(hidden_states[: min(len(hidden_states), 8)]):
+                    hs_detached = hs.detach()
+                    hs_stats = tensor_stats(hs_detached)
+                    hidden_summaries.append(
+                        {
+                            "index": h_idx,
+                            "shape": hs_stats["shape"],
+                            "absmax": hs_stats["absmax"],
+                            "min": hs_stats["min"],
+                            "max": hs_stats["max"],
+                            "hasNaN": hs_stats["hasNaN"],
+                            "hasInf": hs_stats["hasInf"],
+                        }
+                    )
+                    if hs_stats["hasNaN"] or hs_stats["hasInf"]:
+                        hidden_bad = True
+
+            item = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "tokenCount": int(encoded["input_ids"].shape[-1]),
+                "logits": {
+                    "shape": logits_stats["shape"],
+                    "absmax": logits_stats["absmax"],
+                    "min": logits_stats["min"],
+                    "max": logits_stats["max"],
+                    "hasNaN": logits_stats["hasNaN"],
+                    "hasInf": logits_stats["hasInf"],
+                },
+                "hiddenStates": hidden_summaries,
+            }
+            checks.append(item)
+
+            if logits_stats["hasNaN"] or logits_stats["hasInf"] or hidden_bad:
+                problems.append(item)
+
+        except Exception as exc:
+            err_item = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "error": str(exc),
+            }
+            checks.append(err_item)
+            problems.append(err_item)
+
+    return {
+        "checkedSamples": len(checks),
+        "problemCount": len(problems),
+        "checks": checks,
+        "problems": problems,
+    }
+
+
+def get_target_module_names(model) -> list[str]:
+    names = []
+    for name, module in model.named_modules():
+        if (
+            name.endswith("input_layernorm")
+            or name.endswith("post_attention_layernorm")
+            or name.endswith("self_attn.q_proj")
+            or name.endswith("self_attn.k_proj")
+            or name.endswith("self_attn.v_proj")
+            or name.endswith("self_attn.o_proj")
+            or name.endswith("mlp.gate_proj")
+            or name.endswith("mlp.up_proj")
+            or name.endswith("mlp.down_proj")
+        ):
+            names.append(name)
+    return names
+
+
+def run_hooked_layer_diagnostics(
+    model,
+    tokenizer,
+    texts: list[str],
+    max_seq_len: int,
+    device: torch.device,
+):
+    target_names = set(get_target_module_names(model))
+    captured: dict[str, list[dict[str, Any]]] = {}
+
+    hooks = []
+
+    def make_hook(name: str):
+        def hook(_module, inputs, output):
+            try:
+                value = None
+                if isinstance(output, tuple) and output:
+                    value = output[0]
+                else:
+                    value = output
+
+                if not torch.is_tensor(value):
+                    return
+
+                stats = tensor_stats(value.detach())
+                entry = {
+                    "absmax": stats["absmax"],
+                    "min": stats["min"],
+                    "max": stats["max"],
+                    "hasNaN": stats["hasNaN"],
+                    "hasInf": stats["hasInf"],
+                    "shape": stats["shape"],
+                }
+                captured.setdefault(name, []).append(entry)
+            except Exception as exc:
+                captured.setdefault(name, []).append({"error": str(exc)})
+
+        return hook
+
+    for name, module in model.named_modules():
+        if name in target_names:
+            hooks.append(module.register_forward_hook(make_hook(name)))
+
+    sample_results = []
+
+    try:
+        model.eval()
+        for idx, text in enumerate(texts):
+            encoded = tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_seq_len,
+                padding=False,
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+
+            with torch.no_grad():
+                _ = model(
+                    **encoded,
+                    output_hidden_states=False,
+                    use_cache=False,
+                    return_dict=True,
+                )
+
+            sample_results.append(
+                {
+                    "sampleIndex": idx,
+                    "textPreview": text[:200],
+                    "tokenCount": int(encoded["input_ids"].shape[-1]),
+                }
+            )
+    finally:
+        for h in hooks:
+            h.remove()
+
+    summarized = []
+    problem_modules = []
+
+    for name, entries in captured.items():
+        bad = False
+        last = entries[-1] if entries else {}
+        for e in entries:
+            if e.get("hasNaN") or e.get("hasInf") or e.get("error"):
+                bad = True
+                break
+
+        row = {
+            "name": name,
+            "calls": len(entries),
+            "last": last,
+            "bad": bad,
+        }
+        summarized.append(row)
+        if bad:
+            problem_modules.append(row)
+
+    summarized.sort(key=lambda x: x["name"])
+    return {
+        "checkedSamples": len(sample_results),
+        "moduleCount": len(summarized),
+        "problemModuleCount": len(problem_modules),
+        "modules": summarized,
+        "problemModules": problem_modules[:100],
+    }
+
+
 def main():
     if len(sys.argv) < 2:
         raise SystemExit("Usage: quantize_llm_compressor.py <config.json>")
@@ -698,12 +1766,14 @@ def main():
     output_dir = cfg["outputDir"]
     method = str(cfg.get("method", "awq")).lower()
     dataset_path = cfg.get("datasetPath")
-    num_samples = int(cfg.get("numSamples", 128))
-    max_seq_len = int(cfg.get("maxSeqLen", 2048))
+    num_samples = int(cfg.get("numSamples", 32))
+    max_seq_len = int(cfg.get("maxSeqLen", 1024))
     bits = int(cfg.get("bits", 4))
     group_size = int(cfg.get("groupSize", 128))
     sym = bool(cfg.get("sym", False))
     trust_remote_code = bool(cfg.get("trustRemoteCode", True))
+    dtype = resolve_dtype(cfg.get("dtype", "float16"))
+    calibration_mode = str(cfg.get("calibrationMode", "text_only")).strip().lower()
 
     if method != "awq":
         raise ValueError(
@@ -714,6 +1784,21 @@ def main():
 
     os.makedirs(output_dir, exist_ok=True)
     report(5)
+
+    log_event(
+        "quant_config",
+        modelPath=model_path,
+        outputDir=output_dir,
+        datasetPath=dataset_path,
+        numSamples=num_samples,
+        maxSeqLen=max_seq_len,
+        bits=bits,
+        groupSize=group_size,
+        sym=sym,
+        dtype=dtype_name(dtype),
+        calibrationMode=calibration_mode,
+        trustRemoteCode=trust_remote_code,
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
@@ -726,34 +1811,123 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        dtype="auto",
+        torch_dtype=dtype,
         trust_remote_code=trust_remote_code,
     )
 
-    report(35)
+    device = detect_device(model)
 
-    dataset = build_local_text_dataset(dataset_path, num_samples)
+    report(30)
+
+    dataset = build_local_text_dataset(
+        dataset_path=dataset_path,
+        num_samples=num_samples,
+        calibration_mode=calibration_mode,
+    )
+
+    if isinstance(dataset, list):
+        dataset = [x for x in dataset if x and x.strip()]
+        dataset = dataset[:num_samples]
+
+    dataset_summary = summarize_dataset_for_logs(dataset)
+    log_event("dataset_summary", **dataset_summary)
+
+    if isinstance(dataset, list) and not dataset:
+        raise RuntimeError("Resolved calibration dataset is empty after preprocessing")
+
+    report(40)
+
+    weight_health = collect_parameter_health(model)
+    log_event("model_weight_health", **weight_health)
+
+    if weight_health["badTensorCount"] > 0:
+        raise RuntimeError(
+            "Merged/base model contains NaN or Inf in weights before quantization. "
+            "Check LoRA training and merge pipeline."
+        )
+
+    if not math.isfinite(weight_health["globalAbsMax"]) or weight_health["globalAbsMax"] == 0:
+        raise RuntimeError(
+            f"Model weight statistics look invalid before quantization: globalAbsMax={weight_health['globalAbsMax']}"
+        )
 
     report(50)
 
+    sanity_texts = choose_sanity_texts(dataset)
+    preflight = run_pre_quant_forward_checks(
+        model=model,
+        tokenizer=tokenizer,
+        texts=sanity_texts,
+        max_seq_len=min(max_seq_len, 1024),
+        device=device,
+    )
+    log_event("forward_precheck", **preflight)
+
+    if preflight["problemCount"] > 0:
+        raise RuntimeError(
+            "Pre-quantization forward check failed: model produced non-finite values "
+            "or errored on sanity samples. See `forward_precheck` logs."
+        )
+
+    report(60)
+
+    layer_diag = run_hooked_layer_diagnostics(
+        model=model,
+        tokenizer=tokenizer,
+        texts=sanity_texts[:1],
+        max_seq_len=min(max_seq_len, 512),
+        device=device,
+    )
+    log_event("hooked_layer_diagnostics", **layer_diag)
+
+    if layer_diag["problemModuleCount"] > 0:
+        raise RuntimeError(
+            "Layer diagnostics found non-finite activations before AWQ. "
+            "See `hooked_layer_diagnostics` logs."
+        )
+
     recipe = build_awq_recipe(bits=bits, group_size=group_size, sym=sym)
+    log_event(
+        "awq_recipe_ready",
+        modifierCount=len(recipe),
+        bits=bits,
+        groupSize=group_size,
+        symmetric=sym,
+    )
 
     report(65)
 
-    oneshot(
-        model=model,
-        dataset=dataset,
-        recipe=recipe,
-        output_dir=output_dir,
-        max_seq_length=max_seq_len,
-        num_calibration_samples=num_samples,
-    )
+    try:
+        oneshot(
+            model=model,
+            dataset=dataset,
+            recipe=recipe,
+            output_dir=output_dir,
+            max_seq_length=max_seq_len,
+            num_calibration_samples=num_samples,
+        )
+    except Exception as exc:
+        log_event(
+            "awq_failure",
+            error=str(exc),
+            hint=(
+                "AWQ failed during smoothing/calibration. "
+                "If base model quantizes but merged model fails, the most likely cause is "
+                "numerical instability introduced by LoRA training or merge."
+            ),
+        )
+        raise RuntimeError(
+            "AWQ failed during smoothing because the model produced non-finite values "
+            "on one of the smoothing targets. This usually points to numerical instability "
+            "in the merged model. Check logs: model_weight_health, forward_precheck, hooked_layer_diagnostics."
+        ) from exc
 
     report(95)
 
     tokenizer.save_pretrained(output_dir)
 
     report(100)
+    log_event("quantization_success", outputDir=output_dir)
     print(f"__RESULT__:{output_dir}")
 
 
@@ -1046,10 +2220,13 @@ if __name__ == "__main__":
 path: /python/train.py
 ----------------------------------------
 import json
+import math
 import os
 import sys
 import time
+import traceback
 from datetime import timedelta
+from typing import Any
 
 # Важно: ставим до инициализации CUDA / загрузки модели
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -1058,8 +2235,287 @@ import torch
 import unsloth
 from datasets import load_dataset
 from unsloth import FastLanguageModel
-from transformers import TrainingArguments
+from transformers import TrainingArguments, TrainerCallback
 from trl import SFTTrainer
+
+
+def report(p: int):
+    print(f"__PROGRESS__:{p}", flush=True)
+
+
+def log_event(kind: str, **payload: Any):
+    print(
+        json.dumps(
+            {"event": kind, **payload},
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
+
+
+def safe_float(v: Any):
+    try:
+        x = float(v)
+        if math.isfinite(x):
+            return x
+        return None
+    except Exception:
+        return None
+
+
+def clean_text(value: Any, max_chars: int = 5000) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].strip()
+    return text
+
+
+def summarize_texts(texts: list[str]) -> dict[str, Any]:
+    lengths = [len(x) for x in texts if isinstance(x, str)]
+    return {
+        "count": len(texts),
+        "minChars": min(lengths) if lengths else 0,
+        "maxChars": max(lengths) if lengths else 0,
+        "avgChars": round(sum(lengths) / len(lengths), 2) if lengths else 0,
+        "preview": [x[:300] for x in texts[:3]],
+    }
+
+
+def resolve_dtype_name(use_bf16: bool) -> str:
+    return "bfloat16" if use_bf16 else "float16"
+
+
+def tensor_stats(t: torch.Tensor) -> dict[str, Any]:
+    finite_mask = torch.isfinite(t)
+    finite_count = int(finite_mask.sum().item())
+    total_count = t.numel()
+
+    result = {
+        "shape": list(t.shape),
+        "dtype": str(t.dtype),
+        "finiteCount": finite_count,
+        "totalCount": total_count,
+        "hasNaN": bool(torch.isnan(t).any().item()),
+        "hasInf": bool(torch.isinf(t).any().item()),
+        "min": None,
+        "max": None,
+        "absmax": None,
+        "mean": None,
+        "std": None,
+    }
+
+    if finite_count > 0:
+        vals = t[finite_mask].float()
+        result["min"] = float(vals.min().item())
+        result["max"] = float(vals.max().item())
+        result["absmax"] = float(vals.abs().max().item())
+        result["mean"] = float(vals.mean().item())
+        result["std"] = float(vals.std().item()) if vals.numel() > 1 else 0.0
+
+    return result
+
+
+def collect_parameter_health(model) -> dict[str, Any]:
+    bad_tensors: list[dict[str, Any]] = []
+    scanned = 0
+    global_absmax = 0.0
+    trainable_count = 0
+    total_param_count = 0
+    trainable_param_count = 0
+
+    for name, param in model.named_parameters():
+        if param is None:
+            continue
+
+        scanned += 1
+        total_param_count += int(param.numel())
+        if param.requires_grad:
+            trainable_count += 1
+            trainable_param_count += int(param.numel())
+
+        data = param.detach()
+        stats = tensor_stats(data)
+
+        if stats["absmax"] is not None:
+            global_absmax = max(global_absmax, float(stats["absmax"]))
+
+        if stats["hasNaN"] or stats["hasInf"]:
+            bad_tensors.append(
+                {
+                    "name": name,
+                    **stats,
+                }
+            )
+
+    return {
+        "scannedParameters": scanned,
+        "trainableTensorCount": trainable_count,
+        "totalParamCount": total_param_count,
+        "trainableParamCount": trainable_param_count,
+        "badTensorCount": len(bad_tensors),
+        "globalAbsMax": global_absmax,
+        "badTensors": bad_tensors[:50],
+    }
+
+
+def collect_module_weight_summary(model) -> dict[str, Any]:
+    interesting_suffixes = [
+        "input_layernorm.weight",
+        "post_attention_layernorm.weight",
+        "self_attn.q_proj.weight",
+        "self_attn.k_proj.weight",
+        "self_attn.v_proj.weight",
+        "self_attn.o_proj.weight",
+        "mlp.gate_proj.weight",
+        "mlp.up_proj.weight",
+        "mlp.down_proj.weight",
+    ]
+
+    rows = []
+    for name, param in model.named_parameters():
+        if not any(name.endswith(s) for s in interesting_suffixes):
+            continue
+        stats = tensor_stats(param.detach())
+        rows.append(
+            {
+                "name": name,
+                "shape": stats["shape"],
+                "dtype": stats["dtype"],
+                "absmax": stats["absmax"],
+                "min": stats["min"],
+                "max": stats["max"],
+                "hasNaN": stats["hasNaN"],
+                "hasInf": stats["hasInf"],
+            }
+        )
+
+    return {
+        "count": len(rows),
+        "rows": rows[:200],
+    }
+
+
+def run_forward_smoke(
+    model,
+    tokenizer,
+    texts: list[str],
+    max_seq_length: int,
+    device: torch.device,
+) -> dict[str, Any]:
+    model.eval()
+    checks = []
+    problems = []
+
+    for idx, text in enumerate(texts):
+        try:
+            encoded = tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=min(max_seq_length, 1024),
+                padding=False,
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+
+            with torch.no_grad():
+                out = model(
+                    **encoded,
+                    output_hidden_states=True,
+                    use_cache=False,
+                    return_dict=True,
+                )
+
+            logits_stats = tensor_stats(out.logits.detach())
+            hidden_rows = []
+            hidden_states = getattr(out, "hidden_states", None)
+
+            if hidden_states:
+                for h_idx, hs in enumerate(hidden_states[: min(len(hidden_states), 6)]):
+                    hs_stats = tensor_stats(hs.detach())
+                    hidden_rows.append(
+                        {
+                            "index": h_idx,
+                            "absmax": hs_stats["absmax"],
+                            "hasNaN": hs_stats["hasNaN"],
+                            "hasInf": hs_stats["hasInf"],
+                            "shape": hs_stats["shape"],
+                        }
+                    )
+
+            row = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "tokenCount": int(encoded["input_ids"].shape[-1]),
+                "logits": {
+                    "absmax": logits_stats["absmax"],
+                    "min": logits_stats["min"],
+                    "max": logits_stats["max"],
+                    "hasNaN": logits_stats["hasNaN"],
+                    "hasInf": logits_stats["hasInf"],
+                    "shape": logits_stats["shape"],
+                },
+                "hiddenStates": hidden_rows,
+            }
+            checks.append(row)
+
+            if logits_stats["hasNaN"] or logits_stats["hasInf"] or any(
+                x["hasNaN"] or x["hasInf"] for x in hidden_rows
+            ):
+                problems.append(row)
+
+        except Exception as exc:
+            err = {
+                "sampleIndex": idx,
+                "textPreview": text[:300],
+                "error": str(exc),
+            }
+            checks.append(err)
+            problems.append(err)
+
+    return {
+        "checkedSamples": len(checks),
+        "problemCount": len(problems),
+        "checks": checks,
+        "problems": problems,
+    }
+
+
+def choose_sanity_texts(dataset, fallback_count: int = 3) -> list[str]:
+    texts = []
+    for item in dataset.select(range(min(len(dataset), 20))):
+        text = clean_text(item.get("text", ""))
+        if text:
+            texts.append(text)
+        if len(texts) >= fallback_count:
+            break
+
+    if texts:
+        return texts
+
+    return [
+        "Hello",
+        "Write a short explanation of transformers.",
+        "2 + 2 =",
+    ]
+
+
+class JsonMetricsCallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if not logs:
+            return
+        payload = {"step": int(state.global_step), "epoch": safe_float(state.epoch)}
+        payload.update({k: v for k, v in logs.items()})
+        log_event("train_log", **payload)
+
+    def on_save(self, args, state, control, **kwargs):
+        log_event("train_save", step=int(state.global_step), epoch=safe_float(state.epoch))
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        log_event("train_begin", maxSteps=int(state.max_steps))
+
+    def on_train_end(self, args, state, control, **kwargs):
+        log_event("train_end", step=int(state.global_step), epoch=safe_float(state.epoch))
 
 
 def main():
@@ -1103,18 +2559,25 @@ def main():
 
     gpu_name = torch.cuda.get_device_name(0)
     total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
-    print(f"Using GPU: {gpu_name} ({total_vram_gb:.2f} GB VRAM)")
-
     use_bf16 = torch.cuda.is_bf16_supported()
-
-    # Делай trust_remote_code управляемым через config:
-    # "trustRemoteCode": false
     trust_remote_code = bool(cfg.get("trustRemoteCode", False))
 
-    # Ключевой фикс:
-    # 1) для 4bit НЕ даём auto + cpu offload
-    # 2) грузим всё на единственную GPU
-    # 3) не задаём max_memory с CPU, чтобы transformers не раскидывал модули на CPU/disk
+    log_event(
+        "train_config",
+        outputDir=output_dir,
+        baseModel=cfg["baseModel"],
+        datasetPath=cfg["datasetPath"],
+        trustRemoteCode=trust_remote_code,
+        gpuName=gpu_name,
+        gpuVramGb=round(total_vram_gb, 2),
+        qlora=qlora_cfg,
+        wandbEnabled=wandb_enabled,
+        wandbMode=wandb_cfg.get("mode", "online"),
+        trainDtype=resolve_dtype_name(use_bf16),
+    )
+
+    report(5)
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=cfg["baseModel"],
         max_seq_length=qlora_cfg["maxSeqLength"],
@@ -1130,6 +2593,12 @@ def main():
     if getattr(model.config, "pad_token_id", None) is None and tokenizer.pad_token_id is not None:
         model.config.pad_token_id = tokenizer.pad_token_id
 
+    base_health_before = collect_parameter_health(model)
+    log_event("base_model_health_before_lora", **base_health_before)
+    log_event("base_model_weights_before_lora", **collect_module_weight_summary(model))
+
+    report(15)
+
     use_lora = bool(qlora_cfg.get("useLora", True))
 
     if use_lora:
@@ -1142,6 +2611,11 @@ def main():
             bias="none",
             use_gradient_checkpointing="unsloth",
         )
+
+    post_attach_health = collect_parameter_health(model)
+    log_event("model_health_after_lora_attach", **post_attach_health)
+
+    report(20)
 
     dataset = load_dataset("json", data_files=cfg["datasetPath"], split="train")
 
@@ -1163,6 +2637,11 @@ def main():
     if len(dataset) == 0:
         raise ValueError("Dataset is empty after formatting/filtering")
 
+    sample_texts = [clean_text(x["text"]) for x in dataset.select(range(min(len(dataset), 5)))]
+    log_event("dataset_summary", rows=len(dataset), **summarize_texts(sample_texts))
+
+    report(30)
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=qlora_cfg["perDeviceTrainBatchSize"],
@@ -1182,7 +2661,7 @@ def main():
         lr_scheduler_type=qlora_cfg.get("lrSchedulerType", "cosine"),
         weight_decay=qlora_cfg.get("weightDecay", 0.01),
         max_grad_norm=qlora_cfg.get("maxGradNorm", 1.0),
-        gradient_checkpointing=False,  # Unsloth handles this via get_peft_model(... use_gradient_checkpointing="unsloth")
+        gradient_checkpointing=False,
         dataloader_pin_memory=True,
     )
 
@@ -1195,10 +2674,42 @@ def main():
         packing=False,
         dataset_num_proc=1,
     )
+    trainer.add_callback(JsonMetricsCallback())
+
+    report(40)
+
+    pre_train_smoke = run_forward_smoke(
+        model=model,
+        tokenizer=tokenizer,
+        texts=choose_sanity_texts(dataset),
+        max_seq_length=qlora_cfg["maxSeqLength"],
+        device=torch.device("cuda:0"),
+    )
+    log_event("forward_smoke_before_train", **pre_train_smoke)
+
+    if pre_train_smoke["problemCount"] > 0:
+        raise RuntimeError("Model failed smoke forward before training. See forward_smoke_before_train logs.")
+
+    report(50)
 
     start_time = time.time()
     train_result = trainer.train()
     end_time = time.time()
+
+    report(80)
+
+    after_train_health = collect_parameter_health(model)
+    log_event("model_health_after_train", **after_train_health)
+    log_event("model_weights_after_train", **collect_module_weight_summary(model))
+
+    post_train_smoke = run_forward_smoke(
+        model=model,
+        tokenizer=tokenizer,
+        texts=choose_sanity_texts(dataset),
+        max_seq_length=qlora_cfg["maxSeqLength"],
+        device=torch.device("cuda:0"),
+    )
+    log_event("forward_smoke_after_train", **post_train_smoke)
 
     if use_lora:
         model.save_pretrained(output_dir)
@@ -1206,6 +2717,8 @@ def main():
         trainer.save_model(output_dir)
 
     tokenizer.save_pretrained(output_dir)
+
+    report(92)
 
     duration = end_time - start_time
     metrics = train_result.metrics
@@ -1242,6 +2755,10 @@ def main():
         "gpu_name": gpu_name,
         "gpu_vram_gb": round(total_vram_gb, 2),
         "trust_remote_code": trust_remote_code,
+        "preTrainForwardProblems": pre_train_smoke["problemCount"],
+        "postTrainForwardProblems": post_train_smoke["problemCount"],
+        "postTrainBadTensorCount": after_train_health["badTensorCount"],
+        "postTrainGlobalAbsMax": after_train_health["globalAbsMax"],
     }
 
     with open(os.path.join(output_dir, "summary.json"), "w", encoding="utf-8") as f:
@@ -1250,17 +2767,26 @@ def main():
     with open(os.path.join(output_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(trainer.state.log_history, f, indent=2, ensure_ascii=False)
 
-    print(json.dumps({
+    report(100)
+
+    result = {
         "ok": True,
         "outputDir": output_dir,
         "summary": summary,
         "wandbEnabled": wandb_enabled,
         "wandbMode": wandb_cfg.get("mode", "online"),
-    }, ensure_ascii=False))
+    }
+
+    log_event("train_success", **result)
+    print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
 
 
 path: /routes/dashboard.js
@@ -1620,6 +3146,8 @@ path: /routes/loras.js
 ----------------------------------------
 const express = require('express');
 const fs = require('fs');
+const fsp = fs.promises;
+
 const { getSettings, renameLora, removeLora, getModelById } = require('../services/state');
 const {
   registerLoraFromJob,
@@ -1627,6 +3155,8 @@ const {
   buildMergedLora,
   reconcileAllLoras,
   getLoraByIdSafe,
+  cancelMergedLora,
+  getMergeOptionsInfo,
 } = require('../services/loras');
 const { startVllmRuntime, stopVllmRuntime } = require('../services/runtime');
 const { emitEvent } = require('../services/events');
@@ -1634,14 +3164,22 @@ const { CONFIG } = require('../config');
 
 const router = express.Router();
 
+async function readLastLines(filePath, tail = 200) {
+  const text = await fsp.readFile(filePath, 'utf8');
+  const lines = text.split(/\r?\n/);
+  return lines.slice(-tail).join('\n');
+}
+
 router.get('/', async (_req, res) => {
   res.json(await reconcileAllLoras());
 });
 
-router.get('/:id', async (req, res) => {
-  const item = await getLoraByIdSafe(req.params.id);
-  if (!item) return res.status(404).json({ error: 'lora not found' });
-  res.json(item);
+router.get('/merge-options', async (_req, res) => {
+  try {
+    res.json(await getMergeOptionsInfo());
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
 });
 
 router.post('/from-job', async (req, res) => {
@@ -1651,6 +3189,82 @@ router.post('/from-job', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
+});
+
+router.post('/deactivate', async (_req, res) => {
+  try {
+    const settings = await getSettings();
+    const inf = settings.inference || {};
+
+    await stopVllmRuntime();
+    const runtime = await startVllmRuntime({
+      model: inf.model || settings.baseModel,
+      port: Number(inf.port || CONFIG.vllmPort),
+      maxModelLen: Number(inf.maxModelLen || 2048),
+      gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
+      tensorParallelSize: Number(inf.tensorParallelSize || 1),
+      baseModel: settings.baseModel,
+      activeModelId: null,
+      activeModelName: null,
+      activeLoraId: null,
+      activeLoraName: null,
+    });
+
+    emitEvent('lora_deactivated', runtime);
+    res.json({ ok: true, runtime });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/logs', async (req, res) => {
+  try {
+    const item = await getLoraByIdSafe(req.params.id);
+    if (!item) return res.status(404).json({ error: 'lora not found' });
+
+    const tail = Math.max(1, Math.min(Number(req.query.tail || 200), 5000));
+    const logFile = item.mergeLogFile || null;
+
+    if (!logFile) {
+      return res.json({
+        id: item.id,
+        logFile: null,
+        content: '',
+      });
+    }
+
+    if (!fs.existsSync(logFile)) {
+      return res.json({
+        id: item.id,
+        logFile,
+        content: '',
+      });
+    }
+
+    const content = await readLastLines(logFile, tail);
+
+    res.json({
+      id: item.id,
+      logFile,
+      content,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/package/download', async (req, res) => {
+  const item = await getLoraByIdSafe(req.params.id);
+  if (!item || !item.packagePath || !fs.existsSync(item.packagePath)) {
+    return res.status(404).json({ error: 'package not found' });
+  }
+  res.download(item.packagePath, `${item.name}.tar.gz`);
+});
+
+router.get('/:id', async (req, res) => {
+  const item = await getLoraByIdSafe(req.params.id);
+  if (!item) return res.status(404).json({ error: 'lora not found' });
+  res.json(item);
 });
 
 router.put('/:id', async (req, res) => {
@@ -1670,9 +3284,20 @@ router.put('/:id', async (req, res) => {
 
 router.post('/:id/build-merged', async (req, res) => {
   try {
-    res.json(await buildMergedLora(req.params.id, req.body || {}));
+    const lora = await buildMergedLora(req.params.id, req.body || {});
+    res.json({ ok: true, lora });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/cancel-merge', async (req, res) => {
+  try {
+    const lora = await cancelMergedLora(req.params.id);
+    res.json({ ok: true, lora });
+  } catch (err) {
+    const message = String(err.message || err);
+    res.status(message.includes('not found') ? 404 : 500).json({ error: message });
   }
 });
 
@@ -1687,14 +3312,6 @@ router.post('/:id/package', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
-});
-
-router.get('/:id/package/download', async (req, res) => {
-  const item = await getLoraByIdSafe(req.params.id);
-  if (!item || !item.packagePath || !fs.existsSync(item.packagePath)) {
-    return res.status(404).json({ error: 'package not found' });
-  }
-  res.download(item.packagePath, `${item.name}.tar.gz`);
 });
 
 router.post('/:id/activate', async (req, res) => {
@@ -1752,32 +3369,6 @@ router.post('/:id/activate', async (req, res) => {
       lora: item,
       runtime,
     });
-  } catch (err) {
-    res.status(500).json({ error: String(err.message || err) });
-  }
-});
-
-router.post('/deactivate', async (_req, res) => {
-  try {
-    const settings = await getSettings();
-    const inf = settings.inference || {};
-
-    await stopVllmRuntime();
-    const runtime = await startVllmRuntime({
-      model: inf.model || settings.baseModel,
-      port: Number(inf.port || CONFIG.vllmPort),
-      maxModelLen: Number(inf.maxModelLen || 2048),
-      gpuMemoryUtilization: Number(inf.gpuMemoryUtilization || 0.85),
-      tensorParallelSize: Number(inf.tensorParallelSize || 1),
-      baseModel: settings.baseModel,
-      activeModelId: null,
-      activeModelName: null,
-      activeLoraId: null,
-      activeLoraName: null,
-    });
-
-    emitEvent('lora_deactivated', runtime);
-    res.json({ ok: true, runtime });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -1874,6 +3465,9 @@ router.post('/quantize', async (req, res) => {
       groupSize,
       sym,
       runner,
+      dtype,
+      calibrationMode,
+      trustRemoteCode,
     } = req.body || {};
 
     res.json(await quantizeModel({
@@ -1887,6 +3481,9 @@ router.post('/quantize', async (req, res) => {
       groupSize,
       sym,
       runner,
+      dtype,
+      calibrationMode,
+      trustRemoteCode,
     }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
@@ -3641,6 +5238,7 @@ const {
   upsertLora,
   addModel,
   getLoras,
+  getSettings,
 } = require('./state');
 const { isPidRunning } = require('../utils/proc');
 const { emitEvent } = require('./events');
@@ -3683,12 +5281,18 @@ async function registerLoraFromJob(jobId, customName = null) {
     createdAt: nowIso(),
     status: 'ready',
     mergeStatus: 'not_built',
+    mergeProgress: 0,
+    mergePid: null,
     packageStatus: 'not_built',
+    packagePid: null,
     error: null,
     configPath: null,
     mergeLogFile: null,
     mergeOptions: null,
     mergeArtifacts: [],
+    mergedModelId: null,
+    mergedModelSize: null,
+    mergedModelSizeHuman: null,
   });
 
   const size = fs.existsSync(item.adapterPath) ? getDirSize(item.adapterPath) : 0;
@@ -3754,6 +5358,11 @@ async function finalizeMergeSuccess(loraId, mergedPath, configPath, mergeLogFile
 
   const artifacts = getMergeArtifacts(mergedPath);
   const size = fs.existsSync(mergedPath) ? getDirSize(mergedPath) : 0;
+  const settings = await getSettings();
+  const shouldRegisterAsModel =
+    current?.mergeOptions?.registerAsModel ??
+    settings?.merge?.registerAsModel ??
+    true;
 
   const next = await upsertLora({
     ...current,
@@ -3768,6 +5377,10 @@ async function finalizeMergeSuccess(loraId, mergedPath, configPath, mergeLogFile
   });
 
   emitEvent('lora_updated', next);
+
+  if (!shouldRegisterAsModel) {
+    return next;
+  }
 
   const alreadyRegistered = current.mergedModelId
     ? await getModelById(current.mergedModelId)
@@ -3819,6 +5432,7 @@ async function finalizeMergeFailure(loraId, error, configPath, mergeLogFile) {
     ...current,
     mergeStatus: 'failed',
     mergePid: null,
+    mergeProgress: 0,
     error: String(error || 'merge failed'),
     configPath,
     mergeLogFile,
@@ -3876,12 +5490,35 @@ async function getLoraByIdSafe(id) {
   return reconcileLoraMergeState(item);
 }
 
+function getMergeOptionsInfo() {
+  return {
+    deviceStrategies: ['cpu', 'cuda', 'auto'],
+    dtypes: ['auto', 'float16', 'bfloat16', 'float32'],
+    defaultOptions: {
+      deviceStrategy: 'auto',
+      cudaDevice: 0,
+      dtype: 'float16',
+      lowCpuMemUsage: true,
+      safeSerialization: true,
+      overwriteOutput: false,
+      maxShardSize: '5GB',
+      offloadFolderName: '_offload',
+      clearGpuBeforeMerge: false,
+      trustRemoteCode: false,
+      registerAsModel: true,
+      customOutputName: '',
+      baseModelSource: 'auto',
+      baseModelOverride: '',
+    },
+    gpus: [],
+  };
+}
+
 async function buildMergedLora(loraId, options = {}) {
   const item = await getLoraById(loraId);
   if (!item) throw new Error('lora not found');
 
-  const settings = require('./state');
-  const userSettings = await settings.getSettings();
+  const userSettings = await getSettings();
   const mergeOptions = {
     ...(userSettings.merge || {}),
     ...(options || {}),
@@ -3947,6 +5584,7 @@ async function buildMergedLora(loraId, options = {}) {
     logLabel: `merge-lora:${loraId}`,
   });
 
+  fs.closeSync(outFd);
   child.unref();
 
   await registerManagedProcess({
@@ -3997,6 +5635,44 @@ async function buildMergedLora(loraId, options = {}) {
   });
 
   return building;
+}
+
+async function cancelMergedLora(loraId) {
+  const item = await getLoraById(loraId);
+  if (!item) throw new Error('lora not found');
+
+  if (item.mergeStatus !== 'building' || !item.mergePid) {
+    return item;
+  }
+
+  try {
+    if (isPidRunning(item.mergePid)) {
+      try {
+        process.kill(item.mergePid, 'SIGTERM');
+      } catch {}
+
+      await sleep(1000);
+
+      if (isPidRunning(item.mergePid)) {
+        try {
+          process.kill(item.mergePid, 'SIGKILL');
+        } catch {}
+      }
+    }
+  } finally {
+    await unregisterManagedProcess(item.mergePid).catch(() => {});
+  }
+
+  const next = await upsertLora({
+    ...item,
+    mergeStatus: 'failed',
+    mergeProgress: 0,
+    mergePid: null,
+    error: 'Merge cancelled by user',
+  });
+
+  emitEvent('lora_updated', next);
+  return next;
 }
 
 async function ensureMergedLora(loraId) {
@@ -4129,11 +5805,13 @@ async function reconcileAllLoras() {
 module.exports = {
   registerLoraFromJob,
   buildMergedLora,
+  cancelMergedLora,
   ensureMergedLora,
   packageMergedLora,
   reconcileLoraMergeState,
   reconcileAllLoras,
   getLoraByIdSafe,
+  getMergeOptionsInfo,
 };
 
 
@@ -4174,6 +5852,21 @@ function normalizeQuantizationValue(value) {
   return v;
 }
 
+function getHfToken() {
+  return (
+    process.env.HF_TOKEN ||
+    process.env.HUGGINGFACE_HUB_TOKEN ||
+    process.env.HUGGINGFACE_TOKEN ||
+    ''
+  );
+}
+
+async function readLogTail(logFile, tail = 40) {
+  const text = await readText(logFile, '');
+  const lines = text.split('\n');
+  return lines.slice(-tail).join('\n').trim();
+}
+
 function detectModelCapability(model) {
   const quantized = !!normalizeQuantizationValue(model.quantization);
 
@@ -4207,20 +5900,28 @@ function detectModelCapability(model) {
 }
 
 async function downloadModel({ repoId, name, tryQuantized }) {
-  if (!repoId) throw new Error('repoId is required');
-
-  let targetRepoId = repoId;
-  if (tryQuantized && !repoId.toLowerCase().endsWith('-awq')) {
-    targetRepoId = `${repoId}-AWQ`;
+  if (!repoId || !String(repoId).trim()) {
+    throw new Error('repoId is required');
   }
 
-  const existing = (await getModels()).find((x) => x.repoId === targetRepoId && x.status !== 'deleted');
+  const targetRepoId = String(repoId).trim();
+
+  if (tryQuantized) {
+    logger.info('tryQuantized requested, but automatic repoId rewrite is disabled', {
+      repoId: targetRepoId,
+    });
+  }
+
+  const existing = (await getModels()).find(
+    (x) => x.repoId === targetRepoId && x.status !== 'deleted'
+  );
   if (existing) return existing;
 
   const modelId = uid('model');
   const slug = safeSlug(name || targetRepoId.split('/').pop() || modelId);
   const modelPath = path.join(CONFIG.modelsDir, `${slug}-${modelId}`);
   const logFile = path.join(CONFIG.logsDir, `${modelId}.log`);
+  const hfToken = getHfToken();
 
   const item = await addModel({
     id: modelId,
@@ -4245,6 +5946,7 @@ async function downloadModel({ repoId, name, tryQuantized }) {
   const payload = {
     repoId: targetRepoId,
     localDir: modelPath,
+    hfToken,
   };
 
   const outFd = fs.openSync(logFile, 'a');
@@ -4255,7 +5957,13 @@ async function downloadModel({ repoId, name, tryQuantized }) {
     cwd: CONFIG.workspace,
     detached: true,
     stdio: ['ignore', outFd, outFd],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    env: {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+      HF_TOKEN: hfToken,
+      HUGGINGFACE_HUB_TOKEN: hfToken,
+      HUGGINGFACE_TOKEN: hfToken,
+    },
     configDir: CONFIG.trainingConfigsDir,
     configPrefix: modelId,
     logLabel: `download-model:${modelId}`,
@@ -4291,10 +5999,18 @@ async function downloadModel({ repoId, name, tryQuantized }) {
       configPath,
     });
 
+    let error = null;
+    if (code !== 0) {
+      const logTail = await readLogTail(logFile, 60);
+      error = logTail
+        ? `download exited with code ${code}\n${logTail}`
+        : `download exited with code ${code}`;
+    }
+
     const next = await upsertModel({
       ...running,
       status: code === 0 ? 'ready' : 'failed',
-      error: code === 0 ? null : `download exited with code ${code}`,
+      error,
       pid: null,
       configPath,
     });
@@ -4326,10 +6042,13 @@ async function downloadModel({ repoId, name, tryQuantized }) {
       error: String(err.message || err),
     });
 
+    const logTail = await readLogTail(logFile, 60);
     const next = await upsertModel({
       ...running,
       status: 'failed',
-      error: String(err.message || err),
+      error: logTail
+        ? `${String(err.message || err)}\n${logTail}`
+        : String(err.message || err),
       pid: null,
       configPath,
     });
@@ -4365,6 +6084,9 @@ async function quantizeModel({
   groupSize,
   sym,
   runner,
+  dtype,
+  calibrationMode,
+  trustRemoteCode,
 }) {
   const source = await getModelById(modelId);
   if (!source) throw new Error('source model not found');
@@ -4384,7 +6106,9 @@ async function quantizeModel({
     m.runner === effectiveRunner &&
     (!bits || m.bits === bits) &&
     (!groupSize || m.groupSize === groupSize) &&
-    (sym === undefined || m.sym === sym)
+    (sym === undefined || m.sym === sym) &&
+    (!dtype || m.dtype === dtype) &&
+    (!calibrationMode || m.calibrationMode === calibrationMode)
   );
   if (existing) {
     return {
@@ -4417,6 +6141,8 @@ async function quantizeModel({
     configPath: null,
     runner: effectiveRunner,
     envName: effectiveRunner,
+    dtype: dtype || 'float16',
+    calibrationMode: calibrationMode || 'text_only',
   });
 
   emitEvent('model_updated', item);
@@ -4431,12 +6157,14 @@ async function quantizeModel({
     outputDir: modelPath,
     method: effectiveMethod,
     datasetPath,
-    numSamples,
-    maxSeqLen,
-    bits,
-    groupSize,
-    sym,
-    trustRemoteCode: true,
+    numSamples: numSamples ?? 32,
+    maxSeqLen: maxSeqLen ?? 1024,
+    bits: bits ?? 4,
+    groupSize: groupSize ?? 128,
+    sym: sym ?? false,
+    dtype: dtype || 'float16',
+    calibrationMode: calibrationMode || 'text_only',
+    trustRemoteCode: trustRemoteCode ?? true,
   };
 
   const scriptPath = path.join(__dirname, '..', 'python', scriptFile);
@@ -4485,10 +6213,10 @@ async function quantizeModel({
     status: 'running',
     createdAt: item.createdAt,
     startedAt: nowIso(),
-    modelId: modelId,
+    modelId,
     modelPath: source.path,
     outputDir: modelPath,
-    logFile: logFile,
+    logFile,
     pid: child.pid,
     runner: effectiveRunner,
     paramsSnapshot: {
@@ -4522,6 +6250,8 @@ async function quantizeModel({
       configPath,
       runner: effectiveRunner,
       envName: effectiveRunner,
+      dtype: payload.dtype,
+      calibrationMode: payload.calibrationMode,
     });
 
     const { upsertJob: upsertJobSync } = require('./state');
@@ -4579,6 +6309,8 @@ async function quantizeModel({
       configPath,
       runner: effectiveRunner,
       envName: effectiveRunner,
+      dtype: payload.dtype,
+      calibrationMode: payload.calibrationMode,
     });
 
     const { upsertJob: upsertJobErr } = require('./state');
@@ -5580,7 +7312,7 @@ const DEFAULT_SETTINGS = {
     targetModules: ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
   },
   merge: {
-    deviceStrategy: 'cpu',
+    deviceStrategy: 'auto',
     cudaDevice: 0,
     dtype: 'float16',
     lowCpuMemUsage: true,
@@ -5593,6 +7325,18 @@ const DEFAULT_SETTINGS = {
     registerAsModel: true,
     baseModelSource: 'auto',
     baseModelOverride: '',
+  },
+  quantization: {
+    awq: {
+      dtype: 'float16',
+      numSamples: 32,
+      maxSeqLen: 1024,
+      bits: 4,
+      groupSize: 128,
+      sym: false,
+      trustRemoteCode: true,
+      calibrationMode: 'text_only',
+    },
   },
   wandb: {
     enabled: false,
@@ -5716,6 +7460,14 @@ async function getSettings() {
       ...DEFAULT_SETTINGS.merge,
       ...(current.merge || {}),
     },
+    quantization: {
+      ...DEFAULT_SETTINGS.quantization,
+      ...(current.quantization || {}),
+      awq: {
+        ...DEFAULT_SETTINGS.quantization.awq,
+        ...((current.quantization || {}).awq || {}),
+      },
+    },
     wandb: {
       ...DEFAULT_SETTINGS.wandb,
       ...(current.wandb || {}),
@@ -5735,6 +7487,14 @@ async function setSettings(next) {
       ...next,
       qlora: { ...current.qlora, ...(next.qlora || {}) },
       merge: { ...current.merge, ...(next.merge || {}) },
+      quantization: {
+        ...current.quantization,
+        ...(next.quantization || {}),
+        awq: {
+          ...(current.quantization?.awq || {}),
+          ...((next.quantization || {}).awq || {}),
+        },
+      },
       wandb: { ...current.wandb, ...(next.wandb || {}) },
       inference: { ...current.inference, ...(next.inference || {}) },
     };
@@ -7241,4 +9001,4 @@ included: 43
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 192337
+totalBytes(approx): 246033

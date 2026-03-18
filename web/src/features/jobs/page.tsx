@@ -8,6 +8,7 @@ import { JobTypeBadge } from '../../components/job-type-badge';
 import { JobDetailsFineTune } from '../../components/job-details-fine-tune';
 import { JobDetailsSynthetic } from '../../components/job-details-synthetic';
 import { JobDetailsQuantize } from '../../components/job-details-quantize';
+import { JobDetailsComparison } from '../../components/job-details-comparison';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
@@ -60,6 +61,7 @@ function JobListCard({
   onToggleCompare: () => void;
 }) {
   const isSynthetic = job.type === 'synthetic-gen';
+  const isComparison = job.type === 'model-comparison';
 
   return (
     <div
@@ -67,7 +69,9 @@ function JobListCard({
         selected
           ? isSynthetic
             ? 'border-cyan-500 bg-cyan-500/10'
-            : 'border-purple-500 bg-purple-500/10'
+            : isComparison
+              ? 'border-indigo-500 bg-indigo-500/10'
+              : 'border-purple-500 bg-purple-500/10'
           : 'border-slate-800 bg-slate-950/30 hover:border-slate-700'
       }`}
     >
@@ -91,6 +95,11 @@ function JobListCard({
             {isSynthetic ? (
               <div className="mt-2 text-xs text-slate-400">
                 Step: {job.syntheticMeta?.progressStep || job.progressStep || '—'}
+              </div>
+            ) : isComparison ? (
+              <div className="mt-2 text-xs text-slate-400">
+                Targets: {job.summaryMetrics?.targets ?? job.paramsSnapshot?.targets?.length ?? '—'} · Prompts:{' '}
+                {job.summaryMetrics?.promptsPerTarget ?? job.paramsSnapshot?.prompts?.length ?? '—'}
               </div>
             ) : (
               <div className="mt-2 text-xs text-slate-400 break-all">{job.baseModel || '—'}</div>
@@ -196,6 +205,7 @@ export default function JobsPage() {
   const selectedJob = jobQuery.data;
   const isSynthetic = selectedJob?.type === 'synthetic-gen';
   const isQuantize = selectedJob?.type === 'model-quantize';
+  const isComparison = selectedJob?.type === 'model-comparison';
 
   const selectedLora = useMemo(() => {
     if (!selectedJob) return null;
@@ -271,7 +281,7 @@ export default function JobsPage() {
       <div>
         <h1 className="text-2xl font-semibold text-white">Jobs</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Обучение и создание synthetic datasets теперь показываются по-разному и с отдельной детализацией.
+          Обучение, synthetic datasets, quantization и comparison jobs с отдельной детализацией.
         </p>
       </div>
 
@@ -524,13 +534,15 @@ export default function JobsPage() {
                     <JobDetailsSynthetic job={selectedJob} />
                   ) : isQuantize ? (
                     <JobDetailsQuantize job={selectedJob} />
+                  ) : isComparison ? (
+                    <JobDetailsComparison job={selectedJob} />
                   ) : (
                     <JobDetailsFineTune job={selectedJob} />
                   )}
                 </CardContent>
               </Card>
 
-              {!isSynthetic && !isQuantize && selectedJob ? (
+              {!isSynthetic && !isQuantize && !isComparison && selectedJob ? (
                 <>
                   <Card>
                     <CardHeader>
@@ -674,6 +686,34 @@ export default function JobsPage() {
                 </>
               ) : null}
 
+              {isComparison && selectedJob ? (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Comparison artifacts</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-wrap gap-2">
+                      <a
+                        href={`${apiBase}/comparisons/${selectedJob.id}/result`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+                      >
+                        Download comparison-result.json
+                      </a>
+                      <a
+                        href={`${apiBase}/comparisons/${selectedJob.id}/summary`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+                      >
+                        Download summary.json
+                      </a>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : null}
+
               {selectedJob ? (
                 <Card>
                   <CardHeader>
@@ -708,6 +748,7 @@ export default function JobsPage() {
                           selectedJob.status !== 'completed' ||
                           isSynthetic ||
                           isQuantize ||
+                          isComparison ||
                           useOutputMutation.isPending
                         }
                         className="bg-emerald-600 hover:bg-emerald-500"

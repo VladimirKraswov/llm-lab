@@ -1,4 +1,4 @@
-import { Boxes, BrainCircuit, Database } from 'lucide-react';
+import { Boxes, BrainCircuit, Database, SplitSquareHorizontal } from 'lucide-react';
 
 export function JobTypeBadge({ type }: { type: string }) {
   if (type === 'synthetic-gen') {
@@ -24,6 +24,15 @@ export function JobTypeBadge({ type }: { type: string }) {
       <span className="inline-flex items-center gap-1 rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-1 text-xs text-purple-300">
         <BrainCircuit size={12} />
         Fine-tune
+      </span>
+    );
+  }
+
+  if (type === 'model-comparison') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-xs text-indigo-300">
+        <SplitSquareHorizontal size={12} />
+        Comparison
       </span>
     );
   }

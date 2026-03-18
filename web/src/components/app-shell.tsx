@@ -1,5 +1,18 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Bot, Database, Gauge, PlayCircle, Settings, TerminalSquare, Workflow, Boxes, Layers3, ScrollText, Activity } from 'lucide-react';
+import {
+  Bot,
+  Database,
+  Gauge,
+  PlayCircle,
+  Settings,
+  TerminalSquare,
+  Workflow,
+  Boxes,
+  Layers3,
+  ScrollText,
+  Activity,
+  SplitSquareHorizontal,
+} from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const items = [
@@ -8,6 +21,7 @@ const items = [
   { to: '/app/loras', label: 'LoRAs', icon: Layers3 },
   { to: '/app/datasets', label: 'Datasets', icon: Database },
   { to: '/app/training', label: 'Training', icon: Workflow },
+  { to: '/app/comparisons', label: 'Comparisons', icon: SplitSquareHorizontal },
   { to: '/app/jobs', label: 'Jobs', icon: TerminalSquare },
   { to: '/app/runtime', label: 'Runtime', icon: PlayCircle },
   { to: '/app/playground', label: 'Playground', icon: Bot },

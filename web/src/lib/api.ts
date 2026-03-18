@@ -245,6 +245,8 @@ export type SummaryMetrics = {
   sizeHuman?: string;
   validCount?: number;
   invalidCount?: number;
+  targets?: number;
+  promptsPerTarget?: number;
 };
 
 export type SyntheticInvalidSample = {
@@ -455,6 +457,90 @@ export type ManagedProcessesCleanupResponse = {
   remaining?: number;
 };
 
+export type ComparisonTargetInput = {
+  type: 'model' | 'lora';
+  id: string;
+};
+
+export type ComparisonRunPayload = {
+  name?: string;
+  targets: ComparisonTargetInput[];
+  prompts: string[];
+  inference?: {
+    provider?: string;
+    port?: number;
+    max_tokens?: number;
+    temperature?: number;
+    maxModelLen?: number;
+    gpuMemoryUtilization?: number;
+    tensorParallelSize?: number;
+    quantization?: string | null;
+    dtype?: string;
+    trustRemoteCode?: boolean;
+    enforceEager?: boolean;
+    kvCacheDtype?: string;
+    maxNumSeqs?: number;
+    swapSpace?: number;
+  };
+};
+
+export type ComparisonRunResponse = {
+  ok: boolean;
+  jobId: string;
+  outputDir: string;
+  logFile: string;
+};
+
+export type ComparisonSummary = {
+  targets: number;
+  promptsPerTarget: number;
+  targetSummaries: Array<{
+    target: {
+      id: string;
+      type: 'model' | 'lora';
+      label: string;
+      meta?: Record<string, unknown>;
+    };
+    provider: string;
+    totalPrompts: number;
+    okCount: number;
+    failedCount: number;
+    avgDurationSec: number | null;
+    avgCompletionTokens: number | null;
+  }>;
+};
+
+export type ComparisonResultRow = {
+  prompt: string;
+  startedAt: string;
+  durationSec: number;
+  ok: boolean;
+  error?: string;
+  response?: {
+    content: string;
+    finish_reason?: string | null;
+    usage?: Record<string, unknown> | null;
+  };
+  raw?: unknown;
+};
+
+export type ComparisonResultItem = {
+  target: {
+    id: string;
+    type: 'model' | 'lora';
+    label: string;
+    meta?: Record<string, unknown>;
+  };
+  runtime: {
+    provider: string;
+    model: string;
+    activeModelName?: string | null;
+    activeLoraName?: string | null;
+    port?: number;
+  };
+  results: ComparisonResultRow[];
+};
+
 type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends Array<infer U>
     ? U[]
@@ -607,6 +693,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  startComparison: (payload: ComparisonRunPayload) =>
+    request<ComparisonRunResponse>('/comparisons/run', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getComparisonJob: (jobId: string) =>
+    request<Job>(`/comparisons/${jobId}`),
+  getComparisonResult: (jobId: string) =>
+    request<ComparisonResultItem[]>(`/comparisons/${jobId}/result`),
+  getComparisonSummary: (jobId: string) =>
+    request<ComparisonSummary>(`/comparisons/${jobId}/summary`),
   stopJob: (id: string) =>
     request<{ ok: boolean }>(`/jobs/${id}/stop`, {
       method: 'POST',

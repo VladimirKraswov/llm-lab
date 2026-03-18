@@ -11,6 +11,7 @@ import ModelsPage from './features/models/page';
 import LorasPage from './features/loras/page';
 import LogsPage from './features/logs/logs-page';
 import MonitorPage from './features/monitor/monitor-page';
+import ComparisonsPage from './features/comparisons/page';
 import { useEvents } from './hooks/use-events';
 
 export default function App() {
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="loras" element={<LorasPage />} />
         <Route path="datasets" element={<DatasetsPage />} />
         <Route path="training" element={<TrainingPage />} />
+        <Route path="comparisons" element={<ComparisonsPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="runtime" element={<RuntimePage />} />
         <Route path="playground" element={<PlaygroundPage />} />
