@@ -2,9 +2,26 @@ const express = require('express');
 const router = express.Router();
 const fs = require('fs');
 const path = require('path');
-const { importEvalDataset, runEvaluationBenchmark } = require('../services/evaluations');
+const { importEvalDataset, runEvaluationBenchmark, parseEvalTxt } = require('../services/evaluations');
 const { getEvalDatasets, removeEvalDataset, getJobById, getJobs } = require('../services/state');
 const { uid } = require('../utils/ids');
+
+// Validate eval dataset before import
+router.post('/datasets/validate', async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content) return res.status(400).json({ error: 'content is required' });
+    const { samples, errors } = parseEvalTxt(content);
+    res.json({
+      validCount: samples.length,
+      invalidCount: errors.length,
+      errors: errors.slice(0, 50), // Limit errors
+      preview: samples.slice(0, 5)
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
 // Import eval dataset
 router.post('/datasets/import', async (req, res) => {
@@ -70,7 +87,7 @@ router.post('/benchmark', async (req, res) => {
 
     const jobId = uid('job');
     // We don't await runEvaluationBenchmark as it runs in background
-    runEvaluationBenchmark(jobId, { datasetId, targets }).catch(err => {
+    runEvaluationBenchmark(jobId, { datasetId, targets, name }).catch(err => {
       console.error('Benchmark background error:', err);
     });
 
@@ -84,9 +101,11 @@ router.post('/benchmark', async (req, res) => {
 router.get('/jobs/:id/result', async (req, res) => {
   try {
     const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'job not found' });
+
     const resultFile = path.join(job.outputDir, 'result.json');
     if (!fs.existsSync(resultFile)) {
-      return res.status(404).json({ error: 'result.json not found' });
+      return res.status(404).json({ error: 'result.json not found yet. The job might still be running or failed.' });
     }
     const data = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
     res.json(data);
@@ -99,6 +118,8 @@ router.get('/jobs/:id/result', async (req, res) => {
 router.get('/jobs/:id/summary', async (req, res) => {
   try {
     const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'job not found' });
+
     const csvFile = path.join(job.outputDir, 'summary.csv');
     if (!fs.existsSync(csvFile)) {
       return res.status(404).json({ error: 'summary.csv not found' });
@@ -115,6 +136,8 @@ router.get('/jobs/:id/summary', async (req, res) => {
 router.get('/jobs/:id/detailed', async (req, res) => {
   try {
     const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'job not found' });
+
     const csvFile = path.join(job.outputDir, 'detailed.csv');
     if (!fs.existsSync(csvFile)) {
       return res.status(404).json({ error: 'detailed.csv not found' });

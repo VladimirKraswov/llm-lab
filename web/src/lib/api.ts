@@ -247,6 +247,9 @@ export type EvalModelSummary = {
   within1Rate: number;
   within2Rate: number;
   meanSignedError: number | null;
+  avgPredictedScore?: number | null;
+  parseErrors?: number;
+  emptyResponses?: number;
 };
 
 export type SummaryMetrics = {
@@ -285,6 +288,20 @@ export type SyntheticMeta = {
   import?: SyntheticImportMeta;
 };
 
+export type JobProgress = {
+  currentStage?: string;
+  currentModelId?: string;
+  currentModelName?: string;
+  processedModels?: number;
+  totalModels?: number;
+  processedSamples?: number;
+  totalSamples?: number;
+  modelProgressPercent?: number;
+  totalProgressPercent?: number;
+  etaSeconds?: number;
+  updatedAt?: string;
+};
+
 export type Job = {
   id: string;
   type: string;
@@ -321,6 +338,7 @@ export type Job = {
   notes?: string;
   artifacts?: Array<{ name: string; size: number; path: string }>;
   progressStep?: string;
+  progress?: JobProgress;
   runner?: string;
   summaryMetrics?: SummaryMetrics;
   resultDatasetId?: string | null;
@@ -429,6 +447,13 @@ export type EvalDataset = {
   samples?: EvalSample[];
 };
 
+export type EvalDatasetValidationResponse = {
+  validCount: number;
+  invalidCount: number;
+  errors: Array<{ index: number; error: string; raw: string }>;
+  preview: EvalSample[];
+};
+
 export type EvalSampleResult = {
   sampleId: string;
   question: string;
@@ -463,6 +488,9 @@ export type EvalBenchmarkResult = {
     within1Rate: number;
     within2Rate: number;
     meanSignedError: number | null;
+    avgPredictedScore?: number | null;
+    parseErrors?: number;
+    emptyResponses?: number;
   };
 };
 
@@ -893,6 +921,11 @@ export const api = {
 
   getEvalDatasets: () => request<EvalDataset[]>('/evaluations/datasets'),
   getEvalDataset: (id: string) => request<EvalDataset>(`/evaluations/datasets/${id}`),
+  validateEvalDataset: (payload: { content: string }) =>
+    request<EvalDatasetValidationResponse>('/evaluations/datasets/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   importEvalDataset: (payload: { name: string; content: string }) =>
     request<EvalDataset>('/evaluations/datasets/import', {
       method: 'POST',

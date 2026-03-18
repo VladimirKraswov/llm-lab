@@ -21,26 +21,43 @@ const providers = require('./providers');
  */
 function parseEvalTxt(content, sourceName = 'unknown') {
   const samples = [];
-  const blocks = content.split(/\n(?=Вопрос:)/g);
+  const errors = [];
+  // Split by double newline to separate potential blocks
+  const blocks = content.replace(/\r\n/g, '\n').split(/\n\n+/);
 
-  for (const block of blocks) {
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i].trim();
+    if (!block) continue;
+
     const qMatch = block.match(/Вопрос:\s*([\s\S]*?)(?=\nОтвет:|$)/i);
     const aMatch = block.match(/Ответ:\s*([\s\S]*?)(?=\nОценка:|$)/i);
     const sMatch = block.match(/Оценка:\s*(\d+(?:\.\d+)?)\/10/i);
 
     if (qMatch && aMatch && sMatch) {
+      const score = parseFloat(sMatch[1]);
+      if (isNaN(score) || score < 0 || score > 10) {
+        errors.push({ index: i, error: 'Оценка должна быть числом от 0 до 10', raw: block.slice(0, 100) });
+        continue;
+      }
+
       samples.push({
         id: uid('sample'),
         question: qMatch[1].trim(),
         candidateAnswer: aMatch[1].trim(),
-        referenceScore: parseFloat(sMatch[1]),
+        referenceScore: score,
         sourceFile: sourceName,
         topic: null
       });
+    } else {
+      const missing = [];
+      if (!qMatch) missing.push('Вопрос');
+      if (!aMatch) missing.push('Ответ');
+      if (!sMatch) missing.push('Оценка (x/10)');
+      errors.push({ index: i, error: `Отсутствуют поля: ${missing.join(', ')}`, raw: block.slice(0, 100) });
     }
   }
 
-  return samples;
+  return { samples, errors };
 }
 
 /**
@@ -54,13 +71,16 @@ function parseModelScore(text) {
 
   // Try JSON first
   try {
-    // Look for JSON-like block if not pure JSON
     const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const data = JSON.parse(jsonMatch[0]);
-      if (typeof data.score === 'number') {
+      let score = null;
+      if (typeof data.score === 'number') score = data.score;
+      else if (typeof data.score === 'string') score = parseFloat(data.score);
+
+      if (score !== null && !isNaN(score)) {
         return {
-          score: data.score,
+          score: score,
           feedback: data.feedback || data.reasoning || null,
           parseError: false
         };
@@ -74,19 +94,25 @@ function parseModelScore(text) {
   const patterns = [
     /Оценка:\s*(\d+(?:\.\d+)?)/i,
     /score:\s*(\d+(?:\.\d+)?)/i,
+    /Score:\s*(\d+(?:\.\d+)?)/i,
+    /Итог:\s*(\d+(?:\.\d+)?)/i,
     /(\d+(?:\.\d+)?)\/10/,
     /(\d+(?:\.\d+)?)\s*из\s*10/i,
+    /Final score\s*=\s*(\d+(?:\.\d+)?)/i,
     /^(\d+(?:\.\d+)?)$/m, // Just a number on a line
   ];
 
   for (const pattern of patterns) {
     const match = cleanText.match(pattern);
     if (match) {
-      return {
-        score: parseFloat(match[1]),
-        feedback: cleanText,
-        parseError: false
-      };
+      const score = parseFloat(match[1]);
+      if (!isNaN(score)) {
+        return {
+          score: score,
+          feedback: cleanText,
+          parseError: false
+        };
+      }
     }
   }
 
@@ -105,12 +131,16 @@ function calculateMetrics(results) {
     exactRate: 0,
     within1Rate: 0,
     within2Rate: 0,
-    meanSignedError: null
+    meanSignedError: null,
+    avgPredictedScore: null,
+    parseErrors: results.filter(r => r.parseError).length,
+    emptyResponses: results.filter(r => !r.rawResponse || r.rawResponse.trim() === '').length
   };
 
   let sumAbsError = 0;
   let sumSqError = 0;
   let sumSignedError = 0;
+  let sumPredictedScore = 0;
   let exactCount = 0;
   let within1Count = 0;
   let within2Count = 0;
@@ -122,6 +152,7 @@ function calculateMetrics(results) {
     sumAbsError += absError;
     sumSqError += error * error;
     sumSignedError += error;
+    sumPredictedScore += r.predictedScore;
 
     if (absError === 0) exactCount++;
     if (absError <= 1) within1Count++;
@@ -138,44 +169,81 @@ function calculateMetrics(results) {
     exactRate: exactCount / n,
     within1Rate: within1Count / n,
     within2Rate: within2Count / n,
-    meanSignedError: sumSignedError / n
+    meanSignedError: sumSignedError / n,
+    avgPredictedScore: sumPredictedScore / n,
+    parseErrors: results.filter(r => r.parseError).length,
+    emptyResponses: results.filter(r => !r.rawResponse || r.rawResponse.trim() === '').length
   };
 }
 
-async function runEvaluationBenchmark(jobId, { datasetId, targets }) {
+async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
   const datasets = await getEvalDatasets();
   const dsMeta = datasets.find(d => d.id === datasetId);
   if (!dsMeta) throw new Error('Evaluation dataset not found');
 
   const samples = JSON.parse(fs.readFileSync(dsMeta.jsonPath, 'utf8'));
-  const job = await upsertJob({ id: jobId, status: 'running', startedAt: nowIso() });
+
+  let job = await upsertJob({
+    id: jobId,
+    name: name || `Eval: ${dsMeta.name}`,
+    type: 'eval-benchmark',
+    status: 'running',
+    startedAt: nowIso(),
+    datasetId,
+    paramsSnapshot: { datasetId, targets },
+    progress: {
+      currentStage: 'Initializing',
+      totalModels: targets.length,
+      processedModels: 0,
+      totalSamples: samples.length,
+      processedSamples: 0,
+      totalProgressPercent: 0
+    }
+  });
 
   const outputDir = path.join(CONFIG.trainingOutputsDir, jobId);
   fs.mkdirSync(outputDir, { recursive: true });
   const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
 
-  const writeLog = (msg) => {
-    const line = `[${new Date().toISOString()}] ${msg}\n`;
+  const writeLog = (msg, level = 'info') => {
+    const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}\n`;
     logStream.write(line);
-    logger.info(`Eval ${jobId}: ${msg}`);
+    if (level === 'error') logger.error(`Eval ${jobId}: ${msg}`);
+    else logger.info(`Eval ${jobId}: ${msg}`);
+    emitEvent('job_log', { jobId, message: msg, level, timestamp: new Date().toISOString() });
+  };
+
+  const updateProgress = async (patch) => {
+    job = await upsertJob({
+      id: jobId,
+      progress: { ...(job.progress || {}), ...patch, updatedAt: nowIso() }
+    });
+    emitEvent('job_updated', job);
   };
 
   const benchmarkResults = [];
   const modelSummaries = [];
 
   try {
-    for (const target of targets) {
-      writeLog(`Starting evaluation for target: ${target.label} (${target.id})`);
+    writeLog(`Evaluation started. Dataset: ${dsMeta.name} (${samples.length} samples), Models: ${targets.length}`);
 
-      // Start runtime for this model
-      // target might be a model or a lora.
-      // If it has modelId, it's likely a lora. If it has id, it might be the model path.
+    for (let tIdx = 0; tIdx < targets.length; tIdx++) {
+      const target = targets[tIdx];
+      writeLog(`[${tIdx + 1}/${targets.length}] Starting evaluation for target: ${target.label}`);
+
+      await updateProgress({
+        currentStage: `Loading model: ${target.label}`,
+        currentModelId: target.id,
+        currentModelName: target.label,
+        modelProgressPercent: 0,
+        processedSamples: 0
+      });
+
       const runtimeParams = {
         model: target.modelPath,
         loraPath: target.loraPath || null,
         loraName: target.loraName || null,
-        // use lower memory since we just do inference
         gpuMemoryUtilization: 0.7,
       };
 
@@ -183,12 +251,24 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets }) {
       const runtime = await startRuntime(runtimeParams);
       const providerId = runtime.providerResolved;
       const provider = providers.PROVIDERS[providerId];
+      writeLog(`Runtime ready (Provider: ${providerId})`);
+
+      await updateProgress({ currentStage: `Evaluating: ${target.label}` });
 
       const modelResults = [];
 
       for (let i = 0; i < samples.length; i++) {
         const sample = samples[i];
-        writeLog(`[${target.label}] Evaluating sample ${i+1}/${samples.length}`);
+        const sampleProgress = Math.round(((i + 1) / samples.length) * 100);
+
+        if (i % 5 === 0 || i === samples.length - 1) {
+          writeLog(`[${target.label}] Progress: ${i + 1}/${samples.length} (${sampleProgress}%)`);
+          await updateProgress({
+            processedSamples: i + 1,
+            modelProgressPercent: sampleProgress,
+            totalProgressPercent: Math.round(((tIdx * samples.length + i + 1) / (targets.length * samples.length)) * 100)
+          });
+        }
 
         const prompt = `Ты — беспристрастный эксперт-оценщик. Тебе предоставлен вопрос и ответ кандидата.
 Твоя задача — выставить оценку от 0 до 10, где 10 — идеально правильный и полный ответ, а 0 — совершенно неверный или отсутствующий ответ.
@@ -205,7 +285,6 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets }) {
 Если не можешь вернуть JSON, обязательно напиши в конце: "Оценка: X/10"`;
 
         try {
-          // Inference
           const response = await provider.chat(runtime, {
             messages: [{ role: 'user', content: prompt }],
             stream: false,
@@ -213,10 +292,14 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets }) {
             temperature: 0,
           });
 
-          const rawResponse = response.choices[0].message.content;
+          const rawResponse = response.choices[0]?.message?.content || '';
           const parsed = parseModelScore(rawResponse);
 
-          const result = {
+          if (parsed.parseError) {
+            writeLog(`Parse error for sample ${sample.id} in model ${target.label}. Raw: ${rawResponse.slice(0, 50)}...`, 'warn');
+          }
+
+          modelResults.push({
             sampleId: sample.id,
             question: sample.question,
             candidateAnswer: sample.candidateAnswer,
@@ -226,11 +309,9 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets }) {
             rawResponse: rawResponse,
             parseError: parsed.parseError,
             absoluteError: parsed.score !== null ? Math.abs(parsed.score - sample.referenceScore) : null,
-          };
-
-          modelResults.push(result);
+          });
         } catch (err) {
-          writeLog(`Error evaluating sample ${sample.id}: ${err.message}`);
+          writeLog(`Error evaluating sample ${sample.id}: ${err.message}`, 'error');
           modelResults.push({
             sampleId: sample.id,
             question: sample.question,
@@ -259,25 +340,25 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets }) {
         metrics
       });
 
-      writeLog(`Finished target ${target.label}. MAE: ${metrics.mae?.toFixed(3) || 'N/A'}`);
+      writeLog(`Finished target ${target.label}. MAE: ${metrics.mae?.toFixed(3) || 'N/A'}, Parse Errors: ${metrics.parseErrors}`);
 
-      // Stop runtime before next target to free VRAM
+      await updateProgress({ processedModels: tIdx + 1 });
       await stopRuntime();
     }
 
-    // Save artifacts
+    writeLog('Saving results and artifacts...');
+    await updateProgress({ currentStage: 'Saving results' });
+
     const resultPath = path.join(outputDir, 'result.json');
     fs.writeFileSync(resultPath, JSON.stringify(benchmarkResults, null, 2));
 
-    // Summary CSV
     const summaryCsvPath = path.join(outputDir, 'summary.csv');
-    const summaryHeaders = ['model', 'samples', 'parseSuccessRate', 'mae', 'rmse', 'exactRate', 'within1Rate', 'within2Rate', 'meanSignedError'];
+    const summaryHeaders = ['model', 'samples', 'parseSuccessRate', 'mae', 'rmse', 'exactRate', 'within1Rate', 'within2Rate', 'meanSignedError', 'avgPredictedScore'];
     const summaryRows = modelSummaries.map(m => [
-      m.modelLabel, m.samples, m.parseSuccessRate, m.mae, m.rmse, m.exactRate, m.within1Rate, m.within2Rate, m.meanSignedError
+      m.modelLabel, m.samples, m.parseSuccessRate, m.mae, m.rmse, m.exactRate, m.within1Rate, m.within2Rate, m.meanSignedError, m.avgPredictedScore
     ].join(','));
     fs.writeFileSync(summaryCsvPath, [summaryHeaders.join(','), ...summaryRows].join('\n'));
 
-    // Detailed CSV
     const detailedCsvPath = path.join(outputDir, 'detailed.csv');
     const detailedHeaders = ['sampleId', 'modelId', 'modelLabel', 'referenceScore', 'predictedScore', 'absoluteError', 'parseError', 'question', 'candidateAnswer', 'predictedFeedback', 'rawResponse'];
     const detailedRows = [];
@@ -308,10 +389,11 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets }) {
       ]
     });
 
+    writeLog('Evaluation completed successfully.');
     emitEvent('job_updated', { id: jobId, status: 'completed' });
 
   } catch (err) {
-    writeLog(`CRITICAL ERROR: ${err.message}`);
+    writeLog(`CRITICAL ERROR: ${err.message}`, 'error');
     await upsertJob({
       id: jobId,
       status: 'failed',
@@ -325,9 +407,9 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets }) {
 }
 
 async function importEvalDataset(name, text) {
-  const samples = parseEvalTxt(text, name);
+  const { samples, errors } = parseEvalTxt(text, name);
   if (samples.length === 0) {
-    throw new Error('No valid evaluation samples found in the text. Check the format: Вопрос: / Ответ: / Оценка: x/10');
+    throw new Error('No valid evaluation samples found. ' + (errors[0]?.error || 'Check the format.'));
   }
 
   const id = uid('eval-ds');
