@@ -147,9 +147,10 @@ export default function EvaluationsPage() {
 
   return (
     <div className="container mx-auto py-6 space-y-8">
+      {/* Исправлено: subtitle → description */}
       <PageHeader
         title="Evaluations"
-        subtitle="Сравнение моделей-оценщиков на контрольных датасетах."
+        description="Сравнение моделей-оценщиков на контрольных датасетах."
       />
 
       <div className="grid gap-6 md:grid-cols-2">
@@ -236,8 +237,8 @@ export default function EvaluationsPage() {
                   </Select>
 
                   <Button
-                    variant="ghost"
-                    size="icon"
+                    // ghost + icon → заменяем на классы
+                    className="p-2 hover:bg-slate-700 rounded-md"
                     onClick={() => handleRemoveTarget(index)}
                     disabled={targets.length === 1}
                   >
@@ -245,14 +246,17 @@ export default function EvaluationsPage() {
                   </Button>
                 </div>
               ))}
-              <Button variant="outline" size="sm" className="w-full border-dashed" onClick={handleAddTarget}>
+              <Button
+                // outline + sm → заменяем на классы, сохраняем w-full border-dashed
+                className="border border-slate-600 text-sm px-3 py-1 rounded hover:bg-slate-800 w-full border-dashed"
+                onClick={handleAddTarget}
+              >
                 <Plus size={14} className="mr-2" /> Add Target
               </Button>
             </div>
 
             <Button
-              className="w-full"
-              variant="secondary"
+              className="w-full bg-slate-700 text-white hover:bg-slate-600"
               onClick={handleRun}
               disabled={runMutation.isPending || !selectedDatasetId}
             >
@@ -290,8 +294,20 @@ export default function EvaluationsPage() {
                         {new Date(ds.createdAt).toLocaleString()}
                       </td>
                       <td className="px-4 py-3 text-right space-x-1">
-                        <Button size="sm" variant="secondary" onClick={() => showPreview(ds.id)}>Preview</Button>
-                        <Button size="sm" variant="ghost" onClick={() => deleteMutation.mutate(ds.id)}><Trash2 size={16} /></Button>
+                        <Button
+                          // size=sm + secondary → заменяем классами
+                          className="text-sm px-3 py-1 bg-slate-700 text-white hover:bg-slate-600 rounded"
+                          onClick={() => showPreview(ds.id)}
+                        >
+                          Preview
+                        </Button>
+                        <Button
+                          // size=sm + ghost → заменяем классами
+                          className="p-2 hover:bg-slate-700 rounded-md"
+                          onClick={() => deleteMutation.mutate(ds.id)}
+                        >
+                          <Trash2 size={16} />
+                        </Button>
                       </td>
                     </tr>
                   ))}
@@ -338,13 +354,19 @@ export default function EvaluationsPage() {
         </Card>
       </div>
 
-      {/* Preview Modal (Simplified for brevity) */}
+      {/* Preview Modal */}
       {isPreviewOpen && previewDataset && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
           <Card className="w-full max-w-4xl max-h-[80vh] flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between shrink-0">
               <CardTitle>Dataset Preview: {previewDataset.name}</CardTitle>
-              <Button variant="ghost" size="icon" onClick={() => setIsPreviewOpen(false)}><X /></Button>
+              <Button
+                // ghost + icon → заменяем классами
+                className="p-2 hover:bg-slate-700 rounded-md"
+                onClick={() => setIsPreviewOpen(false)}
+              >
+                <X />
+              </Button>
             </CardHeader>
             <CardContent className="overflow-y-auto space-y-4 p-6">
               {previewDataset.samples?.map((s, i) => (

@@ -236,6 +236,19 @@ export type SyntheticGenConfig = {
   sourceFiles: string[];
 };
 
+export type EvalModelSummary = {
+  modelId: string;
+  modelLabel: string;
+  samples: number;
+  parseSuccessRate: number;
+  mae: number | null;
+  rmse: number | null;
+  exactRate: number;
+  within1Rate: number;
+  within2Rate: number;
+  meanSignedError: number | null;
+};
+
 export type SummaryMetrics = {
   rows?: number;
   final_loss?: number;
@@ -247,6 +260,7 @@ export type SummaryMetrics = {
   invalidCount?: number;
   targets?: number;
   promptsPerTarget?: number;
+  models?: EvalModelSummary[];
 };
 
 export type SyntheticInvalidSample = {

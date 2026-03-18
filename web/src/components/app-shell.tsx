@@ -12,6 +12,7 @@ import {
   ScrollText,
   Activity,
   SplitSquareHorizontal,
+  CheckCircle,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
