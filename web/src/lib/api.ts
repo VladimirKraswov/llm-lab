@@ -396,6 +396,62 @@ export type RuntimeHealth = {
   port?: number;
 };
 
+export type EvalSample = {
+  id: string;
+  question: string;
+  candidateAnswer: string;
+  referenceScore: number;
+  sourceFile?: string;
+  topic?: string | null;
+};
+
+export type EvalDataset = {
+  id: string;
+  name: string;
+  samplesCount: number;
+  jsonPath: string;
+  txtPath: string;
+  createdAt: string;
+  samples?: EvalSample[];
+};
+
+export type EvalSampleResult = {
+  sampleId: string;
+  question: string;
+  candidateAnswer: string;
+  referenceScore: number;
+  predictedScore: number | null;
+  predictedFeedback: string | null;
+  rawResponse: string | null;
+  parseError: boolean;
+  absoluteError: number | null;
+  error?: string;
+  modelId?: string;
+  modelLabel?: string;
+};
+
+export type EvalBenchmarkResult = {
+  target: {
+    id: string;
+    type: 'model' | 'lora';
+    label: string;
+    modelPath: string;
+    loraPath?: string | null;
+    loraName?: string | null;
+  };
+  results: EvalSampleResult[];
+  metrics: {
+    samples: number;
+    parseSuccessRate: number;
+    mae: number | null;
+    rmse: number | null;
+    exactRate: number;
+    within1Rate: number;
+    within2Rate: number;
+    meanSignedError: number | null;
+  };
+};
+
 export type LogEntry = {
   timestamp: string;
   level: 'info' | 'warn' | 'error' | 'debug';
@@ -820,6 +876,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ jobId }),
     }),
+
+  getEvalDatasets: () => request<EvalDataset[]>('/evaluations/datasets'),
+  getEvalDataset: (id: string) => request<EvalDataset>(`/evaluations/datasets/${id}`),
+  importEvalDataset: (payload: { name: string; content: string }) =>
+    request<EvalDataset>('/evaluations/datasets/import', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  deleteEvalDataset: (id: string) =>
+    request<{ ok: boolean }>(`/evaluations/datasets/${id}`, {
+      method: 'DELETE',
+    }),
+  runEvalBenchmark: (payload: { datasetId: string; targets: any[]; name?: string }) =>
+    request<{ jobId: string }>('/evaluations/benchmark', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getEvalBenchmarkResult: (jobId: string) =>
+    request<EvalBenchmarkResult[]>(`/evaluations/jobs/${jobId}/result`),
 
   uploadSyntheticSource: (file: File) => {
     const formData = new FormData();

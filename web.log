@@ -1,0 +1,136 @@
+
+> llm-lab-service@0.2.0 web:dev
+> npm --prefix web run dev -- --host 0.0.0.0
+
+
+> llm-lab-web@0.1.0 dev
+> vite --host 0.0.0.0
+
+
+  VITE v6.4.1  ready in 324 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.0.2:5173/
+Error:   Failed to scan for dependencies from entries:
+  /app/web/index.html
+
+  [31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mNo matching export in "src/components/ui/select.tsx" for import "SelectContent"[0m
+
+    src/features/evaluations/evaluations-page.tsx:9:17:
+[37m      9 │ import { Select, [32mSelectContent[37m, SelectItem, SelectTrigger, SelectVa...
+        ╵                  [32m~~~~~~~~~~~~~[0m
+
+
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mNo matching export in "src/components/ui/select.tsx" for import "SelectItem"[0m
+
+    src/features/evaluations/evaluations-page.tsx:9:32:
+[37m      9 │ ...t { Select, SelectContent, [32mSelectItem[37m, SelectTrigger, SelectValu...
+        ╵                               [32m~~~~~~~~~~[0m
+
+
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mNo matching export in "src/components/ui/select.tsx" for import "SelectTrigger"[0m
+
+    src/features/evaluations/evaluations-page.tsx:9:44:
+[37m      9 │ ...electContent, SelectItem, [32mSelectTrigger[37m, SelectValue } from '../...
+        ╵                              [32m~~~~~~~~~~~~~[0m
+
+
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mNo matching export in "src/components/ui/select.tsx" for import "SelectValue"[0m
+
+    src/features/evaluations/evaluations-page.tsx:9:59:
+[37m      9 │ ...SelectItem, SelectTrigger, [32mSelectValue[37m } from '../../components/...
+        ╵                               [32m~~~~~~~~~~~[0m
+
+
+    at failureErrorWithLog (/app/web/node_modules/esbuild/lib/main.js:1467:15)
+    at /app/web/node_modules/esbuild/lib/main.js:926:25
+    at runOnEndCallbacks (/app/web/node_modules/esbuild/lib/main.js:1307:45)
+    at buildResponseToResult (/app/web/node_modules/esbuild/lib/main.js:924:7)
+    at /app/web/node_modules/esbuild/lib/main.js:936:9
+    at new Promise (<anonymous>)
+    at requestCallbacks.on-end (/app/web/node_modules/esbuild/lib/main.js:935:54)
+    at handleRequest (/app/web/node_modules/esbuild/lib/main.js:628:17)
+    at handleIncomingPacket (/app/web/node_modules/esbuild/lib/main.js:653:7)
+    at Socket.readFromStdout (/app/web/node_modules/esbuild/lib/main.js:581:7)
+12:24:10 PM [vite] (client) Pre-transform error: Failed to resolve import "sonner" from "src/features/evaluations/evaluations-page.tsx". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /app/web/src/features/evaluations/evaluations-page.tsx:11:22
+  26 |  import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+  27 |  import { Trash2, Play, Upload, Eye, Loader2, Plus, X } from "lucide-react";
+  28 |  import { toast } from "sonner";
+     |                         ^
+  29 |  import { useNavigate } from "react-router-dom";
+  30 |  export default function EvaluationsPage() {
+12:24:11 PM [vite] Internal server error: Failed to resolve import "sonner" from "src/features/evaluations/evaluations-page.tsx". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /app/web/src/features/evaluations/evaluations-page.tsx:11:22
+  26 |  import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+  27 |  import { Trash2, Play, Upload, Eye, Loader2, Plus, X } from "lucide-react";
+  28 |  import { toast } from "sonner";
+     |                         ^
+  29 |  import { useNavigate } from "react-router-dom";
+  30 |  export default function EvaluationsPage() {
+      at TransformPluginContext._formatLog (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:42528:41)
+      at TransformPluginContext.error (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:42525:16)
+      at normalizeUrl (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:40504:23)
+      at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+      at async file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:40623:37
+      at async Promise.all (index 13)
+      at async TransformPluginContext.transform (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:40550:7)
+      at async EnvironmentPluginContainer.transform (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:42323:18)
+      at async loadAndTransform (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:35739:27)
+      at async viteTransformMiddleware (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:37254:24)
+12:24:13 PM [vite] (client) ✨ new dependencies optimized: react-dom/client, @tanstack/react-query, react-router-dom, lucide-react, recharts, react-markdown, remark-gfm, rehype-highlight, clsx
+12:24:13 PM [vite] (client) ✨ optimized dependencies changed. reloading
+12:24:15 PM [vite] Internal server error: Failed to resolve import "sonner" from "src/features/evaluations/evaluations-page.tsx". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /app/web/src/features/evaluations/evaluations-page.tsx:11:22
+  26 |  import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+  27 |  import { Trash2, Play, Upload, Eye, Loader2, Plus, X } from "lucide-react";
+  28 |  import { toast } from "sonner";
+     |                         ^
+  29 |  import { useNavigate } from "react-router-dom";
+  30 |  export default function EvaluationsPage() {
+      at TransformPluginContext._formatLog (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:42528:41)
+      at TransformPluginContext.error (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:42525:16)
+      at normalizeUrl (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:40504:23)
+      at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+      at async file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:40623:37
+      at async Promise.all (index 13)
+      at async TransformPluginContext.transform (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:40550:7)
+      at async EnvironmentPluginContainer.transform (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:42323:18)
+      at async loadAndTransform (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:35739:27)
+12:24:15 PM [vite] (client) Pre-transform error: Failed to resolve import "sonner" from "src/features/evaluations/evaluations-page.tsx". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /app/web/src/features/evaluations/evaluations-page.tsx:11:22
+  26 |  import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+  27 |  import { Trash2, Play, Upload, Eye, Loader2, Plus, X } from "lucide-react";
+  28 |  import { toast } from "sonner";
+     |                         ^
+  29 |  import { useNavigate } from "react-router-dom";
+  30 |  export default function EvaluationsPage() {
+12:25:03 PM [vite] Internal server error: Failed to resolve import "sonner" from "src/features/evaluations/evaluations-page.tsx". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /app/web/src/features/evaluations/evaluations-page.tsx:11:22
+  26 |  import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+  27 |  import { Trash2, Play, Upload, Eye, Loader2, Plus, X } from "lucide-react";
+  28 |  import { toast } from "sonner";
+     |                         ^
+  29 |  import { useNavigate } from "react-router-dom";
+  30 |  export default function EvaluationsPage() {
+      at TransformPluginContext._formatLog (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:42528:41)
+      at TransformPluginContext.error (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:42525:16)
+      at normalizeUrl (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:40504:23)
+      at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+      at async file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:40623:37
+      at async Promise.all (index 13)
+      at async TransformPluginContext.transform (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:40550:7)
+      at async EnvironmentPluginContainer.transform (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:42323:18)
+      at async loadAndTransform (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:35739:27)
+      at async viteTransformMiddleware (file:///app/web/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:37254:24)
+12:25:54 PM [vite] (client) ✨ new dependencies optimized: sonner
+12:25:54 PM [vite] (client) ✨ optimized dependencies changed. reloading
+12:29:43 PM [vite] (client) hmr update /src/components/ui/select.tsx, /src/index.css
+12:30:00 PM [vite] (client) hmr update /src/features/evaluations/evaluations-page.tsx, /src/index.css
+12:30:03 PM [vite] (client) hmr update /src/features/evaluations/evaluations-page.tsx, /src/index.css
+12:31:10 PM [vite] (client) hmr update /src/features/evaluations/evaluations-page.tsx, /src/index.css

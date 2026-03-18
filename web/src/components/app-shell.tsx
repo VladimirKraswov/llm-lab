@@ -22,6 +22,7 @@ const items = [
   { to: '/app/datasets', label: 'Datasets', icon: Database },
   { to: '/app/training', label: 'Training', icon: Workflow },
   { to: '/app/comparisons', label: 'Comparisons', icon: SplitSquareHorizontal },
+  { to: '/app/evaluations', label: 'Evaluations', icon: CheckCircle },
   { to: '/app/jobs', label: 'Jobs', icon: TerminalSquare },
   { to: '/app/runtime', label: 'Runtime', icon: PlayCircle },
   { to: '/app/playground', label: 'Playground', icon: Bot },

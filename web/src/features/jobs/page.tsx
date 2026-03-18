@@ -9,6 +9,7 @@ import { JobDetailsFineTune } from '../../components/job-details-fine-tune';
 import { JobDetailsSynthetic } from '../../components/job-details-synthetic';
 import { JobDetailsQuantize } from '../../components/job-details-quantize';
 import { JobDetailsComparison } from '../../components/job-details-comparison';
+import { JobDetailsEval } from '../../components/job-details-eval';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
@@ -206,6 +207,7 @@ export default function JobsPage() {
   const isSynthetic = selectedJob?.type === 'synthetic-gen';
   const isQuantize = selectedJob?.type === 'model-quantize';
   const isComparison = selectedJob?.type === 'model-comparison';
+  const isEval = selectedJob?.type === 'eval-benchmark';
 
   const selectedLora = useMemo(() => {
     if (!selectedJob) return null;
@@ -536,13 +538,15 @@ export default function JobsPage() {
                     <JobDetailsQuantize job={selectedJob} />
                   ) : isComparison ? (
                     <JobDetailsComparison job={selectedJob} />
+                  ) : isEval ? (
+                    <JobDetailsEval job={selectedJob} />
                   ) : (
                     <JobDetailsFineTune job={selectedJob} />
                   )}
                 </CardContent>
               </Card>
 
-              {!isSynthetic && !isQuantize && !isComparison && selectedJob ? (
+              {!isSynthetic && !isQuantize && !isComparison && !isEval && selectedJob ? (
                 <>
                   <Card>
                     <CardHeader>

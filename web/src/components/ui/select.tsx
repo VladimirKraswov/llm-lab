@@ -4,3 +4,19 @@ import { cn } from '../../lib/utils';
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...props} className={cn('w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-slate-500', props.className)} />;
 }
+
+export function SelectTrigger({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={className}>{children}</div>;
+}
+
+export function SelectValue({ placeholder }: { placeholder?: string }) {
+  return <span>{placeholder}</span>;
+}
+
+export function SelectContent({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}
+
+export function SelectItem({ value, children }: { value: string; children: React.ReactNode }) {
+  return <option value={value}>{children}</option>;
+}

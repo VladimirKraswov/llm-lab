@@ -55,9 +55,12 @@ CONFIG.syntheticGeneratedDir = path.join(CONFIG.syntheticDir, 'generated');
 CONFIG.syntheticCuratedDir = path.join(CONFIG.syntheticDir, 'curated');
 CONFIG.syntheticFinalDir = path.join(CONFIG.syntheticDir, 'final');
 
+CONFIG.evalDatasetsDir = path.join(CONFIG.workspace, 'evaluations', 'datasets');
+
 CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json');
 CONFIG.settingsFile = path.join(CONFIG.stateDir, 'settings.json');
 CONFIG.datasetsFile = path.join(CONFIG.stateDir, 'datasets.json');
+CONFIG.evalDatasetsFile = path.join(CONFIG.stateDir, 'eval-datasets.json');
 CONFIG.runtimeFile = path.join(CONFIG.stateDir, 'runtime.json');
 CONFIG.modelsFile = path.join(CONFIG.stateDir, 'models.json');
 CONFIG.lorasFile = path.join(CONFIG.stateDir, 'loras.json');

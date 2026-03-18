@@ -1,4 +1,4 @@
-import { Boxes, BrainCircuit, Database, SplitSquareHorizontal } from 'lucide-react';
+import { Boxes, BrainCircuit, Database, SplitSquareHorizontal, CheckCircle } from 'lucide-react';
 
 export function JobTypeBadge({ type }: { type: string }) {
   if (type === 'synthetic-gen') {
@@ -6,6 +6,15 @@ export function JobTypeBadge({ type }: { type: string }) {
       <span className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">
         <Database size={12} />
         Synthetic Dataset
+      </span>
+    );
+  }
+
+  if (type === 'eval-benchmark') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300">
+        <CheckCircle size={12} />
+        Evaluation
       </span>
     );
   }

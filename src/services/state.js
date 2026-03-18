@@ -160,6 +160,7 @@ async function ensureWorkspace() {
     CONFIG.mergedModelsDir,
     CONFIG.packagesDir,
     CONFIG.logsDir,
+    CONFIG.evalDatasetsDir,
   ]) {
     await ensureDir(dir);
   }
@@ -167,6 +168,7 @@ async function ensureWorkspace() {
   if (!exists(CONFIG.settingsFile)) await writeJson(CONFIG.settingsFile, DEFAULT_SETTINGS);
   if (!exists(CONFIG.jobsFile)) await writeJson(CONFIG.jobsFile, []);
   if (!exists(CONFIG.datasetsFile)) await writeJson(CONFIG.datasetsFile, []);
+  if (!exists(CONFIG.evalDatasetsFile)) await writeJson(CONFIG.evalDatasetsFile, []);
   if (!exists(CONFIG.modelsFile)) await writeJson(CONFIG.modelsFile, []);
   if (!exists(CONFIG.lorasFile)) await writeJson(CONFIG.lorasFile, []);
   if (!exists(CONFIG.runtimeFile)) await writeJson(CONFIG.runtimeFile, DEFAULT_RUNTIME);
@@ -276,6 +278,32 @@ async function removeDataset(id) {
     const list = await getDatasets();
     const next = list.filter((x) => x.id !== id);
     await saveDatasets(next);
+    return next;
+  });
+}
+
+async function getEvalDatasets() {
+  return (await readJson(CONFIG.evalDatasetsFile, [])) || [];
+}
+
+async function saveEvalDatasets(items) {
+  await writeJson(CONFIG.evalDatasetsFile, items);
+}
+
+async function addEvalDataset(meta) {
+  return withLock(CONFIG.evalDatasetsFile, async () => {
+    const list = await getEvalDatasets();
+    list.push(meta);
+    await saveEvalDatasets(list);
+    return meta;
+  });
+}
+
+async function removeEvalDataset(id) {
+  return withLock(CONFIG.evalDatasetsFile, async () => {
+    const list = await getEvalDatasets();
+    const next = list.filter((x) => x.id !== id);
+    await saveEvalDatasets(next);
     return next;
   });
 }
@@ -504,6 +532,10 @@ module.exports = {
   saveDatasets,
   addDataset,
   removeDataset,
+  getEvalDatasets,
+  saveEvalDatasets,
+  addEvalDataset,
+  removeEvalDataset,
   getModels,
   saveModels,
   addModel,
