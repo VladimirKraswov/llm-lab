@@ -209,8 +209,7 @@ export default function EvaluationsPage() {
 
             {importContent && (
               <Button
-                variant="outline"
-                className="w-full text-xs h-8 border-dashed"
+                className="w-full text-xs h-8 border border-slate-600 bg-transparent hover:bg-slate-800"
                 onClick={() => validateMutation.mutate(importContent)}
                 disabled={validateMutation.isPending}
               >
@@ -311,9 +310,7 @@ export default function EvaluationsPage() {
                     </Select>
 
                     <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-9 w-9 text-slate-500 hover:text-rose-400"
+                      className="h-9 w-9 text-slate-500 hover:text-rose-400 border border-slate-700 bg-transparent hover:bg-slate-800"
                       onClick={() => handleRemoveTarget(index)}
                       disabled={targets.length === 1}
                     >
@@ -323,9 +320,7 @@ export default function EvaluationsPage() {
                 ))}
               </div>
               <Button
-                variant="outline"
-                size="sm"
-                className="w-full border-dashed text-xs text-slate-400"
+                className="w-full border border-dashed border-slate-600 text-xs text-slate-400 bg-transparent hover:bg-slate-800"
                 onClick={handleAddTarget}
               >
                 <Plus size={14} className="mr-2" /> Add another model
@@ -380,17 +375,13 @@ export default function EvaluationsPage() {
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-1">
                         <Button
-                          variant="secondary"
-                          size="sm"
-                          className="h-8 text-xs"
+                          className="h-8 text-xs bg-slate-700 hover:bg-slate-600"
                           onClick={() => showPreview(ds.id)}
                         >
                           <Eye size={14} className="mr-1" /> Preview
                         </Button>
                         <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0 text-slate-500 hover:text-rose-400"
+                          className="h-8 w-8 p-0 text-slate-500 hover:text-rose-400 border border-slate-700 bg-transparent hover:bg-slate-800"
                           onClick={() => deleteMutation.mutate(ds.id)}
                         >
                           <Trash2 size={14} />
@@ -496,9 +487,8 @@ export default function EvaluationsPage() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                        className="h-8 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 border border-transparent bg-transparent"
+                        onClick={(e) => { e.stopPropagation(); navigate(`/jobs/${run.id}`); }}
                       >
                         <BarChart3 size={14} className="mr-1" /> View Results
                       </Button>
@@ -528,9 +518,7 @@ export default function EvaluationsPage() {
                 <div className="text-xs text-slate-500 mt-1">{previewDataset.samplesCount} total samples</div>
               </div>
               <Button
-                variant="ghost"
-                size="icon"
-                className="hover:bg-slate-800"
+                className="p-2 hover:bg-slate-800 rounded-md border border-slate-700 bg-transparent"
                 onClick={() => setIsPreviewOpen(false)}
               >
                 <X size={20} />

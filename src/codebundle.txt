@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-18T08:36:53.608Z
+generated: 2026-03-18T14:01:10.969Z
 
 
 
@@ -324,9 +324,12 @@ CONFIG.syntheticGeneratedDir = path.join(CONFIG.syntheticDir, 'generated');
 CONFIG.syntheticCuratedDir = path.join(CONFIG.syntheticDir, 'curated');
 CONFIG.syntheticFinalDir = path.join(CONFIG.syntheticDir, 'final');
 
+CONFIG.evalDatasetsDir = path.join(CONFIG.workspace, 'evaluations', 'datasets');
+
 CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json');
 CONFIG.settingsFile = path.join(CONFIG.stateDir, 'settings.json');
 CONFIG.datasetsFile = path.join(CONFIG.stateDir, 'datasets.json');
+CONFIG.evalDatasetsFile = path.join(CONFIG.stateDir, 'eval-datasets.json');
 CONFIG.runtimeFile = path.join(CONFIG.stateDir, 'runtime.json');
 CONFIG.modelsFile = path.join(CONFIG.stateDir, 'models.json');
 CONFIG.lorasFile = path.join(CONFIG.stateDir, 'loras.json');
@@ -2667,13 +2670,13 @@ def main():
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
         args=training_args,
         dataset_text_field="text",
         packing=False,
-        dataset_num_proc=1,
     )
+
     trainer.add_callback(JsonMetricsCallback())
 
     report(40)
@@ -2787,6 +2790,83 @@ if __name__ == "__main__":
     except Exception:
         traceback.print_exc()
         sys.exit(1)
+
+
+path: /routes/comparisons.js
+----------------------------------------
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+
+const { startComparisonJob } = require('../services/comparisons');
+const { getJobById } = require('../services/jobs');
+
+const router = express.Router();
+
+router.post('/run', async (req, res) => {
+  try {
+    const { name, targets, prompts, inference } = req.body || {};
+    const result = await startComparisonJob({
+      name,
+      targets,
+      prompts,
+      inference,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:jobId', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.jobId);
+    if (job.type !== 'model-comparison') {
+      return res.status(404).json({ error: 'comparison job not found' });
+    }
+    res.json(job);
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:jobId/result', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.jobId);
+    if (job.type !== 'model-comparison') {
+      return res.status(404).json({ error: 'comparison job not found' });
+    }
+
+    const filePath = path.join(job.outputDir, 'comparison-result.json');
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'comparison-result.json not found' });
+    }
+
+    res.sendFile(filePath);
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:jobId/summary', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.jobId);
+    if (job.type !== 'model-comparison') {
+      return res.status(404).json({ error: 'comparison job not found' });
+    }
+
+    const filePath = path.join(job.outputDir, 'summary.json');
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'summary.json not found' });
+    }
+
+    res.sendFile(filePath);
+  } catch (err) {
+    res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
 
 
 path: /routes/dashboard.js
@@ -2915,6 +2995,163 @@ router.delete('/:id', async (req, res) => {
     res.json(await deleteDataset(req.params.id));
   } catch (err) {
     res.status(404).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
+
+
+path: /routes/evaluations.js
+----------------------------------------
+const express = require('express');
+const router = express.Router();
+const fs = require('fs');
+const path = require('path');
+const { importEvalDataset, runEvaluationBenchmark, parseEvalTxt } = require('../services/evaluations');
+const { getEvalDatasets, removeEvalDataset, getJobById, getJobs } = require('../services/state');
+const { uid } = require('../utils/ids');
+
+// Validate eval dataset before import
+router.post('/datasets/validate', async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content) return res.status(400).json({ error: 'content is required' });
+    const { samples, errors } = parseEvalTxt(content);
+    res.json({
+      validCount: samples.length,
+      invalidCount: errors.length,
+      errors: errors.slice(0, 50), // Limit errors
+      preview: samples.slice(0, 5)
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Import eval dataset
+router.post('/datasets/import', async (req, res) => {
+  try {
+    const { name, content } = req.body;
+    if (!name || !content) {
+      return res.status(400).json({ error: 'name and content are required' });
+    }
+    const meta = await importEvalDataset(name, content);
+    res.json(meta);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// List eval datasets
+router.get('/datasets', async (req, res) => {
+  try {
+    const list = await getEvalDatasets();
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get eval dataset preview
+router.get('/datasets/:id', async (req, res) => {
+  try {
+    const list = await getEvalDatasets();
+    const ds = list.find(x => x.id === req.params.id);
+    if (!ds) return res.status(404).json({ error: 'dataset not found' });
+
+    const samples = JSON.parse(fs.readFileSync(ds.jsonPath, 'utf8'));
+    res.json({ ...ds, samples });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete eval dataset
+router.delete('/datasets/:id', async (req, res) => {
+  try {
+    const list = await getEvalDatasets();
+    const ds = list.find(x => x.id === req.params.id);
+    if (ds) {
+      if (fs.existsSync(ds.jsonPath)) fs.unlinkSync(ds.jsonPath);
+      if (fs.existsSync(ds.txtPath)) fs.unlinkSync(ds.txtPath);
+    }
+    await removeEvalDataset(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Run eval benchmark
+router.post('/benchmark', async (req, res) => {
+  try {
+    const { datasetId, targets, name } = req.body;
+    if (!datasetId || !targets || !Array.isArray(targets) || targets.length === 0) {
+      return res.status(400).json({ error: 'datasetId and targets array are required' });
+    }
+
+    const jobId = uid('job');
+    // We don't await runEvaluationBenchmark as it runs in background
+    runEvaluationBenchmark(jobId, { datasetId, targets, name }).catch(err => {
+      console.error('Benchmark background error:', err);
+    });
+
+    res.json({ jobId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get eval run result (detailed result.json)
+router.get('/jobs/:id/result', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'job not found' });
+
+    const resultFile = path.join(job.outputDir, 'result.json');
+    if (!fs.existsSync(resultFile)) {
+      return res.status(404).json({ error: 'result.json not found yet. The job might still be running or failed.' });
+    }
+    const data = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Export summary CSV
+router.get('/jobs/:id/summary', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'job not found' });
+
+    const csvFile = path.join(job.outputDir, 'summary.csv');
+    if (!fs.existsSync(csvFile)) {
+      return res.status(404).json({ error: 'summary.csv not found' });
+    }
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=summary_${req.params.id}.csv`);
+    fs.createReadStream(csvFile).pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Export detailed CSV
+router.get('/jobs/:id/detailed', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'job not found' });
+
+    const csvFile = path.join(job.outputDir, 'detailed.csv');
+    if (!fs.existsSync(csvFile)) {
+      return res.status(404).json({ error: 'detailed.csv not found' });
+    }
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=detailed_${req.params.id}.csv`);
+    fs.createReadStream(csvFile).pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -4091,6 +4328,8 @@ const lorasRoute = require('./routes/loras');
 const logsRoute = require('./routes/logs');
 const monitorRoute = require('./routes/monitor');
 const syntheticRoute = require('./routes/synthetic');
+const comparisonsRoute = require('./routes/comparisons');
+const evaluationsRoute = require('./routes/evaluations');
 
 function buildCorsOrigin() {
   if (!CONFIG.webUiOrigin || CONFIG.webUiOrigin === '*') {
@@ -4133,6 +4372,8 @@ async function main() {
   app.use('/logs', logsRoute);
   app.use('/monitor', monitorRoute);
   app.use('/synthetic', syntheticRoute);
+  app.use('/comparisons', comparisonsRoute);
+  app.use('/evaluations', evaluationsRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -4152,7 +4393,9 @@ async function main() {
         req.path.startsWith('/loras') ||
         req.path.startsWith('/logs') ||
         req.path.startsWith('/monitor') ||
-        req.path.startsWith('/synthetic')
+        req.path.startsWith('/synthetic') ||
+        req.path.startsWith('/comparisons') ||
+        req.path.startsWith('/evaluations')
       ) {
         return next();
       }
@@ -4258,6 +4501,526 @@ async function runBenchmark(modelId) {
 }
 
 module.exports = { runBenchmark };
+
+
+path: /services/comparisons.js
+----------------------------------------
+const fs = require('fs');
+const fsp = require('fs/promises');
+const path = require('path');
+
+const { CONFIG } = require('../config');
+const { uid, nowIso } = require('../utils/ids');
+const logger = require('../utils/logger');
+const { emitEvent } = require('./events');
+const {
+  upsertJob,
+  getModelById,
+  getLoraById,
+  getSettings,
+} = require('./state');
+const { startRuntime, stopRuntime } = require('./runtime');
+const providers = require('./providers');
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function appendLog(logFile, line) {
+  const text = `[${new Date().toISOString()}] ${line}\n`;
+  await fsp.mkdir(path.dirname(logFile), { recursive: true });
+  await fsp.appendFile(logFile, text, 'utf8');
+}
+
+function ensureArray(value, name) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${name} must be a non-empty array`);
+  }
+}
+
+function safePromptPreview(prompt, maxLen = 120) {
+  const text = String(prompt || '').replace(/\s+/g, ' ').trim();
+  return text.length > maxLen ? `${text.slice(0, maxLen)}…` : text;
+}
+
+async function resolveComparisonTarget(target) {
+  if (!target || typeof target !== 'object') {
+    throw new Error('Each target must be an object');
+  }
+
+  const type = String(target.type || '').trim();
+
+  if (type === 'model') {
+    const model = await getModelById(target.id);
+    if (!model) {
+      throw new Error(`Model not found: ${target.id}`);
+    }
+    if (model.status !== 'ready') {
+      throw new Error(`Model is not ready: ${model.name}`);
+    }
+
+    return {
+      id: model.id,
+      type: 'model',
+      label: model.name,
+      runtimeConfig: {
+        model: model.path,
+        baseModel: model.name,
+        activeModelId: model.id,
+        activeModelName: model.name,
+        activeLoraId: null,
+        activeLoraName: null,
+      },
+      meta: {
+        modelId: model.id,
+        modelPath: model.path,
+        quantization: model.quantization || 'none',
+        source: 'model',
+      },
+    };
+  }
+
+  if (type === 'lora') {
+    const lora = await getLoraById(target.id);
+    if (!lora) {
+      throw new Error(`LoRA not found: ${target.id}`);
+    }
+    if (lora.status !== 'ready') {
+      throw new Error(`LoRA is not ready: ${lora.name}`);
+    }
+
+    let baseModelPath = lora.baseModelRef;
+    let baseModelName = lora.baseModelName;
+
+    if (lora.baseModelId) {
+      const baseModel = await getModelById(lora.baseModelId);
+      if (baseModel?.path) {
+        baseModelPath = baseModel.path;
+        baseModelName = baseModel.name;
+      }
+    }
+
+    if (!baseModelPath) {
+      throw new Error(`Unable to resolve base model for LoRA: ${lora.name}`);
+    }
+
+    return {
+      id: lora.id,
+      type: 'lora',
+      label: lora.name,
+      runtimeConfig: {
+        model: baseModelPath,
+        baseModel: baseModelName || baseModelPath,
+        activeModelId: lora.baseModelId || null,
+        activeModelName: baseModelName || null,
+        activeLoraId: lora.id,
+        activeLoraName: lora.name,
+        loraPath: lora.adapterPath,
+        loraName: lora.name,
+      },
+      meta: {
+        loraId: lora.id,
+        loraPath: lora.adapterPath,
+        baseModelId: lora.baseModelId || null,
+        baseModelPath,
+        source: 'lora',
+      },
+    };
+  }
+
+  throw new Error(`Unsupported target type: ${type}`);
+}
+
+async function parseResponseSafely(response) {
+  const text = await response.text();
+  try {
+    return {
+      rawText: text,
+      json: JSON.parse(text),
+    };
+  } catch {
+    return {
+      rawText: text,
+      json: null,
+    };
+  }
+}
+
+async function runSinglePrompt({ provider, runtimeState, prompt, options, logFile }) {
+  const startedAt = nowIso();
+  const started = Date.now();
+
+  const effectiveModel =
+    runtimeState.activeLoraName ||
+    runtimeState.activeModelName ||
+    runtimeState.model;
+
+  try {
+    await appendLog(logFile, `Prompt started: "${safePromptPreview(prompt)}"`);
+
+    const response = await provider.chat(runtimeState, {
+      model: effectiveModel,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: Number(options.max_tokens ?? 256),
+      temperature: Number(options.temperature ?? 0),
+      stream: false,
+    });
+
+    const durationSec = (Date.now() - started) / 1000;
+    const parsed = await parseResponseSafely(response);
+
+    if (!response.ok) {
+      await appendLog(
+        logFile,
+        `Prompt failed with HTTP ${response.status}: "${safePromptPreview(prompt)}"`
+      );
+
+      return {
+        prompt,
+        startedAt,
+        durationSec,
+        ok: false,
+        error: `HTTP ${response.status}`,
+        raw: parsed.json || parsed.rawText,
+      };
+    }
+
+    const choice = parsed.json?.choices?.[0];
+    const content = choice?.message?.content;
+
+    if (typeof content !== 'string') {
+      await appendLog(
+        logFile,
+        `Prompt failed: response has no choices[0].message.content`
+      );
+
+      return {
+        prompt,
+        startedAt,
+        durationSec,
+        ok: false,
+        error: `Response does not contain choices[0].message.content`,
+        raw: parsed.json || parsed.rawText,
+      };
+    }
+
+    await appendLog(
+      logFile,
+      `Prompt completed in ${durationSec.toFixed(3)}s: "${safePromptPreview(prompt)}"`
+    );
+
+    return {
+      prompt,
+      startedAt,
+      durationSec,
+      ok: true,
+      response: {
+        content,
+        finish_reason: choice?.finish_reason || null,
+        usage: parsed.json?.usage || null,
+      },
+      raw: parsed.json || parsed.rawText,
+    };
+  } catch (err) {
+    const durationSec = (Date.now() - started) / 1000;
+    await appendLog(
+      logFile,
+      `Prompt exception in ${durationSec.toFixed(3)}s: ${String(err.message || err)}`
+    );
+
+    return {
+      prompt,
+      startedAt,
+      durationSec,
+      ok: false,
+      error: String(err.message || err),
+    };
+  }
+}
+
+function buildSummary(allResults) {
+  const targetSummaries = allResults.map((entry) => {
+    const total = entry.results.length;
+    const okCount = entry.results.filter((x) => x.ok).length;
+    const failedCount = total - okCount;
+
+    const durations = entry.results
+      .map((x) => Number(x.durationSec))
+      .filter((x) => Number.isFinite(x));
+
+    const completionTokens = entry.results
+      .map((x) => Number(x.response?.usage?.completion_tokens))
+      .filter((x) => Number.isFinite(x));
+
+    return {
+      target: entry.target,
+      provider: entry.runtime.provider,
+      totalPrompts: total,
+      okCount,
+      failedCount,
+      avgDurationSec: durations.length
+        ? Number((durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(3))
+        : null,
+      avgCompletionTokens: completionTokens.length
+        ? Number(
+            (
+              completionTokens.reduce((a, b) => a + b, 0) / completionTokens.length
+            ).toFixed(3)
+          )
+        : null,
+    };
+  });
+
+  return {
+    targets: targetSummaries.length,
+    promptsPerTarget: allResults[0]?.results?.length || 0,
+    targetSummaries,
+  };
+}
+
+async function saveComparisonArtifacts(outputDir, payload) {
+  await fsp.mkdir(outputDir, { recursive: true });
+
+  const resultFile = path.join(outputDir, 'comparison-result.json');
+  const summaryFile = path.join(outputDir, 'summary.json');
+
+  await fsp.writeFile(resultFile, JSON.stringify(payload.results, null, 2), 'utf8');
+  await fsp.writeFile(summaryFile, JSON.stringify(payload.summary, null, 2), 'utf8');
+
+  return {
+    resultFile,
+    summaryFile,
+  };
+}
+
+async function executeComparisonJob(job, resolvedTargets, prompts, inferenceOptions) {
+  await appendLog(job.logFile, `Comparison job started: ${job.id}`);
+  await appendLog(job.logFile, `Targets: ${resolvedTargets.length}, prompts: ${prompts.length}`);
+
+  const allResults = [];
+
+  try {
+    for (let index = 0; index < resolvedTargets.length; index += 1) {
+      const target = resolvedTargets[index];
+
+      await appendLog(
+        job.logFile,
+        `Preparing target ${index + 1}/${resolvedTargets.length}: ${target.label} (${target.type})`
+      );
+
+      await stopRuntime().catch(() => {});
+      await sleep(1000);
+
+      const runtimeState = await startRuntime({
+        ...target.runtimeConfig,
+        provider: inferenceOptions.provider,
+        port: Number(inferenceOptions.port || CONFIG.vllmPort),
+        maxModelLen: inferenceOptions.maxModelLen,
+        gpuMemoryUtilization: inferenceOptions.gpuMemoryUtilization,
+        tensorParallelSize: inferenceOptions.tensorParallelSize,
+        quantization: inferenceOptions.quantization,
+        dtype: inferenceOptions.dtype,
+        trustRemoteCode: inferenceOptions.trustRemoteCode,
+        enforceEager: inferenceOptions.enforceEager,
+        kvCacheDtype: inferenceOptions.kvCacheDtype,
+        maxNumSeqs: inferenceOptions.maxNumSeqs,
+        swapSpace: inferenceOptions.swapSpace,
+      });
+
+      const providerId = runtimeState.providerResolved || 'vllm';
+      const provider = providers.PROVIDERS[providerId];
+
+      if (!provider) {
+        throw new Error(`Resolved provider not found: ${providerId}`);
+      }
+
+      await appendLog(
+        job.logFile,
+        `Target runtime started with provider=${providerId}, model=${runtimeState.model}, lora=${runtimeState.activeLoraName || '-'}`
+      );
+
+      const promptResults = [];
+      for (const prompt of prompts) {
+        const row = await runSinglePrompt({
+          provider,
+          runtimeState,
+          prompt,
+          options: inferenceOptions,
+          logFile: job.logFile,
+        });
+        promptResults.push(row);
+      }
+
+      allResults.push({
+        target: {
+          id: target.id,
+          type: target.type,
+          label: target.label,
+          meta: target.meta,
+        },
+        runtime: {
+          provider: providerId,
+          model: runtimeState.model,
+          activeModelName: runtimeState.activeModelName || null,
+          activeLoraName: runtimeState.activeLoraName || null,
+          port: runtimeState.port,
+        },
+        results: promptResults,
+      });
+
+      const summary = buildSummary(allResults);
+      await saveComparisonArtifacts(job.outputDir, {
+        results: allResults,
+        summary,
+      });
+
+      const updated = await upsertJob({
+        ...job,
+        summaryMetrics: summary,
+      });
+      emitEvent('job_updated', updated);
+    }
+
+    await stopRuntime().catch(() => {});
+    const summary = buildSummary(allResults);
+    await saveComparisonArtifacts(job.outputDir, {
+      results: allResults,
+      summary,
+    });
+
+    const completedJob = await upsertJob({
+      ...job,
+      status: 'completed',
+      finishedAt: nowIso(),
+      pid: null,
+      summaryMetrics: summary,
+      artifacts: [
+        {
+          name: 'comparison-result.json',
+          path: path.join(job.outputDir, 'comparison-result.json'),
+        },
+        {
+          name: 'summary.json',
+          path: path.join(job.outputDir, 'summary.json'),
+        },
+      ],
+      error: null,
+    });
+
+    emitEvent('job_updated', completedJob);
+    await appendLog(job.logFile, `Comparison job completed: ${job.id}`);
+    logger.info('Comparison job completed', { jobId: job.id });
+
+    return completedJob;
+  } catch (err) {
+    await stopRuntime().catch(() => {});
+    await appendLog(job.logFile, `Comparison job failed: ${String(err.message || err)}`);
+
+    const failedJob = await upsertJob({
+      ...job,
+      status: 'failed',
+      finishedAt: nowIso(),
+      pid: null,
+      error: String(err.message || err),
+    });
+
+    emitEvent('job_updated', failedJob);
+    logger.error('Comparison job failed', {
+      jobId: job.id,
+      error: String(err.message || err),
+    });
+
+    throw err;
+  }
+}
+
+async function startComparisonJob({ name, targets, prompts, inference = {} }) {
+  ensureArray(targets, 'targets');
+  ensureArray(prompts, 'prompts');
+
+  const cleanedPrompts = prompts
+    .map((x) => String(x || '').trim())
+    .filter(Boolean);
+
+  ensureArray(cleanedPrompts, 'prompts');
+
+  const settings = await getSettings();
+  const resolvedTargets = [];
+
+  for (const target of targets) {
+    resolvedTargets.push(await resolveComparisonTarget(target));
+  }
+
+  const jobId = uid('job');
+  const outputDir = path.join(CONFIG.trainingOutputsDir, jobId);
+  const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
+
+  await fsp.mkdir(outputDir, { recursive: true });
+  await fsp.mkdir(CONFIG.logsDir, { recursive: true });
+
+  const job = {
+    id: jobId,
+    type: 'model-comparison',
+    name: String(name || `comparison-${jobId}`).trim(),
+    status: 'running',
+    createdAt: nowIso(),
+    startedAt: nowIso(),
+    finishedAt: null,
+    outputDir,
+    logFile,
+    pid: process.pid,
+    error: null,
+    tags: [],
+    notes: '',
+    artifacts: [],
+    summaryMetrics: {},
+    paramsSnapshot: {
+      targets,
+      prompts: cleanedPrompts,
+      inference,
+    },
+  };
+
+  await upsertJob(job);
+  emitEvent('job_updated', job);
+
+  const inferenceOptions = {
+    provider: inference.provider ?? settings.inference?.provider ?? 'auto',
+    port: Number(inference.port ?? settings.inference?.port ?? CONFIG.vllmPort),
+    max_tokens: Number(inference.max_tokens ?? 256),
+    temperature: Number(inference.temperature ?? 0),
+    maxModelLen: inference.maxModelLen ?? settings.inference?.maxModelLen,
+    gpuMemoryUtilization:
+      inference.gpuMemoryUtilization ?? settings.inference?.gpuMemoryUtilization,
+    tensorParallelSize:
+      inference.tensorParallelSize ?? settings.inference?.tensorParallelSize,
+    quantization: inference.quantization ?? settings.inference?.quantization,
+    dtype: inference.dtype ?? settings.inference?.dtype,
+    trustRemoteCode: inference.trustRemoteCode ?? settings.inference?.trustRemoteCode,
+    enforceEager: inference.enforceEager ?? settings.inference?.enforceEager,
+    kvCacheDtype: inference.kvCacheDtype ?? settings.inference?.kvCacheDtype,
+    maxNumSeqs: inference.maxNumSeqs ?? settings.inference?.maxNumSeqs,
+    swapSpace: inference.swapSpace ?? settings.inference?.swapSpace,
+  };
+
+  // Запуск асинхронно, чтобы HTTP-ответ вернулся сразу.
+  setImmediate(() => {
+    executeComparisonJob(job, resolvedTargets, cleanedPrompts, inferenceOptions).catch(
+      () => {}
+    );
+  });
+
+  return {
+    ok: true,
+    jobId,
+    outputDir,
+    logFile,
+  };
+}
+
+module.exports = {
+  startComparisonJob,
+};
 
 
 path: /services/datasets.js
@@ -4546,6 +5309,452 @@ module.exports = {
   deleteDataset,
   validateJsonl,
   validateItems,
+};
+
+
+path: /services/evaluations.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+const { CONFIG } = require('../config');
+const { nowIso, uid } = require('../utils/ids');
+const { getEvalDatasets, addEvalDataset, removeEvalDataset, upsertJob, getJobs, getSettings } = require('./state');
+const { emitEvent } = require('./events');
+const logger = require('../utils/logger');
+const { startRuntime, stopRuntime } = require('./runtime');
+
+// We can't import from '../lib/api' because it's frontend code.
+// We should use the providers service directly for inference during evaluation.
+const providers = require('./providers');
+
+/**
+ * Parses the unified eval text format.
+ *
+ * Format:
+ * Вопрос: ...
+ * Ответ: ...
+ * Оценка: x/10
+ */
+function parseEvalTxt(content, sourceName = 'unknown') {
+  const samples = [];
+  const errors = [];
+  // Split by double newline to separate potential blocks
+  const blocks = content.replace(/\r\n/g, '\n').split(/\n\n+/);
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i].trim();
+    if (!block) continue;
+
+    const qMatch = block.match(/Вопрос:\s*([\s\S]*?)(?=\nОтвет:|$)/i);
+    const aMatch = block.match(/Ответ:\s*([\s\S]*?)(?=\nОценка:|$)/i);
+    const sMatch = block.match(/Оценка:\s*(\d+(?:\.\d+)?)\/10/i);
+
+    if (qMatch && aMatch && sMatch) {
+      const score = parseFloat(sMatch[1]);
+      if (isNaN(score) || score < 0 || score > 10) {
+        errors.push({ index: i, error: 'Оценка должна быть числом от 0 до 10', raw: block.slice(0, 100) });
+        continue;
+      }
+
+      samples.push({
+        id: uid('sample'),
+        question: qMatch[1].trim(),
+        candidateAnswer: aMatch[1].trim(),
+        referenceScore: score,
+        sourceFile: sourceName,
+        topic: null
+      });
+    } else {
+      const missing = [];
+      if (!qMatch) missing.push('Вопрос');
+      if (!aMatch) missing.push('Ответ');
+      if (!sMatch) missing.push('Оценка (x/10)');
+      errors.push({ index: i, error: `Отсутствуют поля: ${missing.join(', ')}`, raw: block.slice(0, 100) });
+    }
+  }
+
+  return { samples, errors };
+}
+
+/**
+ * Robust score parsing from model response.
+ * Handles JSON, "Оценка: X/10", "score: X", or just "X/10".
+ */
+function parseModelScore(text) {
+  if (!text) return { score: null, feedback: null, parseError: true };
+
+  const cleanText = text.trim();
+
+  // Try JSON first
+  try {
+    const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const data = JSON.parse(jsonMatch[0]);
+      let score = null;
+      if (typeof data.score === 'number') score = data.score;
+      else if (typeof data.score === 'string') score = parseFloat(data.score);
+
+      if (score !== null && !isNaN(score)) {
+        return {
+          score: score,
+          feedback: data.feedback || data.reasoning || null,
+          parseError: false
+        };
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  // Regex fallbacks
+  const patterns = [
+    /Оценка:\s*(\d+(?:\.\d+)?)/i,
+    /score:\s*(\d+(?:\.\d+)?)/i,
+    /Score:\s*(\d+(?:\.\d+)?)/i,
+    /Итог:\s*(\d+(?:\.\d+)?)/i,
+    /(\d+(?:\.\d+)?)\/10/,
+    /(\d+(?:\.\d+)?)\s*из\s*10/i,
+    /Final score\s*=\s*(\d+(?:\.\d+)?)/i,
+    /^(\d+(?:\.\d+)?)$/m, // Just a number on a line
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleanText.match(pattern);
+    if (match) {
+      const score = parseFloat(match[1]);
+      if (!isNaN(score)) {
+        return {
+          score: score,
+          feedback: cleanText,
+          parseError: false
+        };
+      }
+    }
+  }
+
+  return { score: null, feedback: cleanText, parseError: true };
+}
+
+function calculateMetrics(results) {
+  const validResults = results.filter(r => !r.parseError && r.predictedScore !== null);
+  const n = validResults.length;
+
+  if (n === 0) return {
+    samples: results.length,
+    parseSuccessRate: 0,
+    mae: null,
+    rmse: null,
+    exactRate: 0,
+    within1Rate: 0,
+    within2Rate: 0,
+    meanSignedError: null,
+    avgPredictedScore: null,
+    parseErrors: results.filter(r => r.parseError).length,
+    emptyResponses: results.filter(r => !r.rawResponse || r.rawResponse.trim() === '').length
+  };
+
+  let sumAbsError = 0;
+  let sumSqError = 0;
+  let sumSignedError = 0;
+  let sumPredictedScore = 0;
+  let exactCount = 0;
+  let within1Count = 0;
+  let within2Count = 0;
+
+  for (const r of validResults) {
+    const error = r.predictedScore - r.referenceScore;
+    const absError = Math.abs(error);
+
+    sumAbsError += absError;
+    sumSqError += error * error;
+    sumSignedError += error;
+    sumPredictedScore += r.predictedScore;
+
+    if (absError === 0) exactCount++;
+    if (absError <= 1) within1Count++;
+    if (absError <= 2) within2Count++;
+
+    r.absoluteError = absError;
+  }
+
+  return {
+    samples: results.length,
+    parseSuccessRate: n / results.length,
+    mae: sumAbsError / n,
+    rmse: Math.sqrt(sumSqError / n),
+    exactRate: exactCount / n,
+    within1Rate: within1Count / n,
+    within2Rate: within2Count / n,
+    meanSignedError: sumSignedError / n,
+    avgPredictedScore: sumPredictedScore / n,
+    parseErrors: results.filter(r => r.parseError).length,
+    emptyResponses: results.filter(r => !r.rawResponse || r.rawResponse.trim() === '').length
+  };
+}
+
+async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
+  const datasets = await getEvalDatasets();
+  const dsMeta = datasets.find(d => d.id === datasetId);
+  if (!dsMeta) throw new Error('Evaluation dataset not found');
+
+  const samples = JSON.parse(fs.readFileSync(dsMeta.jsonPath, 'utf8'));
+
+  let job = await upsertJob({
+    id: jobId,
+    name: name || `Eval: ${dsMeta.name}`,
+    type: 'eval-benchmark',
+    status: 'running',
+    startedAt: nowIso(),
+    datasetId,
+    paramsSnapshot: { datasetId, targets },
+    progress: {
+      currentStage: 'Initializing',
+      totalModels: targets.length,
+      processedModels: 0,
+      totalSamples: samples.length,
+      processedSamples: 0,
+      totalProgressPercent: 0
+    }
+  });
+
+  const outputDir = path.join(CONFIG.trainingOutputsDir, jobId);
+  fs.mkdirSync(outputDir, { recursive: true });
+  const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
+  const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+
+  const writeLog = (msg, level = 'info') => {
+    const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}\n`;
+    logStream.write(line);
+    if (level === 'error') logger.error(`Eval ${jobId}: ${msg}`);
+    else logger.info(`Eval ${jobId}: ${msg}`);
+    emitEvent('job_log', { jobId, message: msg, level, timestamp: new Date().toISOString() });
+  };
+
+  const updateProgress = async (patch) => {
+    job = await upsertJob({
+      id: jobId,
+      progress: { ...(job.progress || {}), ...patch, updatedAt: nowIso() }
+    });
+    emitEvent('job_updated', job);
+  };
+
+  const benchmarkResults = [];
+  const modelSummaries = [];
+
+  try {
+    writeLog(`Evaluation started. Dataset: ${dsMeta.name} (${samples.length} samples), Models: ${targets.length}`);
+
+    for (let tIdx = 0; tIdx < targets.length; tIdx++) {
+      const target = targets[tIdx];
+      writeLog(`[${tIdx + 1}/${targets.length}] Starting evaluation for target: ${target.label}`);
+
+      await updateProgress({
+        currentStage: `Loading model: ${target.label}`,
+        currentModelId: target.id,
+        currentModelName: target.label,
+        modelProgressPercent: 0,
+        processedSamples: 0
+      });
+
+      const runtimeParams = {
+        model: target.modelPath,
+        loraPath: target.loraPath || null,
+        loraName: target.loraName || null,
+        gpuMemoryUtilization: 0.7,
+      };
+
+      writeLog(`Launching runtime for ${target.label}...`);
+      const runtime = await startRuntime(runtimeParams);
+      const providerId = runtime.providerResolved;
+      const provider = providers.PROVIDERS[providerId];
+      writeLog(`Runtime ready (Provider: ${providerId})`);
+
+      await updateProgress({ currentStage: `Evaluating: ${target.label}` });
+
+      const modelResults = [];
+
+      for (let i = 0; i < samples.length; i++) {
+        const sample = samples[i];
+        const sampleProgress = Math.round(((i + 1) / samples.length) * 100);
+
+        if (i % 5 === 0 || i === samples.length - 1) {
+          writeLog(`[${target.label}] Progress: ${i + 1}/${samples.length} (${sampleProgress}%)`);
+          await updateProgress({
+            processedSamples: i + 1,
+            modelProgressPercent: sampleProgress,
+            totalProgressPercent: Math.round(((tIdx * samples.length + i + 1) / (targets.length * samples.length)) * 100)
+          });
+        }
+
+        const prompt = `Ты — беспристрастный эксперт-оценщик. Тебе предоставлен вопрос и ответ кандидата.
+Твоя задача — выставить оценку от 0 до 10, где 10 — идеально правильный и полный ответ, а 0 — совершенно неверный или отсутствующий ответ.
+
+Вопрос: ${sample.question}
+Ответ кандидата: ${sample.candidateAnswer}
+
+Верни результат в формате JSON:
+{
+  "score": <число от 0 до 10>,
+  "feedback": "<краткое пояснение>"
+}
+
+Если не можешь вернуть JSON, обязательно напиши в конце: "Оценка: X/10"`;
+
+        try {
+          const response = await provider.chat(runtime, {
+            messages: [{ role: 'user', content: prompt }],
+            stream: false,
+            max_tokens: 512,
+            temperature: 0,
+          });
+
+          const rawResponse = response.choices[0]?.message?.content || '';
+          const parsed = parseModelScore(rawResponse);
+
+          if (parsed.parseError) {
+            writeLog(`Parse error for sample ${sample.id} in model ${target.label}. Raw: ${rawResponse.slice(0, 50)}...`, 'warn');
+          }
+
+          modelResults.push({
+            sampleId: sample.id,
+            question: sample.question,
+            candidateAnswer: sample.candidateAnswer,
+            referenceScore: sample.referenceScore,
+            predictedScore: parsed.score,
+            predictedFeedback: parsed.feedback,
+            rawResponse: rawResponse,
+            parseError: parsed.parseError,
+            absoluteError: parsed.score !== null ? Math.abs(parsed.score - sample.referenceScore) : null,
+          });
+        } catch (err) {
+          writeLog(`Error evaluating sample ${sample.id}: ${err.message}`, 'error');
+          modelResults.push({
+            sampleId: sample.id,
+            question: sample.question,
+            candidateAnswer: sample.candidateAnswer,
+            referenceScore: sample.referenceScore,
+            predictedScore: null,
+            predictedFeedback: null,
+            rawResponse: null,
+            parseError: true,
+            error: err.message,
+            absoluteError: null,
+          });
+        }
+      }
+
+      const metrics = calculateMetrics(modelResults);
+      modelSummaries.push({
+        modelId: target.id,
+        modelLabel: target.label,
+        ...metrics
+      });
+
+      benchmarkResults.push({
+        target,
+        results: modelResults,
+        metrics
+      });
+
+      writeLog(`Finished target ${target.label}. MAE: ${metrics.mae?.toFixed(3) || 'N/A'}, Parse Errors: ${metrics.parseErrors}`);
+
+      await updateProgress({ processedModels: tIdx + 1 });
+      await stopRuntime();
+    }
+
+    writeLog('Saving results and artifacts...');
+    await updateProgress({ currentStage: 'Saving results' });
+
+    const resultPath = path.join(outputDir, 'result.json');
+    fs.writeFileSync(resultPath, JSON.stringify(benchmarkResults, null, 2));
+
+    const summaryCsvPath = path.join(outputDir, 'summary.csv');
+    const summaryHeaders = ['model', 'samples', 'parseSuccessRate', 'mae', 'rmse', 'exactRate', 'within1Rate', 'within2Rate', 'meanSignedError', 'avgPredictedScore'];
+    const summaryRows = modelSummaries.map(m => [
+      m.modelLabel, m.samples, m.parseSuccessRate, m.mae, m.rmse, m.exactRate, m.within1Rate, m.within2Rate, m.meanSignedError, m.avgPredictedScore
+    ].join(','));
+    fs.writeFileSync(summaryCsvPath, [summaryHeaders.join(','), ...summaryRows].join('\n'));
+
+    const detailedCsvPath = path.join(outputDir, 'detailed.csv');
+    const detailedHeaders = ['sampleId', 'modelId', 'modelLabel', 'referenceScore', 'predictedScore', 'absoluteError', 'parseError', 'question', 'candidateAnswer', 'predictedFeedback', 'rawResponse'];
+    const detailedRows = [];
+    for (const modelRun of benchmarkResults) {
+      for (const r of modelRun.results) {
+        detailedRows.push([
+          r.sampleId, modelRun.target.id, modelRun.target.label, r.referenceScore, r.predictedScore, r.absoluteError, r.parseError,
+          `"${(r.question || '').replace(/"/g, '""')}"`,
+          `"${(r.candidateAnswer || '').replace(/"/g, '""')}"`,
+          `"${(r.predictedFeedback || '').replace(/"/g, '""')}"`,
+          `"${(r.rawResponse || '').replace(/"/g, '""')}"`
+        ].join(','));
+      }
+    }
+    fs.writeFileSync(detailedCsvPath, [detailedHeaders.join(','), ...detailedRows].join('\n'));
+
+    await upsertJob({
+      id: jobId,
+      status: 'completed',
+      finishedAt: nowIso(),
+      summaryMetrics: {
+        models: modelSummaries
+      },
+      artifacts: [
+        { name: 'result.json', path: resultPath, size: fs.statSync(resultPath).size },
+        { name: 'summary.csv', path: summaryCsvPath, size: fs.statSync(summaryCsvPath).size },
+        { name: 'detailed.csv', path: detailedCsvPath, size: fs.statSync(detailedCsvPath).size },
+      ]
+    });
+
+    writeLog('Evaluation completed successfully.');
+    emitEvent('job_updated', { id: jobId, status: 'completed' });
+
+  } catch (err) {
+    writeLog(`CRITICAL ERROR: ${err.message}`, 'error');
+    await upsertJob({
+      id: jobId,
+      status: 'failed',
+      finishedAt: nowIso(),
+      error: err.message
+    });
+    emitEvent('job_updated', { id: jobId, status: 'failed', error: err.message });
+  } finally {
+    logStream.end();
+  }
+}
+
+async function importEvalDataset(name, text) {
+  const { samples, errors } = parseEvalTxt(text, name);
+  if (samples.length === 0) {
+    throw new Error('No valid evaluation samples found. ' + (errors[0]?.error || 'Check the format.'));
+  }
+
+  const id = uid('eval-ds');
+  const jsonPath = path.join(CONFIG.evalDatasetsDir, `${id}.json`);
+  const txtPath = path.join(CONFIG.evalDatasetsDir, `${id}.txt`);
+
+  fs.mkdirSync(CONFIG.evalDatasetsDir, { recursive: true });
+  fs.writeFileSync(jsonPath, JSON.stringify(samples, null, 2));
+  fs.writeFileSync(txtPath, text);
+
+  const meta = {
+    id,
+    name,
+    samplesCount: samples.length,
+    jsonPath,
+    txtPath,
+    createdAt: nowIso()
+  };
+
+  await addEvalDataset(meta);
+  return meta;
+}
+
+module.exports = {
+  importEvalDataset,
+  runEvaluationBenchmark,
+  parseEvalTxt,
+  parseModelScore,
+  calculateMetrics
 };
 
 
@@ -7434,6 +8643,7 @@ async function ensureWorkspace() {
     CONFIG.mergedModelsDir,
     CONFIG.packagesDir,
     CONFIG.logsDir,
+    CONFIG.evalDatasetsDir,
   ]) {
     await ensureDir(dir);
   }
@@ -7441,6 +8651,7 @@ async function ensureWorkspace() {
   if (!exists(CONFIG.settingsFile)) await writeJson(CONFIG.settingsFile, DEFAULT_SETTINGS);
   if (!exists(CONFIG.jobsFile)) await writeJson(CONFIG.jobsFile, []);
   if (!exists(CONFIG.datasetsFile)) await writeJson(CONFIG.datasetsFile, []);
+  if (!exists(CONFIG.evalDatasetsFile)) await writeJson(CONFIG.evalDatasetsFile, []);
   if (!exists(CONFIG.modelsFile)) await writeJson(CONFIG.modelsFile, []);
   if (!exists(CONFIG.lorasFile)) await writeJson(CONFIG.lorasFile, []);
   if (!exists(CONFIG.runtimeFile)) await writeJson(CONFIG.runtimeFile, DEFAULT_RUNTIME);
@@ -7550,6 +8761,32 @@ async function removeDataset(id) {
     const list = await getDatasets();
     const next = list.filter((x) => x.id !== id);
     await saveDatasets(next);
+    return next;
+  });
+}
+
+async function getEvalDatasets() {
+  return (await readJson(CONFIG.evalDatasetsFile, [])) || [];
+}
+
+async function saveEvalDatasets(items) {
+  await writeJson(CONFIG.evalDatasetsFile, items);
+}
+
+async function addEvalDataset(meta) {
+  return withLock(CONFIG.evalDatasetsFile, async () => {
+    const list = await getEvalDatasets();
+    list.push(meta);
+    await saveEvalDatasets(list);
+    return meta;
+  });
+}
+
+async function removeEvalDataset(id) {
+  return withLock(CONFIG.evalDatasetsFile, async () => {
+    const list = await getEvalDatasets();
+    const next = list.filter((x) => x.id !== id);
+    await saveEvalDatasets(next);
     return next;
   });
 }
@@ -7778,6 +9015,10 @@ module.exports = {
   saveDatasets,
   addDataset,
   removeDataset,
+  getEvalDatasets,
+  saveEvalDatasets,
+  addEvalDataset,
+  removeEvalDataset,
   getModels,
   saveModels,
   addModel,
@@ -8997,8 +10238,8 @@ module.exports = {
 
 
 === SUMMARY ===
-included: 43
+included: 47
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 246033
+totalBytes(approx): 283847

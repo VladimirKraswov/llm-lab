@@ -9,6 +9,7 @@ import {
   CheckCircle, Loader2, BarChart2, List, Activity, Terminal,
   ArrowUpDown, Filter, Search
 } from 'lucide-react';
+import { Input } from './ui/input';
 
 export function JobDetailsEval({ job }: { job: Job }) {
   const isRunning = job.status === 'running';
@@ -220,7 +221,8 @@ export function JobDetailsEval({ job }: { job: Job }) {
             <CardTitle className="text-sm">Metric Leaderboard</CardTitle>
             <div className="flex gap-2">
               <a href={`${apiBase}/evaluations/jobs/${job.id}/summary`} download>
-                <Button variant="outline" size="sm" className="h-8 text-xs">
+                {/* Исправлено: убран variant и size, добавлены классы для outline-стиля */}
+                <Button className="h-8 text-xs border border-slate-600 bg-transparent hover:bg-slate-800">
                   <Download size={12} className="mr-1" /> Export CSV
                 </Button>
               </a>
@@ -321,7 +323,8 @@ export function JobDetailsEval({ job }: { job: Job }) {
               </div>
             </div>
             <a href={`${apiBase}/evaluations/jobs/${job.id}/result`} download>
-              <Button size="sm" className="h-8 text-xs bg-slate-800 hover:bg-slate-700">
+              {/* Исправлено: убран size, оставлены классы */}
+              <Button className="h-8 text-xs bg-slate-800 hover:bg-slate-700">
                 <Download size={14} className="mr-1" /> Export detailed JSON
               </Button>
             </a>

@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/web/src
 ignore: .codebundleignore
-generated: 2026-03-18T08:43:27.875Z
+generated: 2026-03-18T14:07:19.029Z
 
 
 
@@ -20,6 +20,8 @@ import ModelsPage from './features/models/page';
 import LorasPage from './features/loras/page';
 import LogsPage from './features/logs/logs-page';
 import MonitorPage from './features/monitor/monitor-page';
+import ComparisonsPage from './features/comparisons/page';
+import EvaluationsPage from './features/evaluations/evaluations-page';
 import { useEvents } from './hooks/use-events';
 
 export default function App() {
@@ -33,6 +35,8 @@ export default function App() {
         <Route path="loras" element={<LorasPage />} />
         <Route path="datasets" element={<DatasetsPage />} />
         <Route path="training" element={<TrainingPage />} />
+        <Route path="comparisons" element={<ComparisonsPage />} />
+        <Route path="evaluations" element={<EvaluationsPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="runtime" element={<RuntimePage />} />
         <Route path="playground" element={<PlaygroundPage />} />
@@ -311,7 +315,21 @@ bundle().catch(err => {
 path: /components/app-shell.tsx
 ----------------------------------------
 import { NavLink, Outlet } from 'react-router-dom';
-import { Bot, Database, Gauge, PlayCircle, Settings, TerminalSquare, Workflow, Boxes, Layers3, ScrollText, Activity } from 'lucide-react';
+import {
+  Bot,
+  Database,
+  Gauge,
+  PlayCircle,
+  Settings,
+  TerminalSquare,
+  Workflow,
+  Boxes,
+  Layers3,
+  ScrollText,
+  Activity,
+  SplitSquareHorizontal,
+  CheckCircle,
+} from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const items = [
@@ -320,6 +338,8 @@ const items = [
   { to: '/app/loras', label: 'LoRAs', icon: Layers3 },
   { to: '/app/datasets', label: 'Datasets', icon: Database },
   { to: '/app/training', label: 'Training', icon: Workflow },
+  { to: '/app/comparisons', label: 'Comparisons', icon: SplitSquareHorizontal },
+  { to: '/app/evaluations', label: 'Evaluations', icon: CheckCircle },
   { to: '/app/jobs', label: 'Jobs', icon: TerminalSquare },
   { to: '/app/runtime', label: 'Runtime', icon: PlayCircle },
   { to: '/app/playground', label: 'Playground', icon: Bot },
@@ -368,6 +388,956 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+    </div>
+  );
+}
+
+
+path: /components/job-details-comparison.tsx
+----------------------------------------
+import { useQuery } from '@tanstack/react-query';
+import type { Job } from '../lib/api';
+import { api } from '../lib/api';
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { ResponseRenderer } from './response-renderer';
+import { Button } from './ui/button';
+
+function fmtDate(value?: string | null) {
+  if (!value) return '—';
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return String(value);
+  }
+}
+
+function isNotFoundError(error: unknown) {
+  const message = String((error as Error)?.message || '').toLowerCase();
+  return message.includes('not found') || message.includes('404');
+}
+
+function truncateText(value: unknown, max = 140) {
+  const text = String(value ?? '');
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
+
+function CompactStat({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <div className="rounded-xl bg-slate-950/40 p-3">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 text-sm font-semibold text-white">{value}</div>
+    </div>
+  );
+}
+
+function escapeCsvCell(value: unknown) {
+  const text = String(value ?? '');
+  const escaped = text.replace(/"/g, '""');
+  return `"${escaped}"`;
+}
+
+function downloadCsv(filename: string, headers: string[], rows: Array<Array<unknown>>) {
+  const csv = [
+    headers.map(escapeCsvCell).join(','),
+    ...rows.map((row) => row.map(escapeCsvCell).join(',')),
+  ].join('\n');
+
+  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  URL.revokeObjectURL(url);
+}
+
+export function JobDetailsComparison({ job }: { job: Job }) {
+  const isCompleted = job.status === 'completed';
+  const isFailed = job.status === 'failed';
+  const isStopped = job.status === 'stopped';
+
+  const summaryQuery = useQuery({
+    queryKey: ['comparison-summary', job.id],
+    queryFn: () => api.getComparisonSummary(job.id),
+    enabled: !!job.id && isCompleted,
+    refetchInterval: false,
+    retry: false,
+  });
+
+  const resultQuery = useQuery({
+    queryKey: ['comparison-result', job.id],
+    queryFn: () => api.getComparisonResult(job.id),
+    enabled: !!job.id && isCompleted,
+    refetchInterval: false,
+    retry: false,
+  });
+
+  const prompts = Array.isArray(job.paramsSnapshot?.prompts) ? job.paramsSnapshot.prompts : [];
+  const targets = Array.isArray(job.paramsSnapshot?.targets) ? job.paramsSnapshot.targets : [];
+
+  function exportSummaryCsv() {
+    const items = summaryQuery.data?.targetSummaries || [];
+    if (!items.length) return;
+
+    downloadCsv(
+      `comparison-summary-${job.id}.csv`,
+      [
+        'target_label',
+        'target_id',
+        'target_type',
+        'provider',
+        'ok_count',
+        'failed_count',
+        'avg_duration_sec',
+        'avg_completion_tokens',
+      ],
+      items.map((row: any) => [
+        row.target?.label || '',
+        row.target?.id || '',
+        row.target?.type || '',
+        row.provider || '',
+        row.okCount ?? '',
+        row.failedCount ?? '',
+        row.avgDurationSec ?? '',
+        row.avgCompletionTokens ?? '',
+      ]),
+    );
+  }
+
+  function exportDetailedCsv() {
+    const targetResults = resultQuery.data || [];
+    if (!targetResults.length) return;
+
+    const rows: Array<Array<unknown>> = [];
+
+    for (const targetResult of targetResults as any[]) {
+      const targetLabel = targetResult.target?.label || '';
+      const targetId = targetResult.target?.id || '';
+      const targetType = targetResult.target?.type || '';
+      const provider = targetResult.runtime?.provider || '';
+
+      for (const row of targetResult.results || []) {
+        rows.push([
+          targetLabel,
+          targetId,
+          targetType,
+          provider,
+          row.ok ? 'ok' : 'failed',
+          row.durationSec ?? '',
+          row.prompt ?? '',
+          row.response?.content ?? '',
+          row.error ?? '',
+          row.response?.usage?.prompt_tokens ?? '',
+          row.response?.usage?.completion_tokens ?? '',
+          row.response?.usage?.total_tokens ?? '',
+        ]);
+      }
+    }
+
+    downloadCsv(
+      `comparison-detailed-${job.id}.csv`,
+      [
+        'target_label',
+        'target_id',
+        'target_type',
+        'provider',
+        'status',
+        'duration_sec',
+        'prompt',
+        'response',
+        'error',
+        'prompt_tokens',
+        'completion_tokens',
+        'total_tokens',
+      ],
+      rows,
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card className="border-indigo-500/20 bg-indigo-500/5">
+        <CardHeader>
+          <CardTitle>Model Comparison Job</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <CompactStat label="Created" value={fmtDate(job.createdAt)} />
+            <CompactStat label="Finished" value={fmtDate(job.finishedAt)} />
+            <CompactStat
+              label="Targets"
+              value={job.summaryMetrics?.targets ?? targets.length ?? '—'}
+            />
+            <CompactStat
+              label="Prompts / target"
+              value={job.summaryMetrics?.promptsPerTarget ?? prompts.length ?? '—'}
+            />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl bg-slate-950/30 p-3">
+              <div className="mb-2 text-xs font-medium text-slate-400">Requested targets</div>
+              {!targets.length ? (
+                <div className="text-sm text-slate-500">No targets snapshot available.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="text-left text-slate-500">
+                      <tr>
+                        <th className="pb-2 pr-4 font-medium">Type</th>
+                        <th className="pb-2 pr-4 font-medium">ID</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {targets.map((target: any, idx: number) => (
+                        <tr key={idx} className="border-t border-slate-800/70">
+                          <td className="py-2 pr-4 text-slate-300">{target.type || '—'}</td>
+                          <td className="py-2 pr-4 text-white">{target.id || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl bg-slate-950/30 p-3">
+              <div className="mb-2 text-xs font-medium text-slate-400">Prompts</div>
+              {!prompts.length ? (
+                <div className="text-sm text-slate-500">No prompts snapshot available.</div>
+              ) : (
+                <div className="max-h-[260px] overflow-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="text-left text-slate-500">
+                      <tr>
+                        <th className="pb-2 pr-4 font-medium">#</th>
+                        <th className="pb-2 pr-4 font-medium">Preview</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prompts.map((prompt: string, idx: number) => (
+                        <tr key={idx} className="border-t border-slate-800/70 align-top">
+                          <td className="py-2 pr-4 text-slate-500">{idx + 1}</td>
+                          <td className="py-2 pr-4 text-slate-200 whitespace-pre-wrap">
+                            {truncateText(prompt, 180)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Summary</CardTitle>
+          <Button
+            onClick={exportSummaryCsv}
+            disabled={!summaryQuery.data?.targetSummaries?.length}
+            className="bg-slate-800 hover:bg-slate-700"
+          >
+            Export summary CSV
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {!isCompleted ? (
+            <div className="text-sm text-slate-500">
+              {isFailed || isStopped
+                ? 'Summary is unavailable because the comparison job did not complete.'
+                : 'Summary will appear after the comparison job is completed.'}
+            </div>
+          ) : summaryQuery.isLoading ? (
+            <div className="text-sm text-slate-500">Loading summary…</div>
+          ) : summaryQuery.error ? (
+            isNotFoundError(summaryQuery.error) ? (
+              <div className="text-sm text-slate-500">Summary is not available yet.</div>
+            ) : (
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-3 text-sm text-rose-300">
+                {(summaryQuery.error as Error).message}
+              </div>
+            )
+          ) : summaryQuery.data?.targetSummaries?.length ? (
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-900/80 text-left text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Target</th>
+                    <th className="px-3 py-2 font-medium">Type</th>
+                    <th className="px-3 py-2 font-medium">Provider</th>
+                    <th className="px-3 py-2 font-medium">OK</th>
+                    <th className="px-3 py-2 font-medium">Failed</th>
+                    <th className="px-3 py-2 font-medium">Avg duration</th>
+                    <th className="px-3 py-2 font-medium">Avg tokens</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summaryQuery.data.targetSummaries.map((row: any, idx: number) => (
+                    <tr key={idx} className="border-t border-slate-800 align-top">
+                      <td className="px-3 py-2 text-white">
+                        {row.target?.label || row.target?.id || '—'}
+                      </td>
+                      <td className="px-3 py-2 text-slate-300">{row.target?.type || '—'}</td>
+                      <td className="px-3 py-2 text-slate-300">{row.provider || '—'}</td>
+                      <td className="px-3 py-2 text-emerald-300">{row.okCount ?? '—'}</td>
+                      <td className="px-3 py-2 text-rose-300">{row.failedCount ?? '—'}</td>
+                      <td className="px-3 py-2 text-slate-300">
+                        {typeof row.avgDurationSec === 'number'
+                          ? `${row.avgDurationSec.toFixed(3)}s`
+                          : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-slate-300">
+                        {typeof row.avgCompletionTokens === 'number'
+                          ? row.avgCompletionTokens.toFixed(2)
+                          : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-sm text-slate-500">No summary yet.</div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Detailed results</CardTitle>
+          <Button
+            onClick={exportDetailedCsv}
+            disabled={!resultQuery.data?.length}
+            className="bg-slate-800 hover:bg-slate-700"
+          >
+            Export detailed CSV
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {!isCompleted ? (
+            <div className="text-sm text-slate-500">
+              {isFailed || isStopped
+                ? 'Detailed results are unavailable because the comparison job did not complete.'
+                : 'Detailed results will appear after the comparison job is completed.'}
+            </div>
+          ) : resultQuery.isLoading ? (
+            <div className="text-sm text-slate-500">Loading results…</div>
+          ) : resultQuery.error ? (
+            isNotFoundError(resultQuery.error) ? (
+              <div className="text-sm text-slate-500">Detailed results are not available yet.</div>
+            ) : (
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-3 text-sm text-rose-300">
+                {(resultQuery.error as Error).message}
+              </div>
+            )
+          ) : resultQuery.data?.length ? (
+            <div className="space-y-4">
+              {resultQuery.data.map((targetResult: any, targetIdx: number) => (
+                <div
+                  key={targetIdx}
+                  className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950/20"
+                >
+                  <div className="border-b border-slate-800 bg-slate-900/70 px-4 py-3">
+                    <div className="text-sm font-semibold text-white">
+                      {targetResult.target?.label ||
+                        targetResult.target?.id ||
+                        `Target ${targetIdx + 1}`}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {targetResult.target?.type || '—'} · provider{' '}
+                      {targetResult.runtime?.provider || '—'}
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead className="text-left text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 font-medium">#</th>
+                          <th className="px-3 py-2 font-medium">Status</th>
+                          <th className="px-3 py-2 font-medium">Duration</th>
+                          <th className="px-3 py-2 font-medium">Prompt</th>
+                          <th className="px-3 py-2 font-medium">Result</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(targetResult.results || []).map((row: any, rowIdx: number) => (
+                          <tr key={rowIdx} className="border-t border-slate-800 align-top">
+                            <td className="px-3 py-2 text-slate-500">{rowIdx + 1}</td>
+                            <td className="px-3 py-2">
+                              <span
+                                className={`inline-flex rounded-full px-2 py-1 text-xs ${
+                                  row.ok
+                                    ? 'bg-emerald-500/15 text-emerald-300'
+                                    : 'bg-rose-500/15 text-rose-300'
+                                }`}
+                              >
+                                {row.ok ? 'ok' : 'failed'}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-slate-300">
+                              {typeof row.durationSec === 'number'
+                                ? `${row.durationSec.toFixed(3)}s`
+                                : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-slate-200 whitespace-pre-wrap">
+                              <details>
+                                <summary className="cursor-pointer text-slate-300 hover:text-white">
+                                  {truncateText(row.prompt, 120)}
+                                </summary>
+                                <div className="mt-2 whitespace-pre-wrap rounded-lg bg-slate-950/70 p-3 text-xs text-slate-300">
+                                  {row.prompt}
+                                </div>
+                              </details>
+                            </td>
+                            <td className="px-3 py-2">
+                              {row.ok ? (
+                                <details>
+                                  <summary className="cursor-pointer text-slate-300 hover:text-white">
+                                    {truncateText(row.response?.content || '', 140) || 'Open response'}
+                                  </summary>
+                                  <div className="mt-3 rounded-lg bg-slate-950/70 p-3">
+                                    <ResponseRenderer content={row.response?.content || ''} />
+                                  </div>
+                                </details>
+                              ) : (
+                                <div className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3 text-sm text-rose-300">
+                                  {row.error || 'Unknown comparison error'}
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-slate-500">No detailed results yet.</div>
+          )}
+        </CardContent>
+      </Card>
+
+      {job.error ? (
+        <Card className="border-rose-500/20 bg-rose-500/5">
+          <CardHeader>
+            <CardTitle>Job error</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-xl border border-rose-500/20 bg-slate-950/60 p-3 text-sm text-rose-200">
+              {job.error}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+
+path: /components/job-details-eval.tsx
+----------------------------------------
+import { useQuery } from '@tanstack/react-query';
+import type { Job, EvalBenchmarkResult, EvalSampleResult, LogEntry } from '../lib/api';
+import { api, apiBase } from '../lib/api';
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Button } from './ui/button';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import {
+  ChevronDown, ChevronUp, Download, MessageSquare, AlertTriangle,
+  CheckCircle, Loader2, BarChart2, List, Activity, Terminal,
+  ArrowUpDown, Filter, Search
+} from 'lucide-react';
+import { Input } from './ui/input';
+
+export function JobDetailsEval({ job }: { job: Job }) {
+  const isRunning = job.status === 'running';
+  const isCompleted = job.status === 'completed';
+  const isFailed = job.status === 'failed';
+
+  const [filterType, setFilterType] = useState<'all' | 'errors' | 'big-diff'>('all');
+  const [expandedRows, setExpandedRows] = useState<string[]>([]);
+  const [activeTab, setActiveTab] = useState<'summary' | 'details' | 'logs'>('summary');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Sorting state
+  const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
+
+  const resultQuery = useQuery({
+    queryKey: ['eval-result', job.id],
+    queryFn: () => api.getEvalBenchmarkResult(job.id),
+    enabled: !!job.id && (isCompleted || isFailed), // Try even if failed to see partial results
+    retry: false
+  });
+
+  const logsQuery = useQuery({
+    queryKey: ['job-logs', job.id],
+    queryFn: () => api.getJobLogs(job.id, 500),
+    refetchInterval: isRunning ? 3000 : false,
+  });
+
+  const summary = job.summaryMetrics?.models || [];
+
+  const bestModel = useMemo(() => {
+    if (!summary.length) return null;
+    return [...summary].sort((a, b) => (a.mae ?? Infinity) - (b.mae ?? Infinity))[0];
+  }, [summary]);
+
+  const filteredResults = useMemo(() => {
+    if (!resultQuery.data) return [];
+
+    const samples: Record<string, {
+      id: string;
+      question: string;
+      candidateAnswer: string;
+      referenceScore: number;
+      predictions: Record<string, EvalSampleResult>;
+    }> = {};
+
+    resultQuery.data.forEach(modelResult => {
+      modelResult.results.forEach(r => {
+        if (!samples[r.sampleId]) {
+          samples[r.sampleId] = {
+            id: r.sampleId,
+            question: r.question,
+            candidateAnswer: r.candidateAnswer,
+            referenceScore: r.referenceScore,
+            predictions: {}
+          };
+        }
+        samples[r.sampleId].predictions[modelResult.target.id] = r;
+      });
+    });
+
+    let list = Object.values(samples);
+
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(s => s.question.toLowerCase().includes(q) || s.candidateAnswer.toLowerCase().includes(q));
+    }
+
+    if (filterType === 'errors') {
+      list = list.filter(s => Object.values(s.predictions).some(p => p.parseError));
+    } else if (filterType === 'big-diff') {
+      list = list.filter(s => Object.values(s.predictions).some(p => (p.absoluteError ?? 0) > 2));
+    }
+
+    return list;
+  }, [resultQuery.data, filterType, searchQuery]);
+
+  const toggleRow = (id: string) => {
+    setExpandedRows(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const handleSort = (key: string) => {
+    let direction: 'asc' | 'desc' = 'asc';
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    }
+    setSortConfig({ key, direction });
+  };
+
+  const sortedSummary = useMemo(() => {
+    if (!sortConfig) return summary;
+    return [...summary].sort((a, b) => {
+      const aVal = (a as any)[sortConfig.key];
+      const bVal = (b as any)[sortConfig.key];
+      if (aVal === bVal) return 0;
+      if (aVal === null || aVal === undefined) return 1;
+      if (bVal === null || bVal === undefined) return -1;
+      return sortConfig.direction === 'asc' ? (aVal < bVal ? -1 : 1) : (aVal > bVal ? -1 : 1);
+    });
+  }, [summary, sortConfig]);
+
+  if (isRunning) {
+    const progress = job.progress || {};
+    return (
+      <div className="space-y-6">
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card className="bg-blue-500/5 border-blue-500/20">
+            <CardContent className="pt-6">
+              <div className="text-[10px] text-blue-400 uppercase font-bold mb-1">Overall Progress</div>
+              <div className="text-2xl font-bold text-white mb-2">{progress.totalProgressPercent || 0}%</div>
+              <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                <div
+                  className="bg-blue-500 h-full transition-all duration-500"
+                  style={{ width: `${progress.totalProgressPercent || 0}%` }}
+                />
+              </div>
+              <div className="mt-2 text-xs text-slate-500">
+                Model {progress.processedModels || 0} of {progress.totalModels || 0}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-emerald-500/5 border-emerald-500/20">
+            <CardContent className="pt-6">
+              <div className="text-[10px] text-emerald-400 uppercase font-bold mb-1">Current Model</div>
+              <div className="text-sm font-bold text-white truncate mb-2">{progress.currentModelName || 'Initializing...'}</div>
+              <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                <div
+                  className="bg-emerald-500 h-full transition-all duration-500"
+                  style={{ width: `${progress.modelProgressPercent || 0}%` }}
+                />
+              </div>
+              <div className="mt-2 text-xs text-slate-500">
+                Samples {progress.processedSamples || 0} of {progress.totalSamples || 0} ({progress.modelProgressPercent || 0}%)
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-amber-500/5 border-amber-500/20">
+            <CardContent className="pt-6">
+              <div className="text-[10px] text-amber-400 uppercase font-bold mb-1">Current Stage</div>
+              <div className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+                <Loader2 size={14} className="animate-spin text-amber-500" />
+                {progress.currentStage || 'Starting...'}
+              </div>
+              <div className="text-[10px] text-slate-500">
+                Started at: {new Date(job.startedAt!).toLocaleTimeString()}
+              </div>
+              <div className="mt-2 text-[10px] text-slate-600 truncate">
+                Job ID: {job.id}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Terminal size={16} /> Structured Logs
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <LogPanel logs={logsQuery.data?.content || ''} />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (isFailed && !resultQuery.data) {
+    return (
+      <div className="py-12 text-center space-y-4 bg-rose-500/5 rounded-2xl border border-dashed border-rose-500/20">
+        <AlertTriangle size={48} className="mx-auto text-rose-500 opacity-50" />
+        <div>
+          <h3 className="text-lg font-bold text-white">Evaluation Failed</h3>
+          <p className="text-sm text-slate-400 max-w-md mx-auto">{job.error || 'Unknown error occurred during benchmark.'}</p>
+        </div>
+        <Button onClick={() => setActiveTab('logs')} className="bg-slate-800">Check Logs</Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Tabs */}
+      <div className="flex bg-slate-900 p-1 rounded-xl w-fit border border-slate-800">
+        <button
+          onClick={() => setActiveTab('summary')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition ${activeTab === 'summary' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+        >
+          <BarChart2 size={14} /> Summary
+        </button>
+        <button
+          onClick={() => setActiveTab('details')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition ${activeTab === 'details' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+        >
+          <List size={14} /> Sample Details
+        </button>
+        <button
+          onClick={() => setActiveTab('logs')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition ${activeTab === 'logs' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+        >
+          <Terminal size={14} /> Logs
+        </button>
+      </div>
+
+      {activeTab === 'summary' && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm">Metric Leaderboard</CardTitle>
+            <div className="flex gap-2">
+              <a href={`${apiBase}/evaluations/jobs/${job.id}/summary`} download>
+                {/* Исправлено: убран variant и size, добавлены классы для outline-стиля */}
+                <Button className="h-8 text-xs border border-slate-600 bg-transparent hover:bg-slate-800">
+                  <Download size={12} className="mr-1" /> Export CSV
+                </Button>
+              </a>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <table className="w-full text-[11px] text-left">
+                <thead className="bg-slate-900/80 text-slate-500 border-b border-slate-800">
+                  <tr>
+                    <th className="px-4 py-3 cursor-pointer hover:text-white" onClick={() => handleSort('modelLabel')}>
+                      Model {sortConfig?.key === 'modelLabel' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th className="px-3 py-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('mae')}>
+                      MAE {sortConfig?.key === 'mae' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th className="px-3 py-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('rmse')}>
+                      RMSE {sortConfig?.key === 'rmse' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th className="px-3 py-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('exactRate')}>
+                      Exact {sortConfig?.key === 'exactRate' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th className="px-3 py-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('within1Rate')}>
+                      ±1 {sortConfig?.key === 'within1Rate' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th className="px-3 py-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('within2Rate')}>
+                      ±2 {sortConfig?.key === 'within2Rate' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th className="px-3 py-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('meanSignedError')}>
+                      Bias {sortConfig?.key === 'meanSignedError' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th className="px-3 py-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('parseSuccessRate')}>
+                      Parse OK {sortConfig?.key === 'parseSuccessRate' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {sortedSummary.map(m => (
+                    <tr key={m.modelId} className={`hover:bg-slate-800/20 transition-colors ${m.modelId === bestModel?.modelId ? 'bg-emerald-500/5' : ''}`}>
+                      <td className="px-4 py-3 font-medium text-white">
+                        <div className="flex items-center gap-2">
+                          {m.modelId === bestModel?.modelId && <CheckCircle size={14} className="text-emerald-400 shrink-0" />}
+                          <span className="truncate">{m.modelLabel}</span>
+                        </div>
+                      </td>
+                      <td className={`px-3 py-3 text-center font-bold ${m.modelId === bestModel?.modelId ? 'text-emerald-400' : 'text-blue-300'}`}>
+                        {m.mae?.toFixed(3) || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-center text-slate-400">{m.rmse?.toFixed(3) || '—'}</td>
+                      <td className="px-3 py-3 text-center text-slate-400">{(m.exactRate * 100).toFixed(1)}%</td>
+                      <td className="px-3 py-3 text-center text-slate-400">{(m.within1Rate * 100).toFixed(1)}%</td>
+                      <td className="px-3 py-3 text-center text-slate-400">{(m.within2Rate * 100).toFixed(1)}%</td>
+                      <td className={`px-3 py-3 text-center ${Math.abs(m.meanSignedError ?? 0) > 0.5 ? 'text-amber-400' : 'text-slate-400'}`}>
+                        {m.meanSignedError?.toFixed(3) || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-center text-slate-500">{(m.parseSuccessRate * 100).toFixed(0)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {activeTab === 'details' && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <div className="relative w-64">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
+                <Input
+                  placeholder="Search in samples..."
+                  className="pl-9 h-8 text-xs bg-slate-900 border-slate-800"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                />
+              </div>
+              <div className="flex bg-slate-900 rounded-lg p-1 border border-slate-800">
+                <button
+                  onClick={() => setFilterType('all')}
+                  className={`px-3 py-1 rounded text-[10px] uppercase font-bold transition ${filterType === 'all' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => setFilterType('big-diff')}
+                  className={`px-3 py-1 rounded text-[10px] uppercase font-bold transition ${filterType === 'big-diff' ? 'bg-amber-600 text-white' : 'text-slate-500'}`}
+                >
+                  Big Diff
+                </button>
+                <button
+                  onClick={() => setFilterType('errors')}
+                  className={`px-3 py-1 rounded text-[10px] uppercase font-bold transition ${filterType === 'errors' ? 'bg-rose-600 text-white' : 'text-slate-500'}`}
+                >
+                  Errors
+                </button>
+              </div>
+            </div>
+            <a href={`${apiBase}/evaluations/jobs/${job.id}/result`} download>
+              {/* Исправлено: убран size, оставлены классы */}
+              <Button className="h-8 text-xs bg-slate-800 hover:bg-slate-700">
+                <Download size={14} className="mr-1" /> Export detailed JSON
+              </Button>
+            </a>
+          </div>
+
+          <div className="space-y-2">
+            {filteredResults.map(sample => (
+              <div key={sample.id} className="rounded-xl border border-slate-800 bg-slate-950/20 overflow-hidden">
+                <div
+                  className="px-4 py-3 bg-slate-900/50 flex items-center justify-between cursor-pointer hover:bg-slate-900 transition"
+                  onClick={() => toggleRow(sample.id)}
+                >
+                  <div className="flex-1 min-w-0 mr-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[10px] text-slate-500 uppercase font-bold">Reference: {sample.referenceScore}/10</span>
+                      {Object.values(sample.predictions).some(p => p.parseError) && <span className="px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-500 text-[8px] font-bold uppercase">Parse Error</span>}
+                    </div>
+                    <div className="text-xs text-white truncate font-medium">{sample.question}</div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="flex gap-1">
+                      {Object.entries(sample.predictions).map(([mid, p]) => (
+                        <div
+                          key={mid}
+                          title={`${p.modelLabel}: ${p.parseError ? 'Error' : p.predictedScore + '/10'}`}
+                          className={`w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold border ${
+                            p.parseError
+                              ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                              : (p.absoluteError ?? 0) <= 1
+                              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                              : (p.absoluteError ?? 0) > 2
+                              ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                              : 'bg-blue-500/10 border-blue-500/30 text-blue-300'
+                          }`}
+                        >
+                          {p.parseError ? 'ERR' : p.predictedScore?.toFixed(0)}
+                        </div>
+                      ))}
+                    </div>
+                    {expandedRows.includes(sample.id) ? <ChevronUp size={16} className="text-slate-500" /> : <ChevronDown size={16} className="text-slate-500" />}
+                  </div>
+                </div>
+
+                {expandedRows.includes(sample.id) && (
+                  <div className="p-4 border-t border-slate-800 bg-slate-950/50 space-y-4">
+                    <div className="grid gap-6 lg:grid-cols-2">
+                      <div className="space-y-4">
+                        <div>
+                          <div className="text-[10px] text-slate-500 uppercase font-bold mb-1.5">Question</div>
+                          <div className="text-xs text-slate-200 bg-slate-900/50 p-4 rounded-xl border border-slate-800/50 leading-relaxed">
+                            {sample.question}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-slate-500 uppercase font-bold mb-1.5">Candidate Answer</div>
+                          <div className="text-xs text-slate-400 bg-slate-900/50 p-4 rounded-xl border border-slate-800/50 leading-relaxed italic">
+                            {sample.candidateAnswer}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">Model Predictions</div>
+                        {Object.values(sample.predictions).map(p => (
+                          <div key={p.modelId} className="p-3 rounded-xl border border-slate-800 bg-slate-900/40 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                                <div className={`w-1.5 h-1.5 rounded-full ${p.parseError ? 'bg-rose-500' : 'bg-blue-500'}`} />
+                                {p.modelLabel}
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className={`text-xs font-bold ${p.parseError ? 'text-rose-400' : 'text-blue-400'}`}>
+                                  {p.parseError ? 'PARSE ERROR' : `${p.predictedScore}/10`}
+                                </span>
+                                {p.absoluteError !== null && (
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${p.absoluteError <= 1 ? 'bg-emerald-500/10 text-emerald-500' : 'bg-slate-800 text-slate-400'}`}>
+                                    Δ {p.absoluteError.toFixed(1)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {p.predictedFeedback ? (
+                              <div className="text-[10px] text-slate-400 leading-relaxed bg-black/20 p-2 rounded border border-slate-800/50 whitespace-pre-wrap">
+                                {p.predictedFeedback}
+                              </div>
+                            ) : (
+                               p.rawResponse && (
+                                 <details className="text-[10px]">
+                                   <summary className="cursor-pointer text-slate-600 hover:text-slate-400 flex items-center gap-1">
+                                      View Raw Output
+                                   </summary>
+                                   <div className="mt-2 p-2 rounded bg-black/40 text-slate-500 border border-slate-800/50 font-mono text-[9px] overflow-x-auto">
+                                     {p.rawResponse}
+                                   </div>
+                                 </details>
+                               )
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {!filteredResults.length && (
+              <div className="py-20 text-center space-y-2 bg-slate-900/10 rounded-2xl border border-dashed border-slate-800">
+                <Filter size={32} className="mx-auto text-slate-700" />
+                <div className="text-slate-500 text-sm">No samples match your filters.</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'logs' && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Job Log Stream</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <LogPanel logs={logsQuery.data?.content || 'No logs found for this job.'} />
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function LogPanel({ logs }: { logs: string }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [logs]);
+
+  const lines = logs.split('\n').filter(Boolean);
+
+  return (
+    <div
+      ref={scrollRef}
+      className="max-h-[600px] overflow-y-auto bg-slate-950 p-4 rounded-xl border border-slate-800 font-mono text-[10px] space-y-0.5"
+    >
+      {lines.map((line, i) => {
+        let tone = 'text-slate-400';
+        if (line.includes('[ERROR]')) tone = 'text-rose-400';
+        if (line.includes('[WARN]')) tone = 'text-amber-400';
+        if (line.includes('[SUCCESS]') || line.includes('successfully')) tone = 'text-emerald-400';
+
+        return (
+          <div key={i} className={`${tone} border-l-2 border-transparent hover:border-slate-800 hover:bg-white/5 px-2`}>
+            {line}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -785,7 +1755,7 @@ export function JobDetailsSynthetic({ job }: { job: Job }) {
 
 path: /components/job-type-badge.tsx
 ----------------------------------------
-import { Boxes, BrainCircuit, Database } from 'lucide-react';
+import { Boxes, BrainCircuit, Database, SplitSquareHorizontal, CheckCircle } from 'lucide-react';
 
 export function JobTypeBadge({ type }: { type: string }) {
   if (type === 'synthetic-gen') {
@@ -793,6 +1763,15 @@ export function JobTypeBadge({ type }: { type: string }) {
       <span className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs text-cyan-300">
         <Database size={12} />
         Synthetic Dataset
+      </span>
+    );
+  }
+
+  if (type === 'eval-benchmark') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300">
+        <CheckCircle size={12} />
+        Evaluation
       </span>
     );
   }
@@ -811,6 +1790,15 @@ export function JobTypeBadge({ type }: { type: string }) {
       <span className="inline-flex items-center gap-1 rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-1 text-xs text-purple-300">
         <BrainCircuit size={12} />
         Fine-tune
+      </span>
+    );
+  }
+
+  if (type === 'model-comparison') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-xs text-indigo-300">
+        <SplitSquareHorizontal size={12} />
+        Comparison
       </span>
     );
   }
@@ -1127,6 +2115,22 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...props} className={cn('w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-slate-500', props.className)} />;
 }
 
+export function SelectTrigger({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={className}>{children}</div>;
+}
+
+export function SelectValue({ placeholder }: { placeholder?: string }) {
+  return <span>{placeholder}</span>;
+}
+
+export function SelectContent({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}
+
+export function SelectItem({ value, children }: { value: string; children: React.ReactNode }) {
+  return <option value={value}>{children}</option>;
+}
+
 
 path: /components/ui/textarea.tsx
 ----------------------------------------
@@ -1166,6 +2170,342 @@ export function Tooltip({ content }: TooltipProps) {
           <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
         </div>
       )}
+    </div>
+  );
+}
+
+
+path: /features/comparisons/page.tsx
+----------------------------------------
+import { useMemo, useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { api, type ComparisonTargetInput } from '../../lib/api';
+import { PageHeader } from '../../components/page-header';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { Textarea } from '../../components/ui/textarea';
+import { Select } from '../../components/ui/select';
+import { JobTypeBadge } from '../../components/job-type-badge';
+import { StatusBadge } from '../../components/status-badge';
+
+function fmtDate(value?: string | null) {
+  if (!value) return '—';
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return String(value);
+  }
+}
+
+type TargetRow = {
+  kind: 'model' | 'lora';
+  id: string;
+};
+
+function parsePrompts(text: string) {
+  return text
+    .split('\n')
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+export default function ComparisonsPage() {
+  const navigate = useNavigate();
+
+  const [name, setName] = useState('');
+  const [targets, setTargets] = useState<TargetRow[]>([
+    { kind: 'model', id: '' },
+    { kind: 'model', id: '' },
+  ]);
+  const [promptsText, setPromptsText] = useState(
+    'What is the capital of France?\nExplain gravity like I am five.\nWrite a short poem about coding.',
+  );
+  const [provider, setProvider] = useState('auto');
+  const [temperature, setTemperature] = useState('0');
+  const [maxTokens, setMaxTokens] = useState('256');
+
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: api.getModels,
+    refetchInterval: 5000,
+  });
+
+  const lorasQuery = useQuery({
+    queryKey: ['loras'],
+    queryFn: api.getLoras,
+    refetchInterval: 5000,
+  });
+
+  const jobsQuery = useQuery({
+    queryKey: ['jobs'],
+    queryFn: api.getJobs,
+    refetchInterval: 3000,
+  });
+
+  const providersQuery = useQuery({
+    queryKey: ['runtime-providers'],
+    queryFn: api.getRuntimeProviders,
+    staleTime: 30000,
+  });
+
+  const readyModels = useMemo(
+    () => (modelsQuery.data || []).filter((m) => m.status === 'ready'),
+    [modelsQuery.data],
+  );
+
+  const readyLoras = useMemo(
+    () => (lorasQuery.data || []).filter((l) => l.status === 'ready'),
+    [lorasQuery.data],
+  );
+
+  const comparisonJobs = useMemo(
+    () =>
+      (jobsQuery.data || [])
+        .filter((j) => j.type === 'model-comparison')
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
+    [jobsQuery.data],
+  );
+
+  const prompts = useMemo(() => parsePrompts(promptsText), [promptsText]);
+
+  const startMutation = useMutation({
+    mutationFn: api.startComparison,
+    onSuccess: (data) => {
+      navigate(`/app/jobs?selected=${encodeURIComponent(data.jobId)}`);
+    },
+  });
+
+  function updateTarget(index: number, patch: Partial<TargetRow>) {
+    setTargets((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  }
+
+  function addTarget() {
+    setTargets((prev) => [...prev, { kind: 'model', id: '' }]);
+  }
+
+  function removeTarget(index: number) {
+    setTargets((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  const preparedTargets: ComparisonTargetInput[] = targets
+    .filter((x) => x.id)
+    .map((x) => ({ type: x.kind, id: x.id }));
+
+  const canSubmit = preparedTargets.length >= 2 && prompts.length >= 1;
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Comparisons"
+        description="Запусти один comparison job на нескольких моделях и LoRA, затем смотри результаты в Jobs."
+      />
+
+      <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+        <Card>
+          <CardHeader>
+            <CardTitle>Create comparison job</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">Job name</label>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="compare-qwen-runs"
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="text-sm font-medium text-white">Targets</div>
+
+              {targets.map((row, idx) => (
+                <div
+                  key={idx}
+                  className="grid gap-3 rounded-2xl border border-slate-800 bg-slate-950/30 p-4 md:grid-cols-[140px_1fr_auto]"
+                >
+                  <div>
+                    <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+                      Target type
+                    </label>
+                    <Select
+                      value={row.kind}
+                      onChange={(e) =>
+                        updateTarget(idx, {
+                          kind: e.target.value as 'model' | 'lora',
+                          id: '',
+                        })
+                      }
+                    >
+                      <option value="model">Model</option>
+                      <option value="lora">LoRA</option>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
+                      Target
+                    </label>
+                    <Select
+                      value={row.id}
+                      onChange={(e) => updateTarget(idx, { id: e.target.value })}
+                    >
+                      <option value="">Select {row.kind}</option>
+                      {row.kind === 'model'
+                        ? readyModels.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.name}
+                            </option>
+                          ))
+                        : readyLoras.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.name}
+                            </option>
+                          ))}
+                    </Select>
+                  </div>
+
+                  <div className="flex items-end">
+                    <Button
+                      className="bg-rose-700 text-white hover:bg-rose-600"
+                      onClick={() => removeTarget(idx)}
+                      disabled={targets.length <= 2}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              ))}
+
+              <Button className="bg-slate-800 hover:bg-slate-700" onClick={addTarget}>
+                Add target
+              </Button>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm text-slate-400">
+                Prompts, one per line
+              </label>
+              <Textarea
+                className="min-h-[220px]"
+                value={promptsText}
+                onChange={(e) => setPromptsText(e.target.value)}
+                placeholder={'What is the capital of France?\nExplain gravity like I am five.'}
+              />
+              <div className="mt-2 text-xs text-slate-500">
+                Parsed prompts: {prompts.length}
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Provider</label>
+                <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                  {(providersQuery.data?.available || []).map((p) => (
+                    <option key={p.id} value={p.id} disabled={!p.available}>
+                      {p.label} {!p.available ? '(Unavailable)' : ''}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Temperature</label>
+                <Input
+                  value={temperature}
+                  onChange={(e) => setTemperature(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Max tokens</label>
+                <Input
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-sm text-slate-400">
+              Comparison будет по очереди поднимать target-модели в runtime и собирать ответы в один job.
+            </div>
+
+            <Button
+              onClick={() =>
+                startMutation.mutate({
+                  name: name.trim() || undefined,
+                  targets: preparedTargets,
+                  prompts,
+                  inference: {
+                    provider,
+                    temperature: Number(temperature),
+                    max_tokens: Number(maxTokens),
+                  },
+                })
+              }
+              disabled={!canSubmit || startMutation.isPending}
+            >
+              {startMutation.isPending ? 'Starting…' : 'Start comparison'}
+            </Button>
+
+            {startMutation.error ? (
+              <div className="rounded-xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-300">
+                {(startMutation.error as Error).message}
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent comparison jobs</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {!comparisonJobs.length ? (
+              <div className="text-sm text-slate-500">No comparison jobs yet.</div>
+            ) : (
+              comparisonJobs.map((job) => (
+                <button
+                  key={job.id}
+                  onClick={() => navigate(`/app/jobs?selected=${encodeURIComponent(job.id)}`)}
+                  className="w-full rounded-2xl border border-slate-800 bg-slate-950/30 p-4 text-left transition hover:border-slate-700"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <div className="truncate font-medium text-white">{job.name}</div>
+                        <JobTypeBadge type={job.type} />
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">{job.id}</div>
+                    </div>
+                    <StatusBadge value={job.status} />
+                  </div>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3 text-xs">
+                    <div className="rounded-xl bg-slate-900/60 p-2">
+                      <div className="text-slate-500">Targets</div>
+                      <div className="mt-1 text-white">
+                        {job.summaryMetrics?.targets ?? job.paramsSnapshot?.targets?.length ?? '—'}
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-slate-900/60 p-2">
+                      <div className="text-slate-500">Prompts</div>
+                      <div className="mt-1 text-white">
+                        {job.summaryMetrics?.promptsPerTarget ?? job.paramsSnapshot?.prompts?.length ?? '—'}
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-slate-900/60 p-2">
+                      <div className="text-slate-500">Created</div>
+                      <div className="mt-1 text-white">{fmtDate(job.createdAt)}</div>
+                    </div>
+                  </div>
+                </button>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -2264,6 +3604,566 @@ export function SyntheticGenWizard({ onComplete }: { onComplete: () => void }) {
 }
 
 
+path: /features/evaluations/evaluations-page.tsx
+----------------------------------------
+import { useState, useMemo } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { api, type EvalDataset, type EvalSample, type Job } from '../../lib/api';
+import { PageHeader } from '../../components/page-header';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { Textarea } from '../../components/ui/textarea';
+import { Select } from '../../components/ui/select';
+import { Trash2, Play, Upload, Eye, CheckCircle, AlertCircle, Loader2, Plus, X, Search, FileText, Clock, BarChart3 } from 'lucide-react';
+import { toast } from 'sonner';
+import { useNavigate } from 'react-router-dom';
+
+type TargetInput = {
+  type: 'model' | 'lora';
+  id: string;
+};
+
+export default function EvaluationsPage() {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+
+  // Import state
+  const [importName, setImportName] = useState('');
+  const [importContent, setImportContent] = useState('');
+  const [validationResult, setValidationResult] = useState<{
+    validCount: number;
+    invalidCount: number;
+    errors: any[];
+    preview: EvalSample[];
+  } | null>(null);
+
+  // Run state
+  const [runName, setRunName] = useState('');
+  const [selectedDatasetId, setSelectedDatasetId] = useState('');
+  const [targets, setTargets] = useState<TargetInput[]>([{ type: 'model', id: '' }]);
+
+  // UI state
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewDataset, setPreviewDataset] = useState<EvalDataset | null>(null);
+  const [runSearch, setRunSearch] = useState('');
+
+  const datasetsQuery = useQuery({
+    queryKey: ['eval-datasets'],
+    queryFn: () => api.getEvalDatasets(),
+  });
+
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: () => api.getModels(),
+  });
+
+  const lorasQuery = useQuery({
+    queryKey: ['loras'],
+    queryFn: () => api.getLoras(),
+  });
+
+  const jobsQuery = useQuery({
+    queryKey: ['jobs'],
+    queryFn: () => api.getJobs(),
+    refetchInterval: 5000,
+  });
+
+  const evalRuns = useMemo(() => {
+    return (jobsQuery.data || [])
+      .filter(j => j.type === 'eval-benchmark')
+      .filter(j =>
+        !runSearch ||
+        j.name.toLowerCase().includes(runSearch.toLowerCase()) ||
+        j.id.toLowerCase().includes(runSearch.toLowerCase())
+      )
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [jobsQuery.data, runSearch]);
+
+  const validateMutation = useMutation({
+    mutationFn: (content: string) => api.validateEvalDataset({ content }),
+    onSuccess: (res) => {
+      setValidationResult(res);
+    },
+    onError: (err: Error) => toast.error(`Validation failed: ${err.message}`),
+  });
+
+  const importMutation = useMutation({
+    mutationFn: (payload: { name: string; content: string }) => api.importEvalDataset(payload),
+    onSuccess: () => {
+      toast.success('Dataset imported successfully');
+      setImportName('');
+      setImportContent('');
+      setValidationResult(null);
+      queryClient.invalidateQueries({ queryKey: ['eval-datasets'] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.deleteEvalDataset(id),
+    onSuccess: () => {
+      toast.success('Dataset deleted');
+      queryClient.invalidateQueries({ queryKey: ['eval-datasets'] });
+    },
+  });
+
+  const runMutation = useMutation({
+    mutationFn: (payload: { datasetId: string; targets: any[]; name?: string }) => api.runEvalBenchmark(payload),
+    onSuccess: (res) => {
+      toast.success('Benchmark started');
+      navigate(`/jobs/${res.jobId}`);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const handleImport = () => {
+    if (!importName || !importContent) return;
+    importMutation.mutate({ name: importName, content: importContent });
+  };
+
+  const handleAddTarget = () => {
+    setTargets([...targets, { type: 'model', id: '' }]);
+  };
+
+  const handleRemoveTarget = (index: number) => {
+    setTargets(targets.filter((_, i) => i !== index));
+  };
+
+  const handleTargetChange = (index: number, field: keyof TargetInput, value: string) => {
+    const next = [...targets];
+    next[index] = { ...next[index], [field]: value };
+    setTargets(next);
+  };
+
+  const handleRun = () => {
+    if (!selectedDatasetId || targets.some(t => !t.id)) {
+      toast.error('Please select a dataset and all targets');
+      return;
+    }
+
+    const resolvedTargets = targets.map(t => {
+      if (t.type === 'model') {
+        const m = modelsQuery.data?.find(x => x.id === t.id);
+        return {
+          id: t.id,
+          type: 'model',
+          label: m?.name || t.id,
+          modelPath: m?.path || t.id
+        };
+      } else {
+        const l = lorasQuery.data?.find(x => x.id === t.id);
+        return {
+          id: t.id,
+          type: 'lora',
+          label: l?.name || t.id,
+          modelPath: l?.trainingBaseModelPath || l?.baseModelRef,
+          loraPath: l?.adapterPath,
+          loraName: l?.name
+        };
+      }
+    });
+
+    runMutation.mutate({
+      datasetId: selectedDatasetId,
+      targets: resolvedTargets,
+      name: runName || undefined
+    });
+  };
+
+  const showPreview = async (id: string) => {
+    try {
+      const ds = await api.getEvalDataset(id);
+      setPreviewDataset(ds);
+      setIsPreviewOpen(true);
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
+  return (
+    <div className="container mx-auto py-6 space-y-8">
+      <PageHeader
+        title="Evaluations"
+        description="Сравнение моделей-оценщиков на контрольных датасетах."
+      />
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        {/* Import Section */}
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Upload size={18} className="text-blue-400" /> Import Evaluation Dataset
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 flex-1">
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase">Dataset Name</label>
+              <Input
+                placeholder="e.g. JS Expert Benchmark"
+                value={importName}
+                onChange={e => setImportName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase">Content (TXT Format)</label>
+              <Textarea
+                placeholder="Вопрос: ...\nОтвет: ...\nОценка: 10/10\n\nВопрос: ..."
+                className="font-mono text-[10px] h-48 bg-slate-950"
+                value={importContent}
+                onChange={e => setImportContent(e.target.value)}
+              />
+            </div>
+
+            {importContent && (
+              <Button
+                className="w-full text-xs h-8 border border-slate-600 bg-transparent hover:bg-slate-800"
+                onClick={() => validateMutation.mutate(importContent)}
+                disabled={validateMutation.isPending}
+              >
+                {validateMutation.isPending ? <Loader2 size={12} className="animate-spin mr-2" /> : 'Validate Format'}
+              </Button>
+            )}
+
+            {validationResult && (
+              <div className={`p-3 rounded-lg border text-xs space-y-2 ${validationResult.invalidCount > 0 ? 'bg-amber-500/5 border-amber-500/20' : 'bg-emerald-500/5 border-emerald-500/20'}`}>
+                <div className="flex items-center justify-between">
+                  <span className="font-bold flex items-center gap-1">
+                    {validationResult.invalidCount > 0 ? <AlertCircle size={14} className="text-amber-500" /> : <CheckCircle size={14} className="text-emerald-500" />}
+                    Validation Result
+                  </span>
+                  <span className="text-slate-400">
+                    {validationResult.validCount} valid, {validationResult.invalidCount} invalid
+                  </span>
+                </div>
+                {validationResult.errors.length > 0 && (
+                  <ul className="space-y-1 text-[10px] text-amber-200/70 max-h-20 overflow-y-auto">
+                    {validationResult.errors.map((err, i) => (
+                      <li key={i}>• Block #{err.index + 1}: {err.error}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <Button
+              className="w-full bg-blue-600 hover:bg-blue-500 text-white"
+              onClick={handleImport}
+              disabled={importMutation.isPending || !importName || !importContent || (validationResult?.validCount === 0)}
+            >
+              {importMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : 'Import Dataset'}
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Run Section */}
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Play size={18} className="text-emerald-400" /> Run New Evaluation
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 flex-1">
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase">Run Name (Optional)</label>
+              <Input
+                placeholder="e.g. Qwen vs Llama comparison"
+                value={runName}
+                onChange={e => setRunName(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase">Evaluation Dataset</label>
+              <Select value={selectedDatasetId} onChange={e => setSelectedDatasetId(e.target.value)}>
+                <option value="">Select Dataset</option>
+                {datasetsQuery.data?.map(ds => (
+                  <option key={ds.id} value={ds.id}>{ds.name} ({ds.samplesCount} samples)</option>
+                ))}
+              </Select>
+            </div>
+
+            <div className="space-y-3">
+              <label className="text-xs font-semibold text-slate-500 uppercase flex items-center justify-between">
+                Target Models
+                <span className="text-[10px] font-normal lowercase">({targets.length} selected)</span>
+              </label>
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
+                {targets.map((target, index) => (
+                  <div key={index} className="flex gap-2">
+                    <Select
+                      className="w-[100px] shrink-0"
+                      value={target.type}
+                      onChange={e => handleTargetChange(index, 'type', e.target.value)}
+                    >
+                      <option value="model">Model</option>
+                      <option value="lora">LoRA</option>
+                    </Select>
+
+                    <Select
+                      className="flex-1"
+                      value={target.id}
+                      onChange={e => handleTargetChange(index, 'id', e.target.value)}
+                    >
+                      <option value="">Select {target.type}</option>
+                      {target.type === 'model' ? (
+                        modelsQuery.data?.filter(m => m.status === 'ready').map(m => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))
+                      ) : (
+                        lorasQuery.data?.map(l => (
+                          <option key={l.id} value={l.id}>{l.name}</option>
+                        ))
+                      )}
+                    </Select>
+
+                    <Button
+                      className="h-9 w-9 text-slate-500 hover:text-rose-400 border border-slate-700 bg-transparent hover:bg-slate-800"
+                      onClick={() => handleRemoveTarget(index)}
+                      disabled={targets.length === 1}
+                    >
+                      <Trash2 size={16} />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+              <Button
+                className="w-full border border-dashed border-slate-600 text-xs text-slate-400 bg-transparent hover:bg-slate-800"
+                onClick={handleAddTarget}
+              >
+                <Plus size={14} className="mr-2" /> Add another model
+              </Button>
+            </div>
+
+            <Button
+              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white mt-auto"
+              onClick={handleRun}
+              disabled={runMutation.isPending || !selectedDatasetId || targets.some(t => !t.id)}
+            >
+              {runMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : 'Start Evaluation Job'}
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Datasets List */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <FileText size={18} className="text-blue-400" /> Evaluation Datasets
+          </CardTitle>
+          <div className="text-xs text-slate-500">{datasetsQuery.data?.length || 0} datasets</div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-hidden rounded-xl border border-slate-800">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-slate-900/50 text-slate-500 text-[10px] uppercase font-bold">
+                <tr>
+                  <th className="px-4 py-3">Dataset Name</th>
+                  <th className="px-4 py-3 text-center">Samples</th>
+                  <th className="px-4 py-3">Created</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {datasetsQuery.data?.map(ds => (
+                  <tr key={ds.id} className="hover:bg-slate-800/20 transition-colors">
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-white">{ds.name}</div>
+                      <div className="text-[10px] text-slate-500 font-mono">{ds.id}</div>
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 font-bold">
+                        {ds.samplesCount}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-400 text-xs">
+                      {new Date(ds.createdAt).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          className="h-8 text-xs bg-slate-700 hover:bg-slate-600"
+                          onClick={() => showPreview(ds.id)}
+                        >
+                          <Eye size={14} className="mr-1" /> Preview
+                        </Button>
+                        <Button
+                          className="h-8 w-8 p-0 text-slate-500 hover:text-rose-400 border border-slate-700 bg-transparent hover:bg-slate-800"
+                          onClick={() => deleteMutation.mutate(ds.id)}
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {datasetsQuery.data?.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-8 text-center text-slate-500 italic bg-slate-900/20">
+                      No evaluation datasets found. Import one above.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Evaluation Job Runs */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <Clock size={18} className="text-amber-400" /> Evaluation History
+          </CardTitle>
+          <div className="relative w-64">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
+            <Input
+              className="pl-9 h-8 text-xs bg-slate-900 border-slate-800"
+              placeholder="Search runs..."
+              value={runSearch}
+              onChange={e => setRunSearch(e.target.value)}
+            />
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-hidden rounded-xl border border-slate-800">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-slate-900/50 text-slate-500 text-[10px] uppercase font-bold">
+                <tr>
+                  <th className="px-4 py-3">Run Details</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Progress</th>
+                  <th className="px-4 py-3">Metrics</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {evalRuns.map(run => (
+                  <tr key={run.id} className="hover:bg-slate-800/20 transition-colors cursor-pointer" onClick={() => navigate(`/jobs/${run.id}`)}>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-white">{run.name}</div>
+                      <div className="text-[10px] text-slate-500">
+                        {new Date(run.createdAt).toLocaleString()} • {run.paramsSnapshot?.targets?.length || 0} models
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                        run.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400' :
+                        run.status === 'failed' ? 'bg-rose-500/10 text-rose-400' :
+                        run.status === 'running' ? 'bg-blue-500/10 text-blue-400 animate-pulse' :
+                        'bg-slate-500/10 text-slate-400'
+                      }`}>
+                        {run.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 w-48">
+                      {run.status === 'running' ? (
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[10px] text-slate-400">
+                            <span>{run.progress?.totalProgressPercent || 0}%</span>
+                            <span>{run.progress?.currentStage}</span>
+                          </div>
+                          <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                            <div
+                              className="bg-blue-500 h-full transition-all duration-500"
+                              style={{ width: `${run.progress?.totalProgressPercent || 0}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-500">
+                          {run.status === 'completed' ? 'Completed' : '—'}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {run.summaryMetrics?.models ? (
+                        <div className="flex gap-2">
+                           {run.summaryMetrics.models.slice(0, 2).map((m, i) => (
+                             <div key={i} className="text-[10px]">
+                               <div className="text-slate-500 truncate max-w-[80px]">{m.modelLabel}</div>
+                               <div className="text-white font-mono">MAE: {m.mae?.toFixed(3) || '—'}</div>
+                             </div>
+                           ))}
+                           {(run.summaryMetrics.models.length > 2) && (
+                             <div className="text-[10px] text-slate-500 flex items-end">+{run.summaryMetrics.models.length - 2}</div>
+                           )}
+                        </div>
+                      ) : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Button
+                        className="h-8 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 border border-transparent bg-transparent"
+                        onClick={(e) => { e.stopPropagation(); navigate(`/jobs/${run.id}`); }}
+                      >
+                        <BarChart3 size={14} className="mr-1" /> View Results
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+                {evalRuns.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-12 text-center text-slate-500 bg-slate-900/20 italic">
+                      No evaluation runs found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Preview Dataset Modal */}
+      {isPreviewOpen && previewDataset && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <Card className="w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl border-slate-700">
+            <CardHeader className="flex flex-row items-center justify-between shrink-0 border-b border-slate-800">
+              <div>
+                <CardTitle>Dataset Preview: {previewDataset.name}</CardTitle>
+                <div className="text-xs text-slate-500 mt-1">{previewDataset.samplesCount} total samples</div>
+              </div>
+              <Button
+                className="p-2 hover:bg-slate-800 rounded-md border border-slate-700 bg-transparent"
+                onClick={() => setIsPreviewOpen(false)}
+              >
+                <X size={20} />
+              </Button>
+            </CardHeader>
+            <CardContent className="overflow-y-auto space-y-4 p-6 bg-slate-950">
+              {previewDataset.samples?.map((s, i) => (
+                <div key={i} className="p-4 rounded-xl border border-slate-800 bg-slate-900/30 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-800/50 pb-2">
+                    <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Sample #{i+1}</span>
+                    <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-xs font-bold">
+                      Reference Score: {s.referenceScore}/10
+                    </span>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-[80px_1fr]">
+                    <div className="text-[10px] text-slate-500 uppercase font-bold pt-1">Question</div>
+                    <div className="text-sm text-slate-200">{s.question}</div>
+
+                    <div className="text-[10px] text-slate-500 uppercase font-bold pt-1">Answer</div>
+                    <div className="text-sm text-slate-400 italic bg-slate-900/50 p-2 rounded">{s.candidateAnswer}</div>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+            <div className="p-4 border-t border-slate-800 bg-slate-900 shrink-0 flex justify-end">
+              <Button onClick={() => setIsPreviewOpen(false)} className="bg-slate-800 hover:bg-slate-700">
+                Close Preview
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 path: /features/jobs/page.tsx
 ----------------------------------------
 import { useEffect, useMemo, useState } from 'react';
@@ -2276,6 +4176,8 @@ import { JobTypeBadge } from '../../components/job-type-badge';
 import { JobDetailsFineTune } from '../../components/job-details-fine-tune';
 import { JobDetailsSynthetic } from '../../components/job-details-synthetic';
 import { JobDetailsQuantize } from '../../components/job-details-quantize';
+import { JobDetailsComparison } from '../../components/job-details-comparison';
+import { JobDetailsEval } from '../../components/job-details-eval';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
@@ -2328,6 +4230,7 @@ function JobListCard({
   onToggleCompare: () => void;
 }) {
   const isSynthetic = job.type === 'synthetic-gen';
+  const isComparison = job.type === 'model-comparison';
 
   return (
     <div
@@ -2335,7 +4238,9 @@ function JobListCard({
         selected
           ? isSynthetic
             ? 'border-cyan-500 bg-cyan-500/10'
-            : 'border-purple-500 bg-purple-500/10'
+            : isComparison
+              ? 'border-indigo-500 bg-indigo-500/10'
+              : 'border-purple-500 bg-purple-500/10'
           : 'border-slate-800 bg-slate-950/30 hover:border-slate-700'
       }`}
     >
@@ -2359,6 +4264,11 @@ function JobListCard({
             {isSynthetic ? (
               <div className="mt-2 text-xs text-slate-400">
                 Step: {job.syntheticMeta?.progressStep || job.progressStep || '—'}
+              </div>
+            ) : isComparison ? (
+              <div className="mt-2 text-xs text-slate-400">
+                Targets: {job.summaryMetrics?.targets ?? job.paramsSnapshot?.targets?.length ?? '—'} · Prompts:{' '}
+                {job.summaryMetrics?.promptsPerTarget ?? job.paramsSnapshot?.prompts?.length ?? '—'}
               </div>
             ) : (
               <div className="mt-2 text-xs text-slate-400 break-all">{job.baseModel || '—'}</div>
@@ -2464,6 +4374,8 @@ export default function JobsPage() {
   const selectedJob = jobQuery.data;
   const isSynthetic = selectedJob?.type === 'synthetic-gen';
   const isQuantize = selectedJob?.type === 'model-quantize';
+  const isComparison = selectedJob?.type === 'model-comparison';
+  const isEval = selectedJob?.type === 'eval-benchmark';
 
   const selectedLora = useMemo(() => {
     if (!selectedJob) return null;
@@ -2539,7 +4451,7 @@ export default function JobsPage() {
       <div>
         <h1 className="text-2xl font-semibold text-white">Jobs</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Обучение и создание synthetic datasets теперь показываются по-разному и с отдельной детализацией.
+          Обучение, synthetic datasets, quantization и comparison jobs с отдельной детализацией.
         </p>
       </div>
 
@@ -2792,13 +4704,17 @@ export default function JobsPage() {
                     <JobDetailsSynthetic job={selectedJob} />
                   ) : isQuantize ? (
                     <JobDetailsQuantize job={selectedJob} />
+                  ) : isComparison ? (
+                    <JobDetailsComparison job={selectedJob} />
+                  ) : isEval ? (
+                    <JobDetailsEval job={selectedJob} />
                   ) : (
                     <JobDetailsFineTune job={selectedJob} />
                   )}
                 </CardContent>
               </Card>
 
-              {!isSynthetic && !isQuantize && selectedJob ? (
+              {!isSynthetic && !isQuantize && !isComparison && !isEval && selectedJob ? (
                 <>
                   <Card>
                     <CardHeader>
@@ -2942,6 +4858,34 @@ export default function JobsPage() {
                 </>
               ) : null}
 
+              {isComparison && selectedJob ? (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Comparison artifacts</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-wrap gap-2">
+                      <a
+                        href={`${apiBase}/comparisons/${selectedJob.id}/result`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+                      >
+                        Download comparison-result.json
+                      </a>
+                      <a
+                        href={`${apiBase}/comparisons/${selectedJob.id}/summary`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+                      >
+                        Download summary.json
+                      </a>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : null}
+
               {selectedJob ? (
                 <Card>
                   <CardHeader>
@@ -2976,6 +4920,7 @@ export default function JobsPage() {
                           selectedJob.status !== 'completed' ||
                           isSynthetic ||
                           isQuantize ||
+                          isComparison ||
                           useOutputMutation.isPending
                         }
                         className="bg-emerald-600 hover:bg-emerald-500"
@@ -6965,6 +8910,22 @@ export type SyntheticGenConfig = {
   sourceFiles: string[];
 };
 
+export type EvalModelSummary = {
+  modelId: string;
+  modelLabel: string;
+  samples: number;
+  parseSuccessRate: number;
+  mae: number | null;
+  rmse: number | null;
+  exactRate: number;
+  within1Rate: number;
+  within2Rate: number;
+  meanSignedError: number | null;
+  avgPredictedScore?: number | null;
+  parseErrors?: number;
+  emptyResponses?: number;
+};
+
 export type SummaryMetrics = {
   rows?: number;
   final_loss?: number;
@@ -6974,6 +8935,9 @@ export type SummaryMetrics = {
   sizeHuman?: string;
   validCount?: number;
   invalidCount?: number;
+  targets?: number;
+  promptsPerTarget?: number;
+  models?: EvalModelSummary[];
 };
 
 export type SyntheticInvalidSample = {
@@ -6996,6 +8960,20 @@ export type SyntheticMeta = {
   progressStep?: string | null;
   finalPath?: string | null;
   import?: SyntheticImportMeta;
+};
+
+export type JobProgress = {
+  currentStage?: string;
+  currentModelId?: string;
+  currentModelName?: string;
+  processedModels?: number;
+  totalModels?: number;
+  processedSamples?: number;
+  totalSamples?: number;
+  modelProgressPercent?: number;
+  totalProgressPercent?: number;
+  etaSeconds?: number;
+  updatedAt?: string;
 };
 
 export type Job = {
@@ -7034,6 +9012,7 @@ export type Job = {
   notes?: string;
   artifacts?: Array<{ name: string; size: number; path: string }>;
   progressStep?: string;
+  progress?: JobProgress;
   runner?: string;
   summaryMetrics?: SummaryMetrics;
   resultDatasetId?: string | null;
@@ -7123,6 +9102,72 @@ export type RuntimeHealth = {
   port?: number;
 };
 
+export type EvalSample = {
+  id: string;
+  question: string;
+  candidateAnswer: string;
+  referenceScore: number;
+  sourceFile?: string;
+  topic?: string | null;
+};
+
+export type EvalDataset = {
+  id: string;
+  name: string;
+  samplesCount: number;
+  jsonPath: string;
+  txtPath: string;
+  createdAt: string;
+  samples?: EvalSample[];
+};
+
+export type EvalDatasetValidationResponse = {
+  validCount: number;
+  invalidCount: number;
+  errors: Array<{ index: number; error: string; raw: string }>;
+  preview: EvalSample[];
+};
+
+export type EvalSampleResult = {
+  sampleId: string;
+  question: string;
+  candidateAnswer: string;
+  referenceScore: number;
+  predictedScore: number | null;
+  predictedFeedback: string | null;
+  rawResponse: string | null;
+  parseError: boolean;
+  absoluteError: number | null;
+  error?: string;
+  modelId?: string;
+  modelLabel?: string;
+};
+
+export type EvalBenchmarkResult = {
+  target: {
+    id: string;
+    type: 'model' | 'lora';
+    label: string;
+    modelPath: string;
+    loraPath?: string | null;
+    loraName?: string | null;
+  };
+  results: EvalSampleResult[];
+  metrics: {
+    samples: number;
+    parseSuccessRate: number;
+    mae: number | null;
+    rmse: number | null;
+    exactRate: number;
+    within1Rate: number;
+    within2Rate: number;
+    meanSignedError: number | null;
+    avgPredictedScore?: number | null;
+    parseErrors?: number;
+    emptyResponses?: number;
+  };
+};
+
 export type LogEntry = {
   timestamp: string;
   level: 'info' | 'warn' | 'error' | 'debug';
@@ -7182,6 +9227,90 @@ export type ManagedProcessesCleanupResponse = {
     error: string;
   }>;
   remaining?: number;
+};
+
+export type ComparisonTargetInput = {
+  type: 'model' | 'lora';
+  id: string;
+};
+
+export type ComparisonRunPayload = {
+  name?: string;
+  targets: ComparisonTargetInput[];
+  prompts: string[];
+  inference?: {
+    provider?: string;
+    port?: number;
+    max_tokens?: number;
+    temperature?: number;
+    maxModelLen?: number;
+    gpuMemoryUtilization?: number;
+    tensorParallelSize?: number;
+    quantization?: string | null;
+    dtype?: string;
+    trustRemoteCode?: boolean;
+    enforceEager?: boolean;
+    kvCacheDtype?: string;
+    maxNumSeqs?: number;
+    swapSpace?: number;
+  };
+};
+
+export type ComparisonRunResponse = {
+  ok: boolean;
+  jobId: string;
+  outputDir: string;
+  logFile: string;
+};
+
+export type ComparisonSummary = {
+  targets: number;
+  promptsPerTarget: number;
+  targetSummaries: Array<{
+    target: {
+      id: string;
+      type: 'model' | 'lora';
+      label: string;
+      meta?: Record<string, unknown>;
+    };
+    provider: string;
+    totalPrompts: number;
+    okCount: number;
+    failedCount: number;
+    avgDurationSec: number | null;
+    avgCompletionTokens: number | null;
+  }>;
+};
+
+export type ComparisonResultRow = {
+  prompt: string;
+  startedAt: string;
+  durationSec: number;
+  ok: boolean;
+  error?: string;
+  response?: {
+    content: string;
+    finish_reason?: string | null;
+    usage?: Record<string, unknown> | null;
+  };
+  raw?: unknown;
+};
+
+export type ComparisonResultItem = {
+  target: {
+    id: string;
+    type: 'model' | 'lora';
+    label: string;
+    meta?: Record<string, unknown>;
+  };
+  runtime: {
+    provider: string;
+    model: string;
+    activeModelName?: string | null;
+    activeLoraName?: string | null;
+    port?: number;
+  };
+  results: ComparisonResultRow[];
 };
 
 type DeepPartial<T> = {
@@ -7336,6 +9465,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  startComparison: (payload: ComparisonRunPayload) =>
+    request<ComparisonRunResponse>('/comparisons/run', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getComparisonJob: (jobId: string) =>
+    request<Job>(`/comparisons/${jobId}`),
+  getComparisonResult: (jobId: string) =>
+    request<ComparisonResultItem[]>(`/comparisons/${jobId}/result`),
+  getComparisonSummary: (jobId: string) =>
+    request<ComparisonSummary>(`/comparisons/${jobId}/summary`),
   stopJob: (id: string) =>
     request<{ ok: boolean }>(`/jobs/${id}/stop`, {
       method: 'POST',
@@ -7453,6 +9593,30 @@ export const api = {
       body: JSON.stringify({ jobId }),
     }),
 
+  getEvalDatasets: () => request<EvalDataset[]>('/evaluations/datasets'),
+  getEvalDataset: (id: string) => request<EvalDataset>(`/evaluations/datasets/${id}`),
+  validateEvalDataset: (payload: { content: string }) =>
+    request<EvalDatasetValidationResponse>('/evaluations/datasets/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  importEvalDataset: (payload: { name: string; content: string }) =>
+    request<EvalDataset>('/evaluations/datasets/import', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  deleteEvalDataset: (id: string) =>
+    request<{ ok: boolean }>(`/evaluations/datasets/${id}`, {
+      method: 'DELETE',
+    }),
+  runEvalBenchmark: (payload: { datasetId: string; targets: any[]; name?: string }) =>
+    request<{ jobId: string }>('/evaluations/benchmark', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getEvalBenchmarkResult: (jobId: string) =>
+    request<EvalBenchmarkResult[]>(`/evaluations/jobs/${jobId}/result`),
+
   uploadSyntheticSource: (file: File) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -7531,8 +9695,8 @@ path: /vite-env.d.ts
 
 
 === SUMMARY ===
-included: 38
+included: 42
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 290242
+totalBytes(approx): 378236
