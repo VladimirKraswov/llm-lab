@@ -122,9 +122,26 @@ export default function EvaluationsPage() {
     setTargets(targets.filter((_, i) => i !== index));
   };
 
-  const handleTargetChange = (index: number, field: keyof TargetInput, value: string) => {
+  const handleTargetChange = (
+    index: number,
+    field: keyof TargetInput,
+    value: string
+  ) => {
     const next = [...targets];
-    next[index] = { ...next[index], [field]: value };
+
+    if (field === 'type') {
+      next[index] = {
+        ...next[index],
+        type: value as 'model' | 'lora',
+        id: '',
+      };
+    } else {
+      next[index] = {
+        ...next[index],
+        [field]: value,
+      };
+    }
+
     setTargets(next);
   };
 
@@ -277,53 +294,77 @@ export default function EvaluationsPage() {
 
             <div className="space-y-3">
               <label className="text-xs font-semibold text-slate-500 uppercase flex items-center justify-between">
-                Target Models
+                Targets
                 <span className="text-[10px] font-normal lowercase">({targets.length} selected)</span>
               </label>
-              <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
+
+              <div className="space-y-3 max-h-72 overflow-y-auto pr-2">
                 {targets.map((target, index) => (
-                  <div key={index} className="flex gap-2">
-                    <Select
-                      className="w-[100px] shrink-0"
-                      value={target.type}
-                      onChange={e => handleTargetChange(index, 'type', e.target.value)}
-                    >
-                      <option value="model">Model</option>
-                      <option value="lora">LoRA</option>
-                    </Select>
+                  <div
+                    key={index}
+                    className="grid grid-cols-[120px_1fr_44px] gap-2 rounded-xl border border-slate-800 bg-slate-950/30 p-3"
+                  >
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">
+                        Type
+                      </div>
+                      <Select
+                        value={target.type}
+                        onChange={e => handleTargetChange(index, 'type', e.target.value)}
+                      >
+                        <option value="model">Model</option>
+                        <option value="lora">LoRA</option>
+                      </Select>
+                    </div>
 
-                    <Select
-                      className="flex-1"
-                      value={target.id}
-                      onChange={e => handleTargetChange(index, 'id', e.target.value)}
-                    >
-                      <option value="">Select {target.type}</option>
-                      {target.type === 'model' ? (
-                        modelsQuery.data?.filter(m => m.status === 'ready').map(m => (
-                          <option key={m.id} value={m.id}>{m.name}</option>
-                        ))
-                      ) : (
-                        lorasQuery.data?.map(l => (
-                          <option key={l.id} value={l.id}>{l.name}</option>
-                        ))
-                      )}
-                    </Select>
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">
+                        {target.type === 'model' ? 'Choose model' : 'Choose LoRA'}
+                      </div>
 
-                    <Button
-                      className="h-9 w-9 text-slate-500 hover:text-rose-400 border border-slate-700 bg-transparent hover:bg-slate-800"
-                      onClick={() => handleRemoveTarget(index)}
-                      disabled={targets.length === 1}
-                    >
-                      <Trash2 size={16} />
-                    </Button>
+                      <Select
+                        value={target.id}
+                        onChange={e => handleTargetChange(index, 'id', e.target.value)}
+                      >
+                        <option value="">
+                          {target.type === 'model' ? 'Select model...' : 'Select LoRA...'}
+                        </option>
+
+                        {target.type === 'model'
+                          ? modelsQuery.data
+                              ?.filter(m => m.status === 'ready')
+                              .map(m => (
+                                <option key={m.id} value={m.id}>
+                                  {m.name}
+                                </option>
+                              ))
+                          : lorasQuery.data?.map(l => (
+                              <option key={l.id} value={l.id}>
+                                {l.name}
+                              </option>
+                            ))}
+                      </Select>
+                    </div>
+
+                    <div className="flex items-end">
+                      <Button
+                        className="h-9 w-9 p-0 text-slate-500 hover:text-rose-400 border border-slate-700 bg-transparent hover:bg-slate-800"
+                        onClick={() => handleRemoveTarget(index)}
+                        disabled={targets.length === 1}
+                      >
+                        <Trash2 size={16} />
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </div>
+
               <Button
                 className="w-full border border-dashed border-slate-600 text-xs text-slate-400 bg-transparent hover:bg-slate-800"
                 onClick={handleAddTarget}
               >
-                <Plus size={14} className="mr-2" /> Add another model
+                <Plus size={14} className="mr-2" />
+                Add target
               </Button>
             </div>
 
