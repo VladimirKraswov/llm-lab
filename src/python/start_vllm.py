@@ -1,61 +1,71 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-start_vllm.py — безопасный и надёжный запуск vLLM сервера
-с валидацией конфигурации и понятным логированием.
+start_vllm.py — надёжный запуск vLLM с полной валидацией и защитой от ошибок
+Исправлены все известные проблемы с локальными путями и валидацией
 """
 
 import json
 import os
 import sys
-import subprocess
 import shlex
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 
 def eprint(*args, **kwargs):
-    """Печать в stderr с префиксом"""
     print("[start_vllm]", *args, file=sys.stderr, **kwargs)
 
 
-def validate_config(cfg: Dict[str, Any]) -> None:
-    """Валидация всех ключевых параметров"""
+def validate_and_normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Валидация + нормализация конфига"""
     required = {"vllmBin", "model", "port"}
-    missing = required - set(cfg.keys())
+    missing = required - set(cfg)
     if missing:
-        raise ValueError(f"Отсутствуют обязательные поля в конфиге: {', '.join(missing)}")
+        raise ValueError(f"Отсутствуют обязательные поля: {', '.join(missing)}")
 
-    model_path = Path(cfg["model"])
+    # Нормализация пути модели — всегда абсолютный
+    model_path = Path(cfg["model"]).resolve()
+    cfg["model"] = str(model_path)  # перезаписываем в cfg
+
     if not model_path.is_dir():
-        raise ValueError(f"Директория модели не существует: {model_path}")
+        raise NotADirectoryError(f"Путь к модели не является директорией: {model_path}")
 
     config_json = model_path / "config.json"
     if not config_json.is_file():
         raise FileNotFoundError(
-            f"Файл config.json не найден в директории модели: {model_path}\n"
-            "vLLM не сможет запуститься без этого файла."
+            f"config.json не найден в директории модели.\n"
+            f"Путь: {config_json}\n"
+            f"vLLM не запустится без этого файла!"
         )
 
     port = cfg.get("port")
-    if not isinstance(port, int) or not (1 <= port <= 65535):
-        raise ValueError(f"Порт должен быть целым числом от 1 до 65535, получено: {port}")
+    if not isinstance(port, (int, float)) or not (1 <= port <= 65535):
+        raise ValueError(f"Порт должен быть числом 1–65535, получено: {port}")
 
-    # Дополнительные проверки (можно расширить)
-    if cfg.get("gpuMemoryUtilization", 0.9) not in {float(x) for x in range(1, 101)} / 100:
-        eprint("Предупреждение: gpuMemoryUtilization вне диапазона 0.01–1.00")
+    # gpu-memory-utilization: приводим к float 0.0–1.0
+    gpu_util = cfg.get("gpuMemoryUtilization", 0.9)
+    if not isinstance(gpu_util, (int, float)) or not (0.01 <= gpu_util <= 1.0):
+        eprint(f"Некорректный gpuMemoryUtilization {gpu_util} → исправлено на 0.90")
+        cfg["gpuMemoryUtilization"] = 0.9
+
+    # tensor-parallel-size: минимум 1
+    tps = cfg.get("tensorParallelSize", 1)
+    if not isinstance(tps, int) or tps < 1:
+        cfg["tensorParallelSize"] = 1
+
+    return cfg
 
 
-def build_vllm_args(cfg: Dict[str, Any]) -> List[str]:
-    """Собирает аргументы командной строки для vLLM"""
-    model_path = str(Path(cfg["model"]).resolve())  # всегда абсолютный путь
-
+def build_vllm_arguments(cfg: Dict[str, Any]) -> List[str]:
+    """Сборка аргументов для vLLM — безопасно и явно"""
     args = [
         cfg["vllmBin"],
         "serve",
-        model_path,
+        cfg["model"],  # уже абсолютный и проверенный путь
         "--host", cfg.get("host", "0.0.0.0"),
-        "--port", str(cfg["port"]),
-        "--gpu-memory-utilization", str(cfg.get("gpuMemoryUtilization", 0.9)),
+        "--port", str(int(cfg["port"])),
+        "--gpu-memory-utilization", f"{cfg.get('gpuMemoryUtilization', 0.9):.2f}",
         "--tensor-parallel-size", str(cfg.get("tensorParallelSize", 1)),
         "--max-model-len", str(cfg.get("maxModelLen", 8192)),
         "--max-num-seqs", str(cfg.get("maxNumSeqs", 256)),
@@ -63,8 +73,10 @@ def build_vllm_args(cfg: Dict[str, Any]) -> List[str]:
         "--dtype", str(cfg.get("dtype", "auto")),
     ]
 
-    if quantization := cfg.get("quantization"):
-        args.extend(["--quantization", str(quantization)])
+    # quantization — передаём только если явно задан и не null
+    if quant := cfg.get("quantization"):
+        if quant and quant.lower() not in ("none", "null", ""):
+            args.extend(["--quantization", str(quant)])
 
     if cfg.get("trustRemoteCode", True):
         args.append("--trust-remote-code")
@@ -72,15 +84,16 @@ def build_vllm_args(cfg: Dict[str, Any]) -> List[str]:
     if cfg.get("enforceEager", False):
         args.append("--enforce-eager")
 
-    if kv_cache_dtype := cfg.get("kvCacheDtype"):
-        if kv_cache_dtype != "auto":
-            args.extend(["--kv-cache-dtype", str(kv_cache_dtype)])
+    if kv := cfg.get("kvCacheDtype"):
+        if kv and kv.lower() != "auto":
+            args.extend(["--kv-cache-dtype", str(kv)])
 
+    # LoRA — только если оба параметра заданы
     if lora_path := cfg.get("loraPath"):
         if lora_name := cfg.get("loraName"):
             args.extend(["--enable-lora", "--lora-modules", f"{lora_name}={lora_path}"])
         else:
-            eprint("Предупреждение: loraPath указан, но loraName отсутствует → LoRA не будет загружен")
+            eprint("Предупреждение: loraPath указан, но loraName отсутствует → LoRA не загружается")
 
     return args
 
@@ -90,39 +103,45 @@ def main():
         eprint("Использование: start_vllm.py <путь_к_config.json>")
         sys.exit(2)
 
-    config_path = sys.argv[1]
-    if not os.path.isfile(config_path):
-        eprint(f"Файл конфигурации не найден: {config_path}")
+    config_file = sys.argv[1]
+    if not Path(config_file).is_file():
+        eprint(f"Файл конфигурации не найден: {config_file}")
         sys.exit(1)
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_file, "r", encoding="utf-8") as f:
             cfg = json.load(f)
     except Exception as e:
-        eprint(f"Ошибка чтения конфигурации: {e}")
+        eprint(f"Не удалось прочитать конфиг {config_file}: {e}")
         sys.exit(1)
 
     try:
-        validate_config(cfg)
+        cfg = validate_and_normalize_config(cfg)
     except Exception as e:
-        eprint(f"Ошибка валидации конфигурации: {e}")
+        eprint(f"Ошибка проверки конфигурации:\n{e}")
         sys.exit(1)
 
-    args = build_vllm_args(cfg)
+    args = build_vllm_arguments(cfg)
     cwd = cfg.get("cwd") or os.getcwd()
 
-    print("Запуск vLLM с аргументами:", shlex.join(args), flush=True)
-    print(f"Рабочая директория: {cwd}", flush=True)
+    print("Запуск vLLM:", shlex.join(args))
+    print(f"Рабочая директория: {cwd}")
+    print(f"Модель (абсолютный путь): {cfg['model']}")
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
     try:
         os.chdir(cwd)
-        # Заменяем текущий процесс → логи vLLM будут идти прямо в наш stdout/stderr
         os.execvpe(args[0], args, env)
+    except FileNotFoundError:
+        eprint(f"Исполняемый файл vLLM не найден: {args[0]}")
+        sys.exit(127)
+    except PermissionError:
+        eprint(f"Нет прав на запуск: {args[0]}")
+        sys.exit(126)
     except Exception as e:
-        eprint(f"Не удалось запустить vLLM: {e}")
+        eprint(f"Критическая ошибка при запуске vLLM:\n{e}")
         sys.exit(1)
 
 
@@ -130,8 +149,8 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nПрервано пользователем", file=sys.stderr)
+        eprint("Прервано пользователем")
         sys.exit(130)
     except Exception as e:
-        print(f"Критическая ошибка: {e}", file=sys.stderr)
+        eprint(f"Необработанная ошибка:\n{e}")
         sys.exit(1)
