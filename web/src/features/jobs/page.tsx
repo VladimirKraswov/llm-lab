@@ -10,16 +10,21 @@ import { JobDetailsSynthetic } from '../../components/job-details-synthetic';
 import { JobDetailsQuantize } from '../../components/job-details-quantize';
 import { JobDetailsComparison } from '../../components/job-details-comparison';
 import { JobDetailsEval } from '../../components/job-details-eval';
+import { PageHeader } from '../../components/page-header';
+import { cn } from '../../lib/utils';
 
-function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { size?: string }) {
   return (
     <button
       {...props}
-      className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-        props.disabled
+        className={cn(
+          'rounded-xl px-4 py-2 text-sm font-medium transition',
+          props.disabled
           ? 'cursor-not-allowed bg-slate-800 text-slate-500'
-          : 'bg-blue-600 text-white hover:bg-blue-500'
-      } ${props.className || ''}`}
+            : 'bg-blue-600 text-white hover:bg-blue-500',
+          props.size === 'sm' && 'px-2 py-1 text-[10px] rounded-lg',
+          props.className
+        )}
     />
   );
 }
@@ -279,29 +284,27 @@ export default function JobsPage() {
   }, [compareJobs]);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-white">Jobs</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Обучение, synthetic datasets, quantization и comparison jobs с отдельной детализацией.
-        </p>
-      </div>
+    <div className="space-y-4 h-[calc(100vh-140px)] flex flex-col overflow-hidden">
+      <PageHeader
+        title="Jobs & Runs"
+        description="Training, synthetic datasets, and benchmarks."
+      />
 
-      <div className="grid gap-6 xl:grid-cols-[340px_1fr]">
-        <div className="flex flex-col rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <div className="text-sm font-semibold text-white">All jobs</div>
+      <div className="grid gap-4 xl:grid-cols-[320px_1fr] flex-1 overflow-hidden">
+        <div className="flex flex-col rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden">
+          <div className="p-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/80">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">History</div>
             {compareIds.length >= 2 && (
               <Button
                 onClick={() => setIsComparing(true)}
-                className="h-7 px-2 py-0 text-xs bg-emerald-600 hover:bg-emerald-500"
+                className="h-6 px-2 py-0 text-[10px] bg-emerald-600 hover:bg-emerald-500"
               >
                 Compare ({compareIds.length})
               </Button>
             )}
           </div>
 
-          <div className="flex-1 space-y-2 overflow-y-auto">
+          <div className="flex-1 space-y-1.5 overflow-y-auto p-2 scrollbar-thin">
             {jobsQuery.isLoading ? (
               <div className="text-sm text-slate-500">Loading…</div>
             ) : !jobs.length ? (
@@ -321,26 +324,26 @@ export default function JobsPage() {
           </div>
         </div>
 
-        <div className="space-y-6">
+        <div className="flex flex-col min-w-0 overflow-y-auto pr-1 scrollbar-thin overflow-x-hidden">
           {isComparing ? (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-              <div className="mb-6 flex items-center justify-between">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/50 mb-4 overflow-hidden">
+              <div className="p-4 border-b border-slate-800 flex items-center justify-between sticky top-0 bg-slate-900 z-10 shadow-lg">
                 <div>
-                  <h2 className="text-xl font-semibold text-white">Comparison Matrix</h2>
-                  <p className="text-sm text-slate-400">Comparing {compareJobs.length} training runs</p>
+                  <h2 className="text-sm font-bold text-white uppercase tracking-tight">Comparison Matrix</h2>
+                  <p className="text-[10px] text-slate-500">Selected {compareJobs.length} training runs</p>
                 </div>
-                <Button onClick={() => setIsComparing(false)} className="bg-slate-800 hover:bg-slate-700">
-                  Back to Details
+                <Button onClick={() => setIsComparing(false)} size="sm" className="h-7 text-[10px] bg-slate-800 hover:bg-slate-700">
+                  Close Matrix
                 </Button>
               </div>
 
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead>
+                <table className="w-full text-left text-[11px] border-collapse">
+                  <thead className="sticky top-0 z-10 bg-slate-900 shadow-sm shadow-black/50">
                     <tr className="border-b border-slate-800 text-slate-500">
-                      <th className="pb-3 pr-4 font-medium">Metric / Param</th>
+                      <th className="p-3 font-bold uppercase tracking-wider bg-slate-900 min-w-[120px]">Metric / Param</th>
                       {sortedCompareJobs.map((job) => (
-                        <th key={job.id} className="pb-3 pr-4 font-medium min-w-[150px]">
+                        <th key={job.id} className="p-3 font-medium min-w-[160px] border-l border-slate-800/50">
                           <div className="flex flex-col">
                             <span className="text-white">{job.name}</span>
                             <span className="text-[10px] text-slate-600 font-mono">{job.id.slice(0, 8)}</span>
@@ -355,20 +358,20 @@ export default function JobsPage() {
                     </tr>
                   </thead>
 
-                  <tbody className="divide-y divide-slate-800/50">
-                    <tr className="hover:bg-slate-800/20">
-                      <td className="py-3 pr-4 text-slate-400">Dataset</td>
+                  <tbody className="divide-y divide-slate-800">
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-3 text-slate-500 font-medium">Dataset</td>
                       {sortedCompareJobs.map((job) => (
-                        <td key={job.id} className="py-3 pr-4 text-white">{job.datasetId}</td>
+                        <td key={job.id} className="p-3 text-white border-l border-slate-800/50 truncate max-w-[150px]" title={job.datasetId}>{job.datasetId}</td>
                       ))}
                     </tr>
 
-                    <tr className="hover:bg-slate-800/20">
-                      <td className="py-3 pr-4 text-slate-400">Base Model</td>
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-3 text-slate-500 font-medium">Base Model</td>
                       {sortedCompareJobs.map((job) => (
                         <td
                           key={job.id}
-                          className="py-3 pr-4 text-xs text-slate-300 max-w-[200px] truncate"
+                          className="p-3 text-slate-300 max-w-[150px] truncate border-l border-slate-800/50 font-mono"
                           title={job.baseModel}
                         >
                           {job.baseModel?.split('/').pop() || '—'}
@@ -376,16 +379,16 @@ export default function JobsPage() {
                       ))}
                     </tr>
 
-                    <tr className="hover:bg-slate-800/20">
-                      <td className="py-3 pr-4 text-slate-400">Runner</td>
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-3 text-slate-500 font-medium border-b border-slate-800/50">Runner</td>
                       {sortedCompareJobs.map((job) => (
-                        <td key={job.id} className="py-3 pr-4 text-white">{job.runner || '—'}</td>
+                        <td key={job.id} className="p-3 text-white border-l border-slate-800/50 border-b border-slate-800/50">{job.runner || '—'}</td>
                       ))}
                     </tr>
 
-                    <tr className="hover:bg-slate-800/20">
+                    <tr className="hover:bg-white/[0.02] transition-colors">
                       <td
-                        className="py-3 pr-4 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1"
+                        className="p-3 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1 font-bold"
                         onClick={() =>
                           setSortConfig({
                             key: 'status',
@@ -396,13 +399,13 @@ export default function JobsPage() {
                         Status {sortConfig?.key === 'status' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
                       </td>
                       {sortedCompareJobs.map((job) => (
-                        <td key={job.id} className="py-3 pr-4"><StatusBadge value={job.status} /></td>
+                        <td key={job.id} className="p-3 border-l border-slate-800/50"><StatusBadge value={job.status} /></td>
                       ))}
                     </tr>
 
-                    <tr className="hover:bg-slate-800/20 border-t border-slate-800/50">
+                    <tr className="hover:bg-white/[0.02] transition-colors">
                       <td
-                        className="py-3 pr-4 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1"
+                        className="p-3 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1 font-bold"
                         onClick={() =>
                           setSortConfig({
                             key: 'epochs',
@@ -413,13 +416,13 @@ export default function JobsPage() {
                         Epochs {sortConfig?.key === 'epochs' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
                       </td>
                       {sortedCompareJobs.map((job) => (
-                        <td key={job.id} className="py-3 pr-4 text-white">{job.qlora?.numTrainEpochs ?? '—'}</td>
+                        <td key={job.id} className="p-3 text-white border-l border-slate-800/50">{job.qlora?.numTrainEpochs ?? '—'}</td>
                       ))}
                     </tr>
 
-                    <tr className="hover:bg-slate-800/20">
+                    <tr className="hover:bg-white/[0.02] transition-colors">
                       <td
-                        className="py-3 pr-4 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1"
+                        className="p-3 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1 font-bold"
                         onClick={() =>
                           setSortConfig({
                             key: 'lr',
@@ -430,24 +433,24 @@ export default function JobsPage() {
                         LR {sortConfig?.key === 'lr' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
                       </td>
                       {sortedCompareJobs.map((job) => (
-                        <td key={job.id} className="py-3 pr-4 text-white">
+                        <td key={job.id} className="p-3 text-white border-l border-slate-800/50 font-mono">
                           {job.qlora?.learningRate?.toExponential(2) ?? '—'}
                         </td>
                       ))}
                     </tr>
 
-                    <tr className="hover:bg-slate-800/20">
-                      <td className="py-3 pr-4 text-slate-400">LoRA r/alpha/drop</td>
+                    <tr className="hover:bg-white/[0.02] transition-colors">
+                      <td className="p-3 text-slate-400 font-bold border-b border-slate-800/50">r / α / dropout</td>
                       {sortedCompareJobs.map((job) => (
-                        <td key={job.id} className="py-3 pr-4 text-white">
+                        <td key={job.id} className="p-3 text-white border-l border-slate-800/50 border-b border-slate-800/50">
                           {job.qlora?.loraR ?? '—'} / {job.qlora?.loraAlpha ?? '—'} / {job.qlora?.loraDropout ?? '—'}
                         </td>
                       ))}
                     </tr>
 
-                    <tr className={`hover:bg-slate-800/20 border-t border-slate-800/50 ${sortConfig?.key === 'loss' ? 'bg-blue-500/5' : ''}`}>
+                    <tr className={`hover:bg-emerald-500/5 transition-colors ${sortConfig?.key === 'loss' ? 'bg-emerald-500/5' : ''}`}>
                       <td
-                        className="py-3 pr-4 font-semibold text-emerald-400 cursor-pointer flex items-center gap-1"
+                        className="p-3 font-bold text-emerald-400 cursor-pointer flex items-center gap-1 bg-emerald-500/5"
                         onClick={() =>
                           setSortConfig({
                             key: 'loss',
@@ -460,8 +463,8 @@ export default function JobsPage() {
                       {sortedCompareJobs.map((job) => (
                         <td
                           key={job.id}
-                          className={`py-3 pr-4 font-mono text-lg ${
-                            job.id === bestRunId ? 'text-emerald-400 underline decoration-double' : 'text-white'
+                          className={`p-3 font-mono text-base border-l border-slate-800/50 bg-emerald-500/5 ${
+                            job.id === bestRunId ? 'text-emerald-400 font-bold' : 'text-white'
                           }`}
                         >
                           {job.summaryMetrics?.final_loss?.toFixed(4) ?? '—'}
@@ -469,9 +472,9 @@ export default function JobsPage() {
                       ))}
                     </tr>
 
-                    <tr className="hover:bg-slate-800/20">
+                    <tr className="hover:bg-white/[0.02] transition-colors border-t border-slate-800">
                       <td
-                        className="py-3 pr-4 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1"
+                        className="p-3 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1 font-bold"
                         onClick={() =>
                           setSortConfig({
                             key: 'duration',
@@ -482,13 +485,13 @@ export default function JobsPage() {
                         Duration {sortConfig?.key === 'duration' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
                       </td>
                       {sortedCompareJobs.map((job) => (
-                        <td key={job.id} className="py-3 pr-4 text-white">{job.summaryMetrics?.duration_human ?? '—'}</td>
+                        <td key={job.id} className="p-3 text-white border-l border-slate-800/50">{job.summaryMetrics?.duration_human ?? '—'}</td>
                       ))}
                     </tr>
 
-                    <tr className="hover:bg-slate-800/20">
+                    <tr className="hover:bg-white/[0.02] transition-colors">
                       <td
-                        className="py-3 pr-4 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1"
+                        className="p-3 text-slate-400 cursor-pointer hover:text-white flex items-center gap-1 font-bold"
                         onClick={() =>
                           setSortConfig({
                             key: 'size',
@@ -501,7 +504,7 @@ export default function JobsPage() {
                       {sortedCompareJobs.map((job) => {
                         const lora = (lorasQuery.data || []).find((l) => l.jobId === job.id);
                         return (
-                          <td key={job.id} className="py-3 pr-4 text-white">
+                          <td key={job.id} className="p-3 text-white border-l border-slate-800/50">
                             {lora ? formatSize(lora.size || 0) : '—'}
                           </td>
                         );
@@ -719,12 +722,13 @@ export default function JobsPage() {
               ) : null}
 
               {selectedJob ? (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Logs</CardTitle>
+                <Card className="flex flex-col overflow-hidden min-h-[400px]">
+                  <CardHeader className="flex flex-row items-center justify-between">
+                    <CardTitle>Runtime Logs</CardTitle>
+                    <div className="text-[10px] text-slate-500 font-mono">Real-time output</div>
                   </CardHeader>
-                  <CardContent>
-                    <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded-2xl bg-slate-950 p-4 text-xs text-slate-300">
+                  <CardContent className="p-0 flex-1 overflow-hidden bg-slate-950">
+                    <pre className="h-full overflow-auto whitespace-pre-wrap p-4 text-[11px] font-mono text-slate-300 leading-relaxed scrollbar-thin">
                       {logsQuery.data?.content || 'No logs yet'}
                     </pre>
                   </CardContent>

@@ -191,34 +191,36 @@ export default function EvaluationsPage() {
   };
 
   return (
-    <div className="container mx-auto py-6 space-y-8">
+    <div className="space-y-4 flex flex-col h-full overflow-hidden">
       <PageHeader
         title="Evaluations"
-        description="Сравнение моделей-оценщиков на контрольных датасетах."
+        description="Benchmark evaluator models on control datasets."
       />
 
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className="grid gap-4 xl:grid-cols-2 max-h-[500px]">
         {/* Import Section */}
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Upload size={18} className="text-blue-400" /> Import Evaluation Dataset
+        <Card className="flex flex-col overflow-hidden">
+          <CardHeader className="py-2.5">
+            <CardTitle className="flex items-center gap-2 text-xs">
+              <Upload size={14} className="text-blue-400" /> Import Dataset
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4 flex-1">
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase">Dataset Name</label>
+          <CardContent className="space-y-3 flex-1 overflow-y-auto scrollbar-thin py-3">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Dataset Name</label>
               <Input
+                size="sm"
+                className="h-8 text-xs font-mono"
                 placeholder="e.g. JS Expert Benchmark"
                 value={importName}
                 onChange={e => setImportName(e.target.value)}
               />
             </div>
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase">Content (TXT Format)</label>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Content (TXT)</label>
               <Textarea
-                placeholder="Вопрос: ...\nОтвет: ...\nОценка: 10/10\n\nВопрос: ..."
-                className="font-mono text-[10px] h-48 bg-slate-950"
+                placeholder="Вопрос: ...\nОтвет: ...\nОценка: 10/10"
+                className="font-mono text-[10px] h-24 bg-slate-950/50"
                 value={importContent}
                 onChange={e => setImportContent(e.target.value)}
               />
@@ -226,7 +228,8 @@ export default function EvaluationsPage() {
 
             {importContent && (
               <Button
-                className="w-full text-xs h-8 border border-slate-600 bg-transparent hover:bg-slate-800"
+                size="sm"
+                className="w-full text-[10px] h-7 border border-slate-700 bg-transparent hover:bg-slate-800"
                 onClick={() => validateMutation.mutate(importContent)}
                 disabled={validateMutation.isPending}
               >
@@ -266,25 +269,27 @@ export default function EvaluationsPage() {
         </Card>
 
         {/* Run Section */}
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Play size={18} className="text-emerald-400" /> Run New Evaluation
+        <Card className="flex flex-col overflow-hidden">
+          <CardHeader className="py-2.5">
+            <CardTitle className="flex items-center gap-2 text-xs">
+              <Play size={14} className="text-emerald-400" /> New Evaluation Run
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4 flex-1">
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase">Run Name (Optional)</label>
+          <CardContent className="space-y-3 flex-1 overflow-y-auto scrollbar-thin py-3">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Run Name</label>
               <Input
+                size="sm"
+                className="h-8 text-xs font-mono"
                 placeholder="e.g. Qwen vs Llama comparison"
                 value={runName}
                 onChange={e => setRunName(e.target.value)}
               />
             </div>
 
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase">Evaluation Dataset</label>
-              <Select value={selectedDatasetId} onChange={e => setSelectedDatasetId(e.target.value)}>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Evaluation Dataset</label>
+              <Select size="sm" className="h-8 text-xs font-mono" value={selectedDatasetId} onChange={e => setSelectedDatasetId(e.target.value)}>
                 <option value="">Select Dataset</option>
                 {datasetsQuery.data?.map(ds => (
                   <option key={ds.id} value={ds.id}>{ds.name} ({ds.samplesCount} samples)</option>
@@ -292,23 +297,25 @@ export default function EvaluationsPage() {
               </Select>
             </div>
 
-            <div className="space-y-3">
-              <label className="text-xs font-semibold text-slate-500 uppercase flex items-center justify-between">
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
                 Targets
-                <span className="text-[10px] font-normal lowercase">({targets.length} selected)</span>
+                <span className="text-[9px] font-normal lowercase">({targets.length})</span>
               </label>
 
-              <div className="space-y-3 max-h-72 overflow-y-auto pr-2">
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-1 scrollbar-thin">
                 {targets.map((target, index) => (
                   <div
                     key={index}
-                    className="grid grid-cols-[120px_1fr_44px] gap-2 rounded-xl border border-slate-800 bg-slate-950/30 p-3"
+                    className="grid grid-cols-[80px_1fr_36px] gap-2 rounded-lg border border-slate-800 bg-slate-950/30 p-2"
                   >
                     <div>
-                      <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">
+                      <div className="mb-0.5 text-[9px] font-bold uppercase text-slate-600">
                         Type
                       </div>
                       <Select
+                        size="sm"
+                        className="h-7 text-[10px]"
                         value={target.type}
                         onChange={e => handleTargetChange(index, 'type', e.target.value)}
                       >
@@ -318,11 +325,13 @@ export default function EvaluationsPage() {
                     </div>
 
                     <div>
-                      <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">
+                      <div className="mb-0.5 text-[9px] font-bold uppercase text-slate-600">
                         {target.type === 'model' ? 'Choose model' : 'Choose LoRA'}
                       </div>
 
                       <Select
+                        size="sm"
+                        className="h-7 text-[10px]"
                         value={target.id}
                         onChange={e => handleTargetChange(index, 'id', e.target.value)}
                       >

@@ -6,11 +6,35 @@
   color-scheme: dark;
 }
 
-body {
+html, body {
   @apply bg-slate-950 text-slate-50 antialiased;
+  overflow-x: hidden;
+  height: 100%;
+}
+
+#root {
+  height: 100%;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #475569 transparent;
+  scrollbar-color: #334155 transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
 }

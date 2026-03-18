@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import {
   Bot,
@@ -13,6 +14,9 @@ import {
   Activity,
   SplitSquareHorizontal,
   CheckCircle,
+  Menu,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -33,45 +37,129 @@ const items = [
 ];
 
 export function AppShell() {
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-50">
-      <div className="mx-auto grid min-h-screen max-w-[1600px] grid-cols-1 md:grid-cols-[280px_1fr]">
-        <aside className="border-r border-slate-800 bg-slate-950/90 p-5">
-          <div className="mb-8">
-            <div className="text-xs uppercase tracking-[0.2em] text-slate-500">LLM Lab</div>
-            <div className="mt-2 text-xl font-semibold text-white">Training Console</div>
-            <div className="mt-2 text-sm text-slate-400">
-              База моделей, LoRA, обучение, инференс и упаковка.
+    <div className="flex h-screen w-full bg-slate-950 text-slate-50 overflow-hidden">
+      {/* Sidebar for Desktop */}
+      <aside
+        className={cn(
+          'hidden md:flex flex-col border-r border-slate-800 bg-slate-950/90 transition-all duration-300 ease-in-out relative',
+          collapsed ? 'w-16' : 'w-64',
+        )}
+      >
+        <div className={cn('p-4 mb-4 flex items-center justify-between', collapsed && 'justify-center')}>
+          {!collapsed && (
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 truncate">LLM Lab</div>
+              <div className="text-lg font-bold text-white truncate">Lab Console</div>
             </div>
-          </div>
+          )}
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            className="p-1 hover:bg-slate-900 rounded-md text-slate-400 hover:text-white transition-colors"
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+          </button>
+        </div>
 
-          <nav className="space-y-1">
-            {items.map((item) => {
-              const Icon = item.icon;
-              return (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.end}
-                  className={({ isActive }) =>
-                    cn(
-                      'flex items-center gap-3 rounded-2xl px-3 py-3 text-sm text-slate-300 transition hover:bg-slate-900 hover:text-white',
-                      isActive && 'bg-slate-900 text-white ring-1 ring-slate-800',
-                    )
-                  }
-                >
-                  <Icon size={18} />
-                  {item.label}
-                </NavLink>
-              );
-            })}
-          </nav>
-        </aside>
+        <nav className="flex-1 space-y-1 px-2 overflow-y-auto scrollbar-thin">
+          {items.map((item) => {
+            const Icon = item.icon;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-slate-400 transition-all hover:bg-slate-900 hover:text-white group relative',
+                    isActive && 'bg-slate-900 text-white ring-1 ring-slate-800',
+                    collapsed && 'justify-center px-0'
+                  )
+                }
+                title={collapsed ? item.label : undefined}
+              >
+                {({ isActive }) => (
+                  <>
+                    <Icon size={18} className={cn('shrink-0', isActive ? 'text-blue-400' : 'group-hover:text-blue-400')} />
+                    {!collapsed && <span className="truncate">{item.label}</span>}
+                    {collapsed && (
+                      <div className="absolute left-full ml-2 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none z-50 whitespace-nowrap border border-slate-700">
+                          {item.label}
+                      </div>
+                    )}
+                  </>
+                )}
+              </NavLink>
+            );
+          })}
+        </nav>
+      </aside>
 
-        <main className="p-6 md:p-8">
-          <Outlet />
-        </main>
+      {/* Mobile Header */}
+      <div className="md:hidden fixed top-0 left-0 right-0 h-14 border-b border-slate-800 bg-slate-950/95 flex items-center px-4 z-40">
+        <button
+          onClick={() => setMobileOpen(true)}
+          className="p-2 -ml-2 text-slate-400 hover:text-white"
+        >
+          <Menu size={24} />
+        </button>
+        <div className="ml-3 font-bold text-white">LLM Lab</div>
       </div>
+
+      {/* Mobile Sidebar Overlay */}
+      {mobileOpen && (
+        <div
+          className="md:hidden fixed inset-0 bg-black/60 z-50 backdrop-blur-sm"
+          onClick={() => setMobileOpen(false)}
+        >
+          <aside
+            className="w-64 h-full bg-slate-950 border-r border-slate-800 p-4 flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-8">
+              <div className="font-bold text-white">LLM Lab</div>
+              <button onClick={() => setMobileOpen(false)} className="text-slate-400">
+                <ChevronLeft size={24} />
+              </button>
+            </div>
+            <nav className="space-y-1 flex-1 overflow-y-auto">
+              {items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.end}
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      cn(
+                        'flex items-center gap-3 rounded-xl px-3 py-3 text-sm text-slate-300 transition hover:bg-slate-900 hover:text-white',
+                        isActive && 'bg-slate-900 text-white ring-1 ring-slate-800',
+                      )
+                    }
+                  >
+                    <Icon size={18} />
+                    {item.label}
+                  </NavLink>
+                );
+              })}
+            </nav>
+          </aside>
+        </div>
+      )}
+
+      {/* Main Content Area */}
+      <main className="flex-1 flex flex-col min-w-0 h-screen relative pt-14 md:pt-0 overflow-hidden">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
+          <div className="max-w-[1600px] mx-auto p-4 md:p-6 lg:p-8">
+            <Outlet />
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

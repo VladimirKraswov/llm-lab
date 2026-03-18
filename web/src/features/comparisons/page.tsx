@@ -123,106 +123,115 @@ export default function ComparisonsPage() {
         description="Запусти один comparison job на нескольких моделях и LoRA, затем смотри результаты в Jobs."
       />
 
-      <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <Card>
+      <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr] flex-1 overflow-hidden">
+        <Card className="flex flex-col overflow-hidden">
           <CardHeader>
             <CardTitle>Create comparison job</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-5">
+          <CardContent className="space-y-4 flex-1 overflow-y-auto scrollbar-thin">
             <div>
-              <label className="mb-2 block text-sm text-slate-400">Job name</label>
+              <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500 tracking-wider">Job name</label>
               <Input
+                size="sm"
+                className="h-8 text-xs font-mono"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="compare-qwen-runs"
               />
             </div>
 
-            <div className="space-y-3">
-              <div className="text-sm font-medium text-white">Targets</div>
+            <div className="space-y-2">
+              <div className="text-xs font-bold uppercase text-slate-400">Targets</div>
 
-              {targets.map((row, idx) => (
-                <div
-                  key={idx}
-                  className="grid gap-3 rounded-2xl border border-slate-800 bg-slate-950/30 p-4 md:grid-cols-[140px_1fr_auto]"
-                >
-                  <div>
-                    <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
-                      Target type
-                    </label>
-                    <Select
-                      value={row.kind}
-                      onChange={(e) =>
-                        updateTarget(idx, {
-                          kind: e.target.value as 'model' | 'lora',
-                          id: '',
-                        })
-                      }
-                    >
-                      <option value="model">Model</option>
-                      <option value="lora">LoRA</option>
-                    </Select>
+              <div className="space-y-2 max-h-[320px] overflow-y-auto pr-2 scrollbar-thin">
+                {targets.map((row, idx) => (
+                  <div
+                    key={idx}
+                    className="grid gap-2 rounded-xl border border-slate-800 bg-slate-950/30 p-3 md:grid-cols-[100px_1fr_auto]"
+                  >
+                    <div>
+                      <label className="mb-1 block text-[9px] uppercase font-bold text-slate-600">
+                        Type
+                      </label>
+                      <Select
+                        size="sm"
+                        className="h-7 text-[10px]"
+                        value={row.kind}
+                        onChange={(e) =>
+                          updateTarget(idx, {
+                            kind: e.target.value as 'model' | 'lora',
+                            id: '',
+                          })
+                        }
+                      >
+                        <option value="model">Model</option>
+                        <option value="lora">LoRA</option>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-[9px] uppercase font-bold text-slate-600">
+                        Select {row.kind}
+                      </label>
+                      <Select
+                        size="sm"
+                        className="h-7 text-[10px]"
+                        value={row.id}
+                        onChange={(e) => updateTarget(idx, { id: e.target.value })}
+                      >
+                        <option value="">Choose...</option>
+                        {row.kind === 'model'
+                          ? readyModels.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.name}
+                              </option>
+                            ))
+                          : readyLoras.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.name}
+                              </option>
+                            ))}
+                      </Select>
+                    </div>
+
+                    <div className="flex items-end">
+                      <Button
+                        size="sm"
+                        className="h-7 px-2 bg-rose-700/80 text-[10px] text-white hover:bg-rose-600"
+                        onClick={() => removeTarget(idx)}
+                        disabled={targets.length <= 2}
+                      >
+                        Del
+                      </Button>
+                    </div>
                   </div>
+                ))}
+              </div>
 
-                  <div>
-                    <label className="mb-2 block text-xs uppercase tracking-wide text-slate-500">
-                      Target
-                    </label>
-                    <Select
-                      value={row.id}
-                      onChange={(e) => updateTarget(idx, { id: e.target.value })}
-                    >
-                      <option value="">Select {row.kind}</option>
-                      {row.kind === 'model'
-                        ? readyModels.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.name}
-                            </option>
-                          ))
-                        : readyLoras.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.name}
-                            </option>
-                          ))}
-                    </Select>
-                  </div>
-
-                  <div className="flex items-end">
-                    <Button
-                      className="bg-rose-700 text-white hover:bg-rose-600"
-                      onClick={() => removeTarget(idx)}
-                      disabled={targets.length <= 2}
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                </div>
-              ))}
-
-              <Button className="bg-slate-800 hover:bg-slate-700" onClick={addTarget}>
-                Add target
+              <Button size="sm" className="w-full h-7 text-[10px] bg-slate-800 hover:bg-slate-700 border-dashed border border-slate-700" onClick={addTarget}>
+                + Add target
               </Button>
             </div>
 
             <div>
-              <label className="mb-2 block text-sm text-slate-400">
-                Prompts, one per line
+              <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500 tracking-wider">
+                Prompts (one per line)
               </label>
               <Textarea
-                className="min-h-[220px]"
+                className="min-h-[120px] text-xs font-mono bg-slate-950/50"
                 value={promptsText}
                 onChange={(e) => setPromptsText(e.target.value)}
                 placeholder={'What is the capital of France?\nExplain gravity like I am five.'}
               />
-              <div className="mt-2 text-xs text-slate-500">
-                Parsed prompts: {prompts.length}
+              <div className="mt-1 text-[10px] text-slate-500">
+                Parsed: {prompts.length}
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-3">
               <div>
-                <label className="mb-2 block text-sm text-slate-400">Provider</label>
-                <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500 tracking-wider">Provider</label>
+                <Select size="sm" className="h-8 text-[10px]" value={provider} onChange={(e) => setProvider(e.target.value)}>
                   {(providersQuery.data?.available || []).map((p) => (
                     <option key={p.id} value={p.id} disabled={!p.available}>
                       {p.label} {!p.available ? '(Unavailable)' : ''}

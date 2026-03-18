@@ -17,37 +17,38 @@ export default function DashboardPage() {
   });
 
   return (
-    <div>
+    <div className="space-y-4">
       <PageHeader
         title="Dashboard"
         description="Сводка по окружению, датасетам, обучению и runtime."
         actions={
           <Link to="/app/training">
-            <Button>Start training</Button>
+            <Button size="sm">Start training</Button>
           </Link>
         }
       />
 
-      {isLoading ? <p className="text-slate-400">Loading…</p> : null}
-      {error ? <p className="text-rose-300">{(error as Error).message}</p> : null}
+      {isLoading ? <p className="text-slate-400 text-sm">Loading…</p> : null}
+      {error ? <p className="text-rose-300 text-sm">{(error as Error).message}</p> : null}
 
       {data ? (
-        <div className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <div className="space-y-4">
+          <div className="grid gap-3 grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
             <StatCard title="Datasets" value={data.counts.datasets} />
             <StatCard title="Jobs" value={data.counts.jobs} />
-            <StatCard title="Running jobs" value={data.counts.runningJobs} />
-            <StatCard title="Completed jobs" value={data.counts.completedJobs} />
-            <StatCard title="Failed jobs" value={data.counts.failedJobs} />
+            <StatCard title="Running" value={data.counts.runningJobs} />
+            <StatCard title="Completed" value={data.counts.completedJobs} />
+            <StatCard title="Failed" value={data.counts.failedJobs} />
           </div>
 
-          <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+          <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
             <Card>
-              <CardHeader>
+              <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle>Recent jobs</CardTitle>
+                <Link to="/app/jobs" className="text-xs text-blue-400 hover:text-blue-300">View all</Link>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
+                <div className="space-y-2">
                   {data.recentJobs.length ? (
                     data.recentJobs.map((job) => {
                       const isSynthetic = job.type === 'synthetic-gen';
@@ -56,7 +57,7 @@ export default function DashboardPage() {
                       return (
                         <div
                           key={job.id}
-                          className={`flex flex-col gap-2 rounded-2xl border p-4 md:flex-row md:items-center md:justify-between ${
+                          className={`flex items-center justify-between gap-4 rounded-xl border p-2.5 ${
                             isSynthetic
                               ? 'border-cyan-500/20 bg-cyan-500/5'
                               : isQuantize
@@ -64,21 +65,21 @@ export default function DashboardPage() {
                                 : 'border-purple-500/20 bg-purple-500/5'
                           }`}
                         >
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
-                              <div className="font-medium text-white">{job.name}</div>
+                              <div className="font-semibold text-white text-sm truncate">{job.name}</div>
                               <JobTypeBadge type={job.type} />
                             </div>
 
-                            <div className="mt-1 text-sm text-slate-400">
+                            <div className="mt-0.5 text-xs text-slate-400 truncate">
                               {isSynthetic
                                 ? `Step: ${job.syntheticMeta?.progressStep || job.progressStep || '—'}`
-                                : truncate(job.baseModel || '—', 70)}
+                                : job.baseModel || '—'}
                             </div>
 
-                            <div className="mt-1 text-xs text-slate-500">
-                              Started: {fmtDate(job.startedAt || job.createdAt)}
-                              {job.runner ? ` · Runner: ${job.runner}` : ''}
+                            <div className="mt-0.5 text-[10px] text-slate-500">
+                              {fmtDate(job.startedAt || job.createdAt)}
+                              {job.runner ? ` · ${job.runner}` : ''}
                             </div>
                           </div>
 
@@ -87,7 +88,7 @@ export default function DashboardPage() {
                       );
                     })
                   ) : (
-                    <p className="text-slate-400">No jobs yet.</p>
+                    <p className="text-slate-400 text-sm">No jobs yet.</p>
                   )}
                 </div>
               </CardContent>
@@ -97,33 +98,37 @@ export default function DashboardPage() {
               <CardHeader>
                 <CardTitle>System status</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Python</span>
+                  <span className="text-xs text-slate-400 font-medium">Python</span>
                   <StatusBadge value={data.health.python ? 'healthy' : 'failed'} />
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Quant env</span>
+                  <span className="text-xs text-slate-400 font-medium">Quantize Env</span>
                   <StatusBadge value={data.health.quantizeEnvOk ? 'healthy' : 'failed'} />
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-400">vLLM binary</span>
+                  <span className="text-xs text-slate-400 font-medium">vLLM Binary</span>
                   <StatusBadge value={data.health.vllmBin ? 'healthy' : 'failed'} />
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Runtime model</span>
-                  <span className="text-sm text-white">{data.runtime.vllm?.model || 'Not running'}</span>
+                <div className="pt-2 mt-2 border-t border-slate-800 space-y-2">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">Runtime model</span>
+                    <span className="text-xs text-white truncate font-mono bg-slate-950/50 p-1.5 rounded border border-slate-800">
+                       {data.runtime.vllm?.model || 'Not running'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400">Port</span>
+                    <span className="text-xs font-mono text-white">{data.settings.inferencePort}</span>
+                  </div>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Runtime port</span>
-                  <span className="text-sm text-white">{data.settings.inferencePort}</span>
-                </div>
-
-                <div className="text-xs text-slate-500">Updated: {fmtDate(data.health.time)}</div>
+                <div className="text-[10px] text-slate-600 text-right">Updated: {fmtDate(data.health.time)}</div>
               </CardContent>
             </Card>
           </div>
