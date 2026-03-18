@@ -446,13 +446,13 @@ def main():
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
         args=training_args,
         dataset_text_field="text",
         packing=False,
-        dataset_num_proc=1,
     )
+
     trainer.add_callback(JsonMetricsCallback())
 
     report(40)
