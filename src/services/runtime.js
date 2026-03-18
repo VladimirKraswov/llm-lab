@@ -1,5 +1,7 @@
+// services/runtime.js
 const fs = require('fs');
 const fsp = require('fs/promises');
+const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso } = require('../utils/ids');
 const { isPidRunning } = require('../utils/proc');
@@ -18,27 +20,36 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Валидация параметров запуска инференса
+ * @throws {Error} если параметры некорректны
+ */
 function validateInferenceParams(params = {}) {
   if (params.port !== undefined && (!Number.isInteger(params.port) || params.port < 1 || params.port > 65535)) {
     throw new Error('port must be an integer between 1 and 65535');
   }
+
   if (
     params.gpuMemoryUtilization !== undefined &&
     (typeof params.gpuMemoryUtilization !== 'number' ||
       params.gpuMemoryUtilization <= 0 ||
       params.gpuMemoryUtilization > 1)
   ) {
-    throw new Error('gpuMemoryUtilization must be between 0 and 1');
+    throw new Error('gpuMemoryUtilization must be a number between 0 and 1');
   }
-  if (params.maxModelLen !== undefined && (!Number.isInteger(params.maxModelLen) || params.maxModelLen < 1)) {
-    throw new Error('maxModelLen must be a positive integer');
+
+  if (params.maxModelLen !== undefined && (!Number.isInteger(params.maxModelLen) || params.maxModelLen < 512)) {
+    throw new Error('maxModelLen must be an integer >= 512');
   }
+
   if (params.maxNumSeqs !== undefined && (!Number.isInteger(params.maxNumSeqs) || params.maxNumSeqs < 1)) {
     throw new Error('maxNumSeqs must be a positive integer');
   }
+
   if (params.swapSpace !== undefined && (!Number.isInteger(params.swapSpace) || params.swapSpace < 0)) {
     throw new Error('swapSpace must be a non-negative integer');
   }
+
   if (
     params.tensorParallelSize !== undefined &&
     (!Number.isInteger(params.tensorParallelSize) || params.tensorParallelSize < 1)
@@ -47,19 +58,21 @@ function validateInferenceParams(params = {}) {
   }
 }
 
+/**
+ * Маппинг torch dtype → vLLM dtype
+ */
 function mapTorchDtypeToVllm(torchDtype) {
-  switch (String(torchDtype || '').toLowerCase()) {
-    case 'float16':
-      return 'half';
-    case 'float32':
-      return 'float';
-    case 'bfloat16':
-      return 'bfloat16';
-    default:
-      return null;
-  }
+  const mapping = {
+    float16: 'half',
+    float32: 'float',
+    bfloat16: 'bfloat16',
+  };
+  return mapping[String(torchDtype || '').toLowerCase()] ?? null;
 }
 
+/**
+ * Чтение и анализ config.json модели (если существует)
+ */
 function resolveModelConfig(modelRef) {
   const result = {
     exists: false,
@@ -78,71 +91,76 @@ function resolveModelConfig(modelRef) {
     const normalized = String(modelRef || '').trim();
     if (!normalized) return result;
 
-    const configPath = `${normalized}/config.json`;
+    const configPath = path.join(normalized, 'config.json');
     if (!fs.existsSync(configPath)) {
       return result;
     }
 
     const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const quantMethod = raw?.quantization_config?.quant_method || null;
-    const torchDtype = raw?.torch_dtype || null;
-    const maxPositionEmbeddings = Number(raw?.max_position_embeddings || 0) || null;
-    const slidingWindow = Number(raw?.sliding_window || 0) || null;
-    const modelType = raw?.model_type || null;
 
     result.exists = true;
     result.configPath = configPath;
     result.raw = raw;
+
+    const quantMethod = raw?.quantization_config?.quant_method ?? null;
+    const torchDtype = raw?.torch_dtype ?? null;
+    const maxPosEmb = Number(raw?.max_position_embeddings ?? 0) || null;
+    const sliding = Number(raw?.sliding_window ?? 0) || null;
+    const modelType = raw?.model_type ?? null;
+
     result.detected = {
       quantization: quantMethod ? String(quantMethod).toLowerCase() : null,
       dtype: mapTorchDtypeToVllm(torchDtype),
-      maxModelLen: maxPositionEmbeddings,
-      slidingWindow,
+      maxModelLen: maxPosEmb,
+      slidingWindow: sliding,
       modelType,
     };
 
     return result;
   } catch (err) {
-    logger.warn('Failed to read model config.json', {
+    logger.warn('Не удалось прочитать/распарсить config.json модели', {
       model: modelRef,
-      error: String(err.message || err),
+      error: err.message,
     });
     return result;
   }
 }
 
-function hasOwn(obj, key) {
-  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
-}
-
-function resolveQuantization(params, inf, detected) {
-  if (hasOwn(params, 'quantization') && params.quantization !== null) return params.quantization;
-  if (inf.quantization !== undefined && inf.quantization !== null && inf.quantization !== '') {
-    return inf.quantization;
+function resolveQuantization(params, settingsInf, detected) {
+  if (params.quantization !== undefined && params.quantization !== null) {
+    return params.quantization;
+  }
+  if (settingsInf.quantization !== undefined && settingsInf.quantization !== null) {
+    return settingsInf.quantization;
   }
   return detected.quantization ?? null;
 }
 
-function resolveDtype(params, inf, detected) {
-  if (hasOwn(params, 'dtype') && params.dtype && params.dtype !== 'auto') {
-    return params.dtype;
-  }
-  if (inf.dtype && inf.dtype !== 'auto') {
-    return inf.dtype;
-  }
+function resolveDtype(params, settingsInf, detected) {
+  if (params.dtype && params.dtype !== 'auto') return params.dtype;
+  if (settingsInf.dtype && settingsInf.dtype !== 'auto') return settingsInf.dtype;
+
+  // Для AWQ часто лучше half
   if (detected.quantization === 'awq' && (!detected.dtype || detected.dtype === 'auto')) {
     return 'half';
   }
+
   return detected.dtype ?? 'auto';
 }
 
-function resolveMaxModelLen(params, inf, detected) {
-  const requested = Number(params.maxModelLen ?? inf.maxModelLen ?? 8192);
+function resolveMaxModelLen(params, settingsInf, detected) {
+  const requested = Number(params.maxModelLen ?? settingsInf.maxModelLen ?? 8192);
   const limit = detected.maxModelLen;
+
   if (limit && requested > limit) {
-    logger.warn('Requested maxModelLen exceeds model limit, clamping', { requested, limit });
+    logger.warn('Запрошенный maxModelLen превышает лимит модели → обрезаем', {
+      requested,
+      limit,
+      model: params.model,
+    });
     return limit;
   }
+
   return requested;
 }
 
@@ -176,39 +194,70 @@ function buildStoppedInferenceState(settings, overrides = {}) {
       error: null,
     },
     ...overrides,
-    capabilities: {
-      experimental: false,
-      supportsStreaming: true,
-      supportsLora: true,
-      supportsAwq: true,
-      ...((overrides && overrides.capabilities) || {}),
-    },
-    probe: {
-      ok: false,
-      status: 'idle',
-      checkedAt: null,
-      error: null,
-      ...((overrides && overrides.probe) || {}),
-    },
   };
 }
 
+/**
+ * Запуск runtime (vLLM или transformers)
+ * @param {Object} params - параметры запуска
+ * @returns {Promise<Object>} состояние runtime после запуска
+ */
 async function startRuntime(params = {}) {
   const settings = await getSettings();
   const inf = settings.inference || {};
 
-  const requestedModel = String(params.model ?? inf.model ?? settings.baseModel ?? '').trim();
+  // ──────────────────────────────────────────────
+  // 1. Нормализация и проверка пути к модели
+  // ──────────────────────────────────────────────
+  let requestedModel = String(params.model ?? inf.model ?? settings.baseModel ?? '').trim();
   if (!requestedModel) {
-    throw new Error('model is required');
+    throw new Error('Параметр model обязателен');
   }
 
-  const modelCfg = resolveModelConfig(requestedModel);
+  let resolvedModelPath = requestedModel;
+
+  try {
+    resolvedModelPath = path.resolve(requestedModel);
+    const configJsonPath = path.join(resolvedModelPath, 'config.json');
+
+    if (!fs.existsSync(resolvedModelPath)) {
+      throw new Error(`Директория модели не найдена: ${resolvedModelPath}`);
+    }
+
+    if (!fs.existsSync(configJsonPath)) {
+      throw new Error(
+        `Файл config.json отсутствует в директории модели: ${resolvedModelPath}\n` +
+        `vLLM / transformers не смогут загрузить модель без этого файла.`
+      );
+    }
+
+    logger.info('Путь к модели проверен и нормализован', {
+      original: requestedModel,
+      resolved: resolvedModelPath,
+      configExists: true,
+    });
+  } catch (err) {
+    logger.error('Ошибка проверки пути к модели', {
+      requestedModel,
+      error: err.message,
+    });
+    throw err;
+  }
+
+  const modelCfg = resolveModelConfig(resolvedModelPath);
+
+  // ──────────────────────────────────────────────
+  // 2. Определение количества GPU
+  // ──────────────────────────────────────────────
   const { getGpuInfo } = require('../utils/gpu_info');
-  const gpuInfo = await getGpuInfo();
+  const gpuInfo = await getGpuInfo().catch(() => []);
   const numGpus = gpuInfo.length || 1;
 
+  // ──────────────────────────────────────────────
+  // 3. Сборка финальных параметров
+  // ──────────────────────────────────────────────
   const merged = {
-    model: requestedModel,
+    model: resolvedModelPath,  // ← исправленный абсолютный путь
     port: Number(params.port ?? inf.port ?? CONFIG.vllmPort),
     maxModelLen: resolveMaxModelLen(params, inf, modelCfg.detected),
     gpuMemoryUtilization: Number(params.gpuMemoryUtilization ?? inf.gpuMemoryUtilization ?? 0.9),
@@ -243,8 +292,11 @@ async function startRuntime(params = {}) {
     provider: requestedProviderId,
   } = merged;
 
+  // ──────────────────────────────────────────────
+  // 4. Выбор провайдера
+  // ──────────────────────────────────────────────
   if (!fs.existsSync(CONFIG.pythonBin)) {
-    throw new Error(`Python binary not found: ${CONFIG.pythonBin}`);
+    throw new Error(`Python бинарник не найден: ${CONFIG.pythonBin}`);
   }
 
   const { provider, compatibility, capabilities } = await providers.resolveProvider(
@@ -252,27 +304,46 @@ async function startRuntime(params = {}) {
     modelCfg.detected
   );
 
-  logger.info('Resolved inference provider', {
+  logger.info('Провайдер инференса выбран', {
     requested: requestedProviderId,
     resolved: provider.id,
+    modelPath: model,
     compatibility,
     capabilities,
   });
 
+  // ──────────────────────────────────────────────
+  // 5. Очистка и подготовка
+  // ──────────────────────────────────────────────
   await clearGpuMemory({ types: ['runtime'] });
 
   const runtime = await getRuntime();
   if (runtime.inference?.pid && isPidRunning(runtime.inference.pid)) {
+    logger.info('Остановка существующего runtime перед новым запуском');
     await stopRuntime();
   }
 
-  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
-  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
+  await fsp.mkdir(CONFIG.logsDir, { recursive: true });
+  await fsp.mkdir(CONFIG.trainingConfigsDir, { recursive: true });
 
-  const pid = await provider.start({
-    ...merged,
-    modelConfigPath: modelCfg.configPath,
-  });
+  // ──────────────────────────────────────────────
+  // 6. Запуск провайдера
+  // ──────────────────────────────────────────────
+  let pid;
+  try {
+    pid = await provider.start({
+      ...merged,
+      modelConfigPath: modelCfg.configPath,
+    });
+  } catch (err) {
+    logger.error('Не удалось запустить провайдер инференса', {
+      provider: provider.id,
+      modelPath: model,
+      error: err.message,
+      stack: err.stack?.split('\n').slice(0, 6).join('\n'),
+    });
+    throw err;
+  }
 
   await registerManagedProcess({
     pid,
@@ -289,12 +360,14 @@ async function startRuntime(params = {}) {
     },
   });
 
-  await fsp.writeFile(CONFIG.vllmPidFile, String(pid), 'utf8');
+  await fsp.writeFile(CONFIG.vllmPidFile, String(pid), 'utf8').catch(() => {});
 
+  // ──────────────────────────────────────────────
+  // 7. Ожидание готовности (health check)
+  // ──────────────────────────────────────────────
   let healthy = false;
-
   try {
-    for (let i = 0; i < 120; i += 1) {
+    for (let i = 0; i < 120; i++) {
       const h = await provider.health({ port });
       if (h.ok) {
         healthy = true;
@@ -303,31 +376,42 @@ async function startRuntime(params = {}) {
 
       if (!isPidRunning(pid)) {
         const logs = await readText(CONFIG.vllmLogFile, '');
-        const lastLines = logs.split('\n').slice(-50).join('\n');
-        throw new Error(`Provider process exited during startup. Last logs:\n${lastLines}`);
+        const lastLines = logs.split('\n').slice(-60).join('\n');
+        throw new Error(
+          `Процесс провайдера завершился во время запуска.\nПоследние логи:\n${lastLines}`
+        );
       }
 
       await sleep(1000);
     }
 
     if (!healthy) {
-      throw new Error('Provider did not become healthy within timeout.');
+      throw new Error('Провайдер не стал доступен в течение 120 секунд');
     }
   } catch (err) {
+    logger.error('Ошибка ожидания готовности runtime', { error: err.message });
     await provider.stop({ pid }).catch(() => {});
     await unregisterManagedProcess(pid).catch(() => {});
     await removeFile(CONFIG.vllmPidFile).catch(() => {});
 
-    const isOom = String(err).includes('CUDA out of memory') || String(err).includes('Out of memory');
-    if (isOom && merged.maxModelLen > 2048) {
-      return await startRuntime({ ...params, maxModelLen: 2048 });
-    } else if (isOom && merged.gpuMemoryUtilization > 0.7) {
-      return await startRuntime({ ...params, gpuMemoryUtilization: 0.7 });
+    const isOom = /out of memory/i.test(String(err));
+    if (isOom) {
+      if (merged.maxModelLen > 2048) {
+        logger.warn('OOM → повторный запуск с уменьшенным maxModelLen=2048');
+        return startRuntime({ ...params, maxModelLen: 2048 });
+      }
+      if (merged.gpuMemoryUtilization > 0.7) {
+        logger.warn('OOM → повторный запуск с gpuMemoryUtilization=0.7');
+        return startRuntime({ ...params, gpuMemoryUtilization: 0.7 });
+      }
     }
 
     throw err;
   }
 
+  // ──────────────────────────────────────────────
+  // 8. Сохранение начального состояния
+  // ──────────────────────────────────────────────
   const nextInference = {
     pid,
     model,
@@ -354,8 +438,15 @@ async function startRuntime(params = {}) {
 
   await saveRuntime({ inference: nextInference });
 
-  logger.info('Performing model probe...', { provider: provider.id });
-  const probeResult = await provider.probe(nextInference);
+  // ──────────────────────────────────────────────
+  // 9. Проверка работоспособности модели (probe)
+  // ──────────────────────────────────────────────
+  logger.info('Выполняется проверка модели (probe)...', { provider: provider.id });
+
+  const probeResult = await provider.probe(nextInference).catch((err) => ({
+    ok: false,
+    error: err.message,
+  }));
 
   const finalInference = {
     ...nextInference,
@@ -370,16 +461,16 @@ async function startRuntime(params = {}) {
   await saveRuntime({ inference: finalInference });
 
   if (!probeResult.ok) {
-    logger.warn('Runtime probe failed after startup', {
+    logger.warn('Проверка модели (probe) не прошла после запуска', {
       provider: provider.id,
-      error: probeResult.error || null,
+      error: probeResult.error,
     });
 
     await provider.stop(finalInference).catch(() => {});
     await unregisterManagedProcess(pid).catch(() => {});
     await removeFile(CONFIG.vllmPidFile).catch(() => {});
 
-    const failedInference = buildStoppedInferenceState(settings, {
+    const failedState = buildStoppedInferenceState(settings, {
       providerRequested: requestedProviderId,
       providerResolved: provider.id,
       compatibilityRisk: compatibility.risk,
@@ -388,22 +479,25 @@ async function startRuntime(params = {}) {
       probe: finalInference.probe,
     });
 
-    await saveRuntime({ inference: failedInference });
-    emitEvent('runtime_stopped', failedInference);
+    await saveRuntime({ inference: failedState });
+    emitEvent('runtime_stopped', failedState);
 
-    throw new Error(`Provider probe failed: ${probeResult.error || 'unknown error'}`);
+    throw new Error(`Проверка модели не прошла: ${probeResult.error || 'неизвестная ошибка'}`);
   }
 
   emitEvent('runtime_started', finalInference);
-
-  logger.info('Runtime started successfully', {
+  logger.info('Runtime успешно запущен', {
     provider: provider.id,
     probe: finalInference.probe,
+    modelPath: model,
   });
 
   return finalInference;
 }
 
+/**
+ * Остановка runtime
+ */
 async function stopRuntime() {
   const runtime = await getRuntime();
   const state = runtime.inference;
@@ -412,7 +506,10 @@ async function stopRuntime() {
 
   if (pid && isPidRunning(pid)) {
     const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
-    await provider.stop(state);
+    logger.info('Остановка runtime', { provider: provider.id, pid });
+    await provider.stop(state).catch((err) => {
+      logger.warn('Ошибка при остановке провайдера', { error: err.message });
+    });
   }
 
   if (pid) {
@@ -420,15 +517,15 @@ async function stopRuntime() {
   }
 
   await removeFile(CONFIG.vllmPidFile).catch(() => {});
+
   const settings = await getSettings();
+  const stoppedState = buildStoppedInferenceState(settings);
 
-  const nextInference = buildStoppedInferenceState(settings);
+  await saveRuntime({ inference: stoppedState });
+  emitEvent('runtime_stopped', stoppedState);
 
-  await saveRuntime({ inference: nextInference });
-  emitEvent('runtime_stopped', nextInference);
-  logger.info('Runtime stopped');
-
-  return nextInference;
+  logger.info('Runtime остановлен');
+  return stoppedState;
 }
 
 async function getRuntimeHealth(port) {
@@ -453,13 +550,10 @@ async function getRuntimeHealth(port) {
   }
 }
 
-const startVllmRuntime = startRuntime;
-const stopVllmRuntime = stopRuntime;
-
 module.exports = {
   startRuntime,
   stopRuntime,
   getRuntimeHealth,
-  startVllmRuntime,
-  stopVllmRuntime,
+  startVllmRuntime: startRuntime,   // алиас для совместимости
+  stopVllmRuntime: stopRuntime,     // алиас для совместимости
 };
