@@ -452,21 +452,47 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
   });
 
   const writeLog = (msg, level = 'info', meta = null) => {
-    const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}${
+    // Защита от любых некорректных значений level
+    let safeLevel = 'info';
+    
+    if (typeof level === 'string') {
+      const lowered = level.toLowerCase().trim();
+      // Ограничиваем только допустимыми уровнями (можно расширить)
+      if (['info', 'warn', 'error', 'debug'].includes(lowered)) {
+        safeLevel = lowered;
+      }
+    }
+    // если level был числом, объектом, null и т.д. → остаётся 'info'
+
+    const timestamp = new Date().toISOString();
+    const upperLevel = safeLevel.toUpperCase();
+
+    const line = `[${timestamp}] [${upperLevel}] ${msg}${
       meta ? ` ${JSON.stringify(meta)}` : ''
     }\n`;
+
     logStream.write(line);
 
-    if (level === 'error') logger.error(`Eval ${jobId}: ${msg}`, meta || {});
-    else if (level === 'warn') logger.warn(`Eval ${jobId}: ${msg}`, meta || {});
-    else logger.info(`Eval ${jobId}: ${msg}`, meta || {});
+    // Цветной вывод в консоль (опционально, но удобно при отладке)
+    const colorMap = {
+      info:  '\x1b[32m',   // зелёный
+      warn:  '\x1b[33m',   // жёлтый
+      error: '\x1b[31m',   // красный
+      debug: '\x1b[34m',   // синий
+    };
+    const color = colorMap[safeLevel] || '\x1b[37m'; // белый по умолчанию
+    const reset = '\x1b[0m';
+    
+    console.log(`${timestamp} ${color}${upperLevel}${reset}: ${msg}`,
+      meta ? meta : '');
 
+    // Отправка события (безопасно, даже если meta — не объект)
     emitEvent('job_log', {
       jobId,
       message: msg,
-      level,
-      meta,
-      timestamp: new Date().toISOString(),
+      level: safeLevel,
+      meta: meta || null,
+      timestamp,
     });
   };
 
