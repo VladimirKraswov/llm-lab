@@ -1,7 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/app-shell';
 import LoginPage from './features/auth/login-page';
-import RegisterPage from './features/auth/register-page';
 import { AuthProvider, useAuth } from './hooks/use-auth';
 import DashboardPage from './features/dashboard/page';
 import DatasetsPage from './features/datasets/page';
@@ -39,7 +38,6 @@ export default function App() {
     <AuthProvider>
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/register" element={<RegisterPage />} />
 
       <Route path="/app" element={<PrivateRoute><AppShell /></PrivateRoute>}>
         <Route index element={<DashboardPage />} />

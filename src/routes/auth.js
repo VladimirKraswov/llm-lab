@@ -1,9 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { registerUser, findUserByUsername, verifyPassword, generateToken } = require('../services/auth');
+const authMiddleware = require('../utils/auth-middleware');
+const roleMiddleware = require('../utils/role-middleware');
 
-router.post('/register', async (req, res) => {
-  const { username, password } = req.body;
+router.post('/users', authMiddleware, roleMiddleware(['admin']), async (req, res) => {
+  const { username, password, role } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
@@ -23,13 +25,11 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
-    const user = await registerUser(username, password);
-    const token = generateToken(user);
-
-    res.status(201).json({ user, token });
+    const user = await registerUser(username, password, role || 'member');
+    res.status(201).json({ user });
   } catch (err) {
-    console.error('Registration error:', err);
-    res.status(500).json({ error: 'Failed to register user' });
+    console.error('User creation error:', err);
+    res.status(500).json({ error: 'Failed to create user' });
   }
 });
 
@@ -53,7 +53,7 @@ router.post('/login', async (req, res) => {
 
     const token = generateToken(user);
     res.json({
-      user: { id: user.id, username: user.username },
+      user: { id: user.id, username: user.username, role: user.role },
       token,
     });
   } catch (err) {
