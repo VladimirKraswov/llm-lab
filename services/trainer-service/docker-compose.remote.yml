@@ -3,12 +3,12 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: itk-ai-trainer-service:qwen-0.5
+    image: itk-ai-trainer-service:qwen-7b
     env_file:
       - .env.remote.example
     environment:
       CONFIG_SOURCE: remote
-      CONFIG_REF: https://example.com/job.remote.json
+      CONFIG_REF: ${CONFIG_REF}
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - ./output:/output

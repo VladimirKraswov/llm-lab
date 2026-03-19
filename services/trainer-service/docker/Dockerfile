@@ -1,4 +1,4 @@
-FROM igortet/model-qwen-0.5
+FROM igortet/model-qwen-7b
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \

@@ -1,6 +1,6 @@
 {
-  "job_id": "job_qwen_05_remote_001",
-  "job_name": "qwen-0-5-remote-train",
+  "job_id": "job_qwen_7b_remote_001",
+  "job_name": "qwen-7b-remote-train",
   "mode": "remote",
   "model": {
     "source": "local",
@@ -8,7 +8,7 @@
     "trust_remote_code": false,
     "load_in_4bit": true,
     "dtype": "bfloat16",
-    "max_seq_length": 4096
+    "max_seq_length": 1024
   },
   "dataset": {
     "source": "url",
@@ -20,23 +20,23 @@
   },
   "training": {
     "method": "qlora",
-    "max_seq_length": 4096,
-    "per_device_train_batch_size": 4,
-    "gradient_accumulation_steps": 4,
+    "max_seq_length": 1024,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 1,
     "num_train_epochs": 1,
     "learning_rate": 0.0001,
     "warmup_ratio": 0.03,
     "logging_steps": 1,
-    "save_steps": 50,
-    "eval_steps": 50,
+    "save_steps": 10,
+    "eval_steps": 10,
     "bf16": true,
-    "packing": true,
-    "save_total_limit": 2,
+    "packing": false,
+    "save_total_limit": 1,
     "optim": "adamw_8bit"
   },
   "lora": {
-    "r": 32,
-    "lora_alpha": 64,
+    "r": 8,
+    "lora_alpha": 16,
     "lora_dropout": 0.0,
     "bias": "none",
     "use_gradient_checkpointing": "unsloth",
@@ -45,14 +45,11 @@
       "q_proj",
       "k_proj",
       "v_proj",
-      "o_proj",
-      "gate_proj",
-      "up_proj",
-      "down_proj"
+      "o_proj"
     ]
   },
   "outputs": {
-    "base_dir": "/output/qwen-0-5-remote-train"
+    "base_dir": "/output/qwen-7b-remote-train"
   },
   "postprocess": {
     "merge_lora": true,
@@ -62,8 +59,8 @@
   "evaluation": {
     "enabled": true,
     "target": "auto",
-    "max_samples": 100,
-    "max_new_tokens": 128,
+    "max_samples": 10,
+    "max_new_tokens": 64,
     "temperature": 0.0,
     "do_sample": false,
     "dataset": {

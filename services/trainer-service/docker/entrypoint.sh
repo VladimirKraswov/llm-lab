@@ -5,8 +5,6 @@ DEFAULT_LOCAL_CONFIG="/workspace/configs/trainer/job.json"
 
 echo "==> trainer-service starting"
 
-# Явный запуск через аргументы:
-# docker run ... trainer-service --config https://...
 if [ "$#" -gt 0 ]; then
   echo "==> launching with explicit CLI args: $*"
   exec python /trainer/app/runner.py "$@"
@@ -15,7 +13,6 @@ fi
 CONFIG_SOURCE="${CONFIG_SOURCE:-local}"
 CONFIG_REF="${CONFIG_REF:-$DEFAULT_LOCAL_CONFIG}"
 
-# backward compatibility
 if [ -n "${CONFIG_PATH:-}" ]; then
   CONFIG_REF="$CONFIG_PATH"
   CONFIG_SOURCE="local"
@@ -32,5 +29,4 @@ if [ "${CONFIG_SOURCE}" = "local" ]; then
   fi
 fi
 
-# Не делаем mv/cp модели — используем её прямо из /app
 exec python /trainer/app/runner.py --config "${CONFIG_REF}"
