@@ -26,15 +26,18 @@ RUN python3 -m venv /opt/venv
 
 WORKDIR /trainer
 
+# Копируем локальные wheel-файлы PyTorch
+COPY packages/pip /wheels/pip
+
 COPY requirements.txt /trainer/requirements.txt
 
 RUN pip install -U pip setuptools wheel
 
-RUN pip install torch torchvision torchaudio \
-  --index-url https://download.pytorch.org/whl/cu128 \
-  --timeout=600 --retries=100
+# Установка PyTorch из локальных wheel (без интернета!)
+RUN pip install /wheels/pip/*.whl --no-index --no-deps --break-system-packages
 
-RUN pip install -r /trainer/requirements.txt --timeout=600 --retries=100
+# Установка остальных зависимостей (torch уже стоит, pip пропустит)
+RUN pip install -r /trainer/requirements.txt --break-system-packages
 
 COPY app /trainer/app
 COPY docker/entrypoint.sh /trainer/entrypoint.sh
