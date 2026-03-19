@@ -239,7 +239,7 @@ export default function EvaluationsPage() {
 
     try {
       const fullDs = await api.getEvalDataset(ds.id);
-      const sample = fullDs.samples?.[0];
+      const sample = fullDs.samples?.[0] as EvalSample | undefined;
       if (!sample) {
         toast.error('Dataset has no samples');
         return;
@@ -485,18 +485,16 @@ export default function EvaluationsPage() {
             </CardTitle>
             <div className="flex gap-2">
               <Button
-                variant="ghost"
                 size="sm"
-                className="h-7 text-[10px] text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                className="h-7 text-[10px] text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 bg-transparent"
                 onClick={handleShowPromptPreview}
                 disabled={!selectedDatasetId}
               >
                 <Eye size={12} className="mr-1" /> Preview on Sample
               </Button>
               <Button
-                variant="ghost"
                 size="sm"
-                className="h-7 text-[10px] text-slate-500 hover:text-slate-300"
+                className="h-7 text-[10px] text-slate-500 hover:text-slate-300 bg-transparent"
                 onClick={() => setPromptTemplate(configQuery.data?.defaultPromptTemplate || '')}
               >
                 Reset to Default
@@ -513,7 +511,7 @@ export default function EvaluationsPage() {
                 onChange={e => setPromptTemplate(e.target.value)}
               />
               <div className="text-[10px] text-slate-500 italic">
-                Use \${variable} syntax for substitutions.
+                Use {'${'}variable{'}'} syntax for substitutions.
               </div>
             </div>
 
@@ -716,7 +714,11 @@ export default function EvaluationsPage() {
             <CardHeader className="border-b border-slate-800">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm">Prompt Preview (First Sample)</CardTitle>
-                <Button variant="ghost" size="sm" onClick={() => setIsPromptPreviewOpen(false)}>
+                <Button
+                  size="sm"
+                  className="bg-transparent hover:bg-slate-800"
+                  onClick={() => setIsPromptPreviewOpen(false)}
+                >
                   <X size={18} />
                 </Button>
               </div>

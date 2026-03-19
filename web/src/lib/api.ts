@@ -436,6 +436,8 @@ export type EvalSample = {
   referenceScore: number;
   sourceFile?: string;
   topic?: string | null;
+  hashTags?: string[];
+  maxScore?: number;
 };
 
 export type EvalDataset = {
