@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Default fallback
 DEFAULT_LOCAL_CONFIG="/workspace/configs/trainer/job.json"
+
+echo "==> trainer-service starting"
+
+# Явный запуск через аргументы:
+# docker run ... trainer-service --config https://...
+if [ "$#" -gt 0 ]; then
+  echo "==> launching with explicit CLI args: $*"
+  exec python /trainer/app/runner.py "$@"
+fi
 
 CONFIG_SOURCE="${CONFIG_SOURCE:-local}"
 CONFIG_REF="${CONFIG_REF:-$DEFAULT_LOCAL_CONFIG}"
 
-# If CONFIG_PATH is explicitly set, use it as local path (backwards compatibility)
+# backward compatibility
 if [ -n "${CONFIG_PATH:-}" ]; then
   CONFIG_REF="$CONFIG_PATH"
   CONFIG_SOURCE="local"
 fi
 
-echo "==> trainer-service starting"
 echo "==> config source: ${CONFIG_SOURCE}"
 echo "==> config ref: ${CONFIG_REF}"
+echo "==> model path in image assumed at: /app"
 
 if [ "${CONFIG_SOURCE}" = "local" ]; then
   if [ ! -f "${CONFIG_REF}" ]; then
@@ -24,5 +32,5 @@ if [ "${CONFIG_SOURCE}" = "local" ]; then
   fi
 fi
 
-# runner.py now handles both local paths and remote URLs via --config
-python3 /app/app/runner.py --config "${CONFIG_REF}"
+# Не делаем mv/cp модели — используем её прямо из /app
+exec python /trainer/app/runner.py --config "${CONFIG_REF}"

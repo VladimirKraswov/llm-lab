@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-19T12:03:41.783Z
+generated: 2026-03-19T13:47:41.843Z
 
 
 
@@ -3088,6 +3088,8 @@ const {
   importEvalDataset,
   runEvaluationBenchmark,
   parseEvalTxt,
+  getAvailableEvalPromptVariables,
+  DEFAULT_EVAL_PROMPT,
 } = require('../services/evaluations');
 
 const {
@@ -3173,9 +3175,20 @@ router.delete('/datasets/:id', async (req, res) => {
   }
 });
 
+router.get('/config', async (_req, res) => {
+  try {
+    res.json({
+      defaultPromptTemplate: DEFAULT_EVAL_PROMPT,
+      availableVariables: getAvailableEvalPromptVariables(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 router.post('/benchmark', async (req, res) => {
   try {
-    const { datasetId, targets, name } = req.body || {};
+    const { datasetId, targets, name, promptTemplate } = req.body || {};
 
     if (!datasetId || !Array.isArray(targets) || targets.length === 0) {
       return res.status(400).json({ error: 'datasetId and targets array are required' });
@@ -3183,7 +3196,12 @@ router.post('/benchmark', async (req, res) => {
 
     const jobId = uid('job');
 
-    runEvaluationBenchmark(jobId, { datasetId, targets, name }).catch((err) => {
+    runEvaluationBenchmark(jobId, {
+      datasetId,
+      targets,
+      name,
+      promptTemplate,
+    }).catch((err) => {
       console.error('Benchmark background error:', err);
     });
 
@@ -4344,6 +4362,32 @@ router.put('/', async (req, res) => {
 module.exports = router;
 
 
+path: /routes/sync.js
+----------------------------------------
+const express = require('express');
+const {
+  startBackgroundReconcile,
+  getReconcileStatus,
+} = require('../services/reconcile');
+
+const router = express.Router();
+
+router.get('/', (_req, res) => {
+  res.json(getReconcileStatus());
+});
+
+router.post('/', (req, res) => {
+  const rawReason = String(req.body?.reason || 'manual-http').trim();
+  const reason = rawReason || 'manual-http';
+
+  const result = startBackgroundReconcile({ reason });
+
+  res.status(result.started ? 202 : 200).json(result);
+});
+
+module.exports = router;
+
+
 path: /routes/synthetic.js
 ----------------------------------------
 const express = require('express');
@@ -4437,6 +4481,8 @@ const monitorRoute = require('./routes/monitor');
 const syntheticRoute = require('./routes/synthetic');
 const comparisonsRoute = require('./routes/comparisons');
 const evaluationsRoute = require('./routes/evaluations');
+const syncRoute = require('./routes/sync');
+const { startBackgroundReconcile } = require('./services/reconcile');
 
 function buildCorsOrigin() {
   if (!CONFIG.webUiOrigin || CONFIG.webUiOrigin === '*') {
@@ -4481,6 +4527,7 @@ async function main() {
   app.use('/synthetic', syntheticRoute);
   app.use('/comparisons', comparisonsRoute);
   app.use('/evaluations', evaluationsRoute);
+  app.use('/sync', syncRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -4502,7 +4549,8 @@ async function main() {
         req.path.startsWith('/monitor') ||
         req.path.startsWith('/synthetic') ||
         req.path.startsWith('/comparisons') ||
-        req.path.startsWith('/evaluations')
+        req.path.startsWith('/evaluations') ||
+        req.path.startsWith('/sync')
       ) {
         return next();
       }
@@ -4523,6 +4571,9 @@ async function main() {
     console.log(`Workspace: ${CONFIG.workspace}`);
     console.log(`Python: ${CONFIG.pythonBin}`);
     console.log(`Web UI origin: ${CONFIG.webUiOrigin}`);
+    
+    const reconcileKickoff = startBackgroundReconcile({ reason: 'startup' });
+    console.log('Background reconcile scheduled:', reconcileKickoff);
   });
 
   server.on('error', (err) => {
@@ -5436,49 +5487,81 @@ const logger = require('../utils/logger');
 const { startRuntime, stopRuntime } = require('./runtime');
 const providers = require('./providers');
 
+function parseHashTagsLine(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+
+  return raw
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((tag) => (tag.startsWith('#') ? tag : `#${tag}`));
+}
+
+function normalizeImportedScore(value, scale) {
+  const score = Number.parseFloat(value);
+  if (!Number.isFinite(score)) return null;
+
+  const denom = Number(scale);
+  if (denom === 10) {
+    return score / 2;
+  }
+
+  if (denom === 5) {
+    return score;
+  }
+
+  return null;
+}
+
 function parseEvalTxt(content, sourceName = 'unknown') {
   const samples = [];
   const errors = [];
-  const blocks = String(content || '')
-    .replace(/\r\n/g, '\n')
-    .split(/\n\s*\n+/);
+
+  const text = String(content || '').replace(/\r\n/g, '\n');
+  const blocks = text.split(/\n\s*\n+/).map((x) => x.trim()).filter(Boolean);
 
   for (let i = 0; i < blocks.length; i += 1) {
-    const block = blocks[i].trim();
-    if (!block) continue;
+    const block = blocks[i];
 
-    const qMatch = block.match(/Вопрос:\s*([\s\S]*?)(?=\nОтвет:|$)/i);
-    const aMatch = block.match(/Ответ:\s*([\s\S]*?)(?=\nОценка:|$)/i);
-    const sMatch = block.match(/Оценка:\s*(\d+(?:\.\d+)?)\s*\/\s*10/i);
+    const qMatch = block.match(/question:\s*([\s\S]*?)(?=\nanswer:|\nscore:|\nhashTags:|$)/i);
+    const aMatch = block.match(/answer:\s*([\s\S]*?)(?=\nscore:|\nhashTags:|$)/i);
+    const sMatch = block.match(/score:\s*(\d+(?:\.\d+)?)\s*\/\s*(5|10)/i);
+    const hMatch = block.match(/hashTags:\s*([\s\S]*?)$/i);
 
     if (!qMatch || !aMatch || !sMatch) {
       const missing = [];
-      if (!qMatch) missing.push('Вопрос');
-      if (!aMatch) missing.push('Ответ');
-      if (!sMatch) missing.push('Оценка');
+      if (!qMatch) missing.push('question');
+      if (!aMatch) missing.push('answer');
+      if (!sMatch) missing.push('score');
+
       errors.push({
         index: i,
         error: `Отсутствуют поля: ${missing.join(', ')}`,
-        raw: block.slice(0, 300),
+        raw: block.slice(0, 400),
       });
       continue;
     }
 
-    const score = Number.parseFloat(sMatch[1]);
-    if (!Number.isFinite(score) || score < 0 || score > 10) {
+    const normalizedScore = normalizeImportedScore(sMatch[1], sMatch[2]);
+    if (!Number.isFinite(normalizedScore) || normalizedScore < 0 || normalizedScore > 5) {
       errors.push({
         index: i,
-        error: 'Оценка должна быть числом от 0 до 10',
-        raw: block.slice(0, 300),
+        error: 'score должен быть числом от 0 до 5 (или от 0 до 10 для старого формата)',
+        raw: block.slice(0, 400),
       });
       continue;
     }
+
+    const hashTags = parseHashTagsLine(hMatch?.[1] || '');
 
     samples.push({
       id: uid('sample'),
       question: qMatch[1].trim(),
       candidateAnswer: aMatch[1].trim(),
-      referenceScore: score,
+      referenceScore: normalizedScore,
+      maxScore: 5,
+      hashTags,
       sourceFile: sourceName,
       topic: null,
     });
@@ -5487,20 +5570,55 @@ function parseEvalTxt(content, sourceName = 'unknown') {
   return { samples, errors };
 }
 
-function buildEvalPrompt(sample) {
-  return `Ты — беспристрастный эксперт-оценщик. Тебе предоставлен вопрос и ответ кандидата.
-Твоя задача — выставить оценку от 0 до 10, где 10 — идеально правильный и полный ответ, а 0 — совершенно неверный или отсутствующий ответ.
+const DEFAULT_EVAL_PROMPT = `Ты — беспристрастный эксперт-оценщик. Тебе предоставлен вопрос и ответ кандидата.
+Твоя задача — выставить оценку от 0 до 5, где:
+5 — идеально правильный и полный ответ,
+0 — совершенно неверный или отсутствующий ответ.
 
-Вопрос: ${sample.question}
-Ответ кандидата: ${sample.candidateAnswer}
+Теги вопроса: \${tagsText}
+Эти теги являются метаданными. Не завышай и не занижай оценку только из-за тегов.
 
-Верни результат в формате JSON:
+Вопрос: \${question}
+Ответ кандидата: \${candidateAnswer}
+
+Верни результат строго в формате JSON:
 {
-  "score": <число от 0 до 10>,
+  "score": <число от 0 до 5>,
   "feedback": "<краткое пояснение>"
 }
 
-Если не можешь вернуть JSON, обязательно напиши в конце: "Оценка: X/10"`;
+Если не можешь вернуть JSON, обязательно напиши в конце: "score: X/5"`;
+
+function getAvailableEvalPromptVariables() {
+  return [
+    { name: 'question', description: 'Текст вопроса' },
+    { name: 'candidateAnswer', description: 'Ответ модели-кандидата' },
+    { name: 'referenceScore', description: 'Эталонная оценка (из датасета)' },
+    { name: 'maxScore', description: 'Максимально возможная оценка (обычно 5)' },
+    { name: 'tagsText', description: 'Теги вопроса через запятую' },
+  ];
+}
+
+function renderPromptTemplate(template, sample) {
+  const tagsText = Array.isArray(sample.hashTags) && sample.hashTags.length
+    ? sample.hashTags.join(', ')
+    : 'none';
+
+  const context = {
+    question: sample.question || '',
+    candidateAnswer: sample.candidateAnswer || '',
+    referenceScore: sample.referenceScore ?? '',
+    maxScore: sample.maxScore ?? 5,
+    tagsText,
+  };
+
+  let rendered = template || DEFAULT_EVAL_PROMPT;
+  for (const [key, value] of Object.entries(context)) {
+    const placeholder = `\${${key}}`;
+    rendered = rendered.split(placeholder).join(String(value));
+  }
+
+  return rendered;
 }
 
 function clipText(value, max = 1200) {
@@ -5666,6 +5784,26 @@ async function parseProviderResponse(response) {
   };
 }
 
+function normalizeModelScore(value, scale = 5) {
+  const score = Number.parseFloat(value);
+  if (!Number.isFinite(score)) return null;
+
+  const denom = Number(scale);
+  let normalized = score;
+
+  if (denom === 10) {
+    normalized = score / 2;
+  } else if (denom !== 5 && denom !== 0) {
+    return null;
+  }
+
+  if (!Number.isFinite(normalized) || normalized < 0 || normalized > 5) {
+    return null;
+  }
+
+  return normalized;
+}
+
 function parseModelScore(text) {
   if (!text || !String(text).trim()) {
     return { score: null, feedback: null, parseError: true };
@@ -5677,14 +5815,15 @@ function parseModelScore(text) {
     const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const data = JSON.parse(jsonMatch[0]);
-      let score = null;
 
-      if (typeof data.score === 'number') score = data.score;
-      else if (typeof data.score === 'string') score = Number.parseFloat(data.score);
+      let rawScore = null;
+      if (typeof data.score === 'number') rawScore = data.score;
+      else if (typeof data.score === 'string') rawScore = Number.parseFloat(data.score);
 
-      if (Number.isFinite(score)) {
+      const normalized = normalizeModelScore(rawScore, 5);
+      if (Number.isFinite(normalized)) {
         return {
-          score,
+          score: normalized,
           feedback: data.feedback || data.reasoning || null,
           parseError: false,
         };
@@ -5695,27 +5834,29 @@ function parseModelScore(text) {
   }
 
   const patterns = [
-    /Оценка:\s*(\d+(?:\.\d+)?)/i,
+    /score:\s*(\d+(?:\.\d+)?)\s*\/\s*(5|10)/i,
+    /оценка:\s*(\d+(?:\.\d+)?)\s*\/\s*(5|10)/i,
+    /(\d+(?:\.\d+)?)\s*\/\s*(5|10)/i,
     /score:\s*(\d+(?:\.\d+)?)/i,
-    /Score:\s*(\d+(?:\.\d+)?)/i,
-    /Итог:\s*(\d+(?:\.\d+)?)/i,
-    /(\d+(?:\.\d+)?)\s*\/\s*10/i,
-    /(\d+(?:\.\d+)?)\s*из\s*10/i,
-    /Final score\s*[:=]\s*(\d+(?:\.\d+)?)/i,
+    /оценка:\s*(\d+(?:\.\d+)?)/i,
+    /final score\s*[:=]\s*(\d+(?:\.\d+)?)/i,
     /^(\d+(?:\.\d+)?)$/m,
   ];
 
   for (const pattern of patterns) {
     const match = cleanText.match(pattern);
-    if (match) {
-      const score = Number.parseFloat(match[1]);
-      if (Number.isFinite(score)) {
-        return {
-          score,
-          feedback: cleanText,
-          parseError: false,
-        };
-      }
+    if (!match) continue;
+
+    const value = match[1];
+    const scale = match[2] || 5;
+    const normalized = normalizeModelScore(value, scale);
+
+    if (Number.isFinite(normalized)) {
+      return {
+        score: normalized,
+        feedback: cleanText,
+        parseError: false,
+      };
     }
   }
 
@@ -5736,6 +5877,7 @@ function calculateMetrics(results) {
     return {
       samples: results.length,
       parseSuccessRate: 0,
+      squaredDeltaSquaresMean: null,
       mae: null,
       rmse: null,
       exactRate: 0,
@@ -5753,6 +5895,7 @@ function calculateMetrics(results) {
   let sumSqError = 0;
   let sumSignedError = 0;
   let sumPredictedScore = 0;
+  let sumSqDeltaSq = 0;
   let exactCount = 0;
   let within1Count = 0;
   let within2Count = 0;
@@ -5766,6 +5909,11 @@ function calculateMetrics(results) {
     sumSignedError += error;
     sumPredictedScore += r.predictedScore;
 
+    // (v1^2 - v2^2)^2
+    const v1 = r.predictedScore;
+    const v2 = r.referenceScore;
+    sumSqDeltaSq += Math.pow(Math.pow(v1, 2) - Math.pow(v2, 2), 2);
+
     if (absError === 0) exactCount += 1;
     if (absError <= 1) within1Count += 1;
     if (absError <= 2) within2Count += 1;
@@ -5774,6 +5922,7 @@ function calculateMetrics(results) {
   return {
     samples: results.length,
     parseSuccessRate: n / results.length,
+    squaredDeltaSquaresMean: sumSqDeltaSq / n,
     mae: sumAbsError / n,
     rmse: Math.sqrt(sumSqError / n),
     exactRate: exactCount / n,
@@ -5823,7 +5972,7 @@ function buildRuntimeParams(target, settings) {
   };
 }
 
-async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
+async function runEvaluationBenchmark(jobId, { datasetId, targets, name, promptTemplate }) {
   const datasets = await getEvalDatasets();
   const dsMeta = datasets.find((d) => d.id === datasetId);
   if (!dsMeta) throw new Error('Evaluation dataset not found');
@@ -5838,6 +5987,8 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
   const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
 
+  const finalPromptTemplate = promptTemplate || DEFAULT_EVAL_PROMPT;
+
   let job = await upsertJob({
     id: jobId,
     name: name || `Eval: ${dsMeta.name}`,
@@ -5849,7 +6000,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
     datasetId,
     outputDir,
     logFile,
-    paramsSnapshot: { datasetId, targets: safeTargets },
+    paramsSnapshot: { datasetId, targets: safeTargets, promptTemplate: finalPromptTemplate },
     summaryMetrics: {},
     artifacts: [],
     error: null,
@@ -5875,17 +6026,14 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
   });
 
   const writeLog = (msg, level = 'info', meta = null) => {
-    // Защита от любых некорректных значений level
     let safeLevel = 'info';
-    
+
     if (typeof level === 'string') {
       const lowered = level.toLowerCase().trim();
-      // Ограничиваем только допустимыми уровнями (можно расширить)
       if (['info', 'warn', 'error', 'debug'].includes(lowered)) {
         safeLevel = lowered;
       }
     }
-    // если level был числом, объектом, null и т.д. → остаётся 'info'
 
     const timestamp = new Date().toISOString();
     const upperLevel = safeLevel.toUpperCase();
@@ -5896,20 +6044,17 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
 
     logStream.write(line);
 
-    // Цветной вывод в консоль (опционально, но удобно при отладке)
     const colorMap = {
-      info:  '\x1b[32m',   // зелёный
-      warn:  '\x1b[33m',   // жёлтый
-      error: '\x1b[31m',   // красный
-      debug: '\x1b[34m',   // синий
+      info: '\x1b[32m',
+      warn: '\x1b[33m',
+      error: '\x1b[31m',
+      debug: '\x1b[34m',
     };
-    const color = colorMap[safeLevel] || '\x1b[37m'; // белый по умолчанию
+    const color = colorMap[safeLevel] || '\x1b[37m';
     const reset = '\x1b[0m';
-    
-    console.log(`${timestamp} ${color}${upperLevel}${reset}: ${msg}`,
-      meta ? meta : '');
 
-    // Отправка события (безопасно, даже если meta — не объект)
+    console.log(`${timestamp} ${color}${upperLevel}${reset}: ${msg}`, meta ? meta : '');
+
     emitEvent('job_log', {
       jobId,
       message: msg,
@@ -5944,6 +6089,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
       dataset: dsMeta.name,
       samples: samples.length,
       models: safeTargets.length,
+      scoreScale: 5,
     });
 
     const settings = await getSettings();
@@ -6026,7 +6172,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
           totalProgressPercent: totalPercent,
         });
 
-        const prompt = buildEvalPrompt(sample);
+        const prompt = renderPromptTemplate(finalPromptTemplate, sample);
 
         try {
           const response = await provider.chat(runtime, {
@@ -6047,6 +6193,8 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
               question: sample.question,
               candidateAnswer: sample.candidateAnswer,
               referenceScore: sample.referenceScore,
+              maxScore: sample.maxScore || 5,
+              hashTags: sample.hashTags || [],
               predictedScore: null,
               predictedFeedback: null,
               rawResponse: parsedResponse.rawText || null,
@@ -6092,6 +6240,8 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
             question: sample.question,
             candidateAnswer: sample.candidateAnswer,
             referenceScore: sample.referenceScore,
+            maxScore: sample.maxScore || 5,
+            hashTags: sample.hashTags || [],
             predictedScore: scoreParsed.score,
             predictedFeedback: scoreParsed.feedback,
             rawResponse,
@@ -6161,6 +6311,8 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
             question: sample.question,
             candidateAnswer: sample.candidateAnswer,
             referenceScore: sample.referenceScore,
+            maxScore: sample.maxScore || 5,
+            hashTags: sample.hashTags || [],
             predictedScore: null,
             predictedFeedback: null,
             rawResponse: null,
@@ -6207,6 +6359,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
       writeLog(`Finished target ${target.label}`, 'info', {
         mae: metrics.mae,
         rmse: metrics.rmse,
+        squaredDeltaSquaresMean: metrics.squaredDeltaSquaresMean,
         parseErrors: metrics.parseErrors,
         inferenceErrors: metrics.inferenceErrors,
         parseSuccessRate: metrics.parseSuccessRate,
@@ -6230,6 +6383,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
       'model',
       'samples',
       'parseSuccessRate',
+      'squaredDeltaSquaresMean',
       'mae',
       'rmse',
       'exactRate',
@@ -6247,6 +6401,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
         csvEscape(m.modelLabel),
         m.samples,
         m.parseSuccessRate,
+        m.squaredDeltaSquaresMean,
         m.mae,
         m.rmse,
         m.exactRate,
@@ -6268,12 +6423,14 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
       'modelId',
       'modelLabel',
       'referenceScore',
+      'maxScore',
       'predictedScore',
       'absoluteError',
       'parseError',
       'inferenceError',
       'errorReason',
       'responseFormat',
+      'hashTags',
       'question',
       'candidateAnswer',
       'predictedFeedback',
@@ -6289,12 +6446,14 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
             csvEscape(modelRun.target.id),
             csvEscape(modelRun.target.label),
             r.referenceScore,
+            r.maxScore ?? 5,
             r.predictedScore,
             r.absoluteError,
             r.parseError,
             !!r.inferenceError,
             csvEscape(r.errorReason || ''),
             csvEscape(r.responseFormat || ''),
+            csvEscape(Array.isArray(r.hashTags) ? r.hashTags.join(', ') : ''),
             csvEscape(r.question || ''),
             csvEscape(r.candidateAnswer || ''),
             csvEscape(r.predictedFeedback || ''),
@@ -6311,6 +6470,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
         id: dsMeta.id,
         name: dsMeta.name,
         samples: samples.length,
+        scoreScale: 5,
       },
       models: modelSummaries,
       totals: {
@@ -6395,6 +6555,7 @@ async function importEvalDataset(name, text) {
     id,
     name,
     samplesCount: samples.length,
+    scoreScale: 5,
     jsonPath,
     txtPath,
     createdAt: nowIso(),
@@ -6410,6 +6571,9 @@ module.exports = {
   parseEvalTxt,
   parseModelScore,
   calculateMetrics,
+  getAvailableEvalPromptVariables,
+  renderPromptTemplate,
+  DEFAULT_EVAL_PROMPT,
 };
 
 
@@ -8665,6 +8829,504 @@ class VllmProvider {
 module.exports = new VllmProvider();
 
 
+path: /services/reconcile.js
+----------------------------------------
+const fs = require('fs');
+const fsp = require('fs/promises');
+const path = require('path');
+
+const { CONFIG } = require('../config');
+const { uid, nowIso } = require('../utils/ids');
+const logger = require('../utils/logger');
+const { emitEvent } = require('./events');
+const {
+  getModels,
+  replaceModels,
+  getLoras,
+  replaceLoras,
+} = require('./state');
+
+let activeRunPromise = null;
+
+const reconcileState = {
+  isRunning: false,
+  currentRunId: null,
+  lastRunId: null,
+  lastReason: null,
+  lastStartedAt: null,
+  lastFinishedAt: null,
+  lastError: null,
+  lastResult: null,
+};
+
+function getReconcileStatus() {
+  return { ...reconcileState };
+}
+
+function isSkipDir(name) {
+  return (
+    !name ||
+    name.startsWith('.') ||
+    name === '__pycache__' ||
+    name === '_offload' ||
+    name === 'tmp' ||
+    name === 'temp'
+  );
+}
+
+async function normalizePathSafe(value) {
+  try {
+    const resolved = path.resolve(String(value || '').trim());
+    if (!resolved) return null;
+
+    try {
+      return await fsp.realpath(resolved);
+    } catch {
+      return resolved;
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function isExistingDir(dirPath) {
+  try {
+    return (await fsp.stat(dirPath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function isExistingFile(filePath) {
+  try {
+    return (await fsp.stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function readJsonIfExists(filePath) {
+  try {
+    const raw = await fsp.readFile(filePath, 'utf8');
+    if (!String(raw).trim()) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function createdAtFromStat(stat) {
+  if (stat?.birthtime instanceof Date && Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0) {
+    return stat.birthtime.toISOString();
+  }
+  if (stat?.mtime instanceof Date) return stat.mtime.toISOString();
+  return nowIso();
+}
+
+async function walkForMarkerDirs(rootDir, markerFile, maxDepth = 4) {
+  const out = [];
+  const visited = new Set();
+
+  async function walk(currentDir, depth) {
+    if (!(await isExistingDir(currentDir))) return;
+
+    const normalized = await normalizePathSafe(currentDir);
+    if (!normalized || visited.has(normalized)) return;
+    visited.add(normalized);
+
+    let entries = [];
+    try {
+      entries = await fsp.readdir(normalized, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    if (entries.some((entry) => entry.isFile() && entry.name === markerFile)) {
+      out.push(normalized);
+      return;
+    }
+
+    if (depth >= maxDepth) return;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (isSkipDir(entry.name)) continue;
+      await walk(path.join(normalized, entry.name), depth + 1);
+    }
+  }
+
+  await walk(rootDir, 0);
+  return out;
+}
+
+async function buildNormalizedPathMap(items, pathField) {
+  const map = new Map();
+
+  for (const item of items) {
+    const key = await normalizePathSafe(item?.[pathField]);
+    if (!key) continue;
+    if (!map.has(key)) {
+      map.set(key, item);
+    }
+  }
+
+  return map;
+}
+
+async function extractModelMetaLight(modelDir) {
+  const configPath = path.join(modelDir, 'config.json');
+  const config = await readJsonIfExists(configPath);
+
+  let quantization = 'none';
+
+  if (config?.quantization_config?.quant_method) {
+    quantization = String(config.quantization_config.quant_method).toLowerCase();
+  } else if (config?.compression_config?.format) {
+    quantization = String(config.compression_config.format).toLowerCase();
+  } else if (config?.compression_config?.quantization_status) {
+    quantization = 'compressed';
+  } else {
+    const lower = modelDir.toLowerCase();
+    if (lower.includes('awq')) quantization = 'awq';
+    else if (lower.includes('gptq')) quantization = 'gptq';
+    else if (lower.includes('gguf')) quantization = 'gguf';
+  }
+
+  return {
+    configPath,
+    quantization,
+    parameters: 'unknown',
+    size: null,
+    sizeHuman: null,
+    vramEstimate: 'unknown',
+  };
+}
+
+async function tryResolveExistingLocalDir(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  try {
+    const abs = path.resolve(raw);
+    const stat = await fsp.stat(abs);
+    if (!stat.isDirectory()) return null;
+    return await normalizePathSafe(abs);
+  } catch {
+    return null;
+  }
+}
+
+async function reconcileModelsFromFilesystem() {
+  const existing = await getModels();
+  const existingByPath = await buildNormalizedPathMap(existing, 'path');
+  const discoveredDirs = await walkForMarkerDirs(CONFIG.modelsDir, 'config.json', 4);
+  const discoveredSet = new Set(discoveredDirs);
+
+  const next = [];
+  let added = 0;
+  let updated = 0;
+  let removed = 0;
+  let preservedActive = 0;
+
+  for (const modelDir of discoveredDirs) {
+    const current = existingByPath.get(modelDir);
+    const stat = await fsp.stat(modelDir).catch(() => null);
+    if (!stat) continue;
+
+    const lightMeta = await extractModelMetaLight(modelDir);
+
+    if (current) {
+      next.push({
+        ...current,
+        path: modelDir,
+        status: 'ready',
+        error: null,
+        configPath: lightMeta.configPath,
+        quantization: lightMeta.quantization || current.quantization || 'none',
+        parameters: current.parameters || lightMeta.parameters,
+        size: current.size ?? lightMeta.size,
+        sizeHuman: current.sizeHuman ?? lightMeta.sizeHuman,
+        vramEstimate: current.vramEstimate ?? lightMeta.vramEstimate,
+      });
+      updated += 1;
+      continue;
+    }
+
+    next.push({
+      id: uid('model'),
+      name: path.basename(modelDir),
+      repoId: `local/fs/${path.basename(modelDir)}`,
+      createdAt: createdAtFromStat(stat),
+      status: 'ready',
+      path: modelDir,
+      logFile: null,
+      pid: null,
+      error: null,
+      discoveredBy: 'filesystem-scan',
+      ...lightMeta,
+    });
+    added += 1;
+  }
+
+  for (const item of existing) {
+    const normalized = await normalizePathSafe(item?.path);
+    if (!normalized) {
+      removed += 1;
+      continue;
+    }
+
+    if (discoveredSet.has(normalized)) continue;
+
+    const pathExists = await isExistingDir(normalized);
+    const isActive = item.status === 'downloading' || item.status === 'building';
+
+    if (isActive && pathExists) {
+      next.push(item);
+      preservedActive += 1;
+    } else {
+      removed += 1;
+    }
+  }
+
+  await replaceModels(next);
+
+  return {
+    totalAfter: next.length,
+    added,
+    updated,
+    removed,
+    preservedActive,
+  };
+}
+
+async function reconcileLorasFromFilesystem() {
+  const existing = await getLoras();
+  const existingByPath = await buildNormalizedPathMap(existing, 'adapterPath');
+
+  const models = await getModels();
+  const modelsByPath = await buildNormalizedPathMap(models, 'path');
+
+  const discoveredAdapters = await walkForMarkerDirs(CONFIG.trainingOutputsDir, 'adapter_config.json', 4);
+  const discoveredSet = new Set(discoveredAdapters);
+
+  const next = [];
+  let added = 0;
+  let updated = 0;
+  let removed = 0;
+  let preservedActive = 0;
+
+  for (const adapterDir of discoveredAdapters) {
+    const current = existingByPath.get(adapterDir);
+    const stat = await fsp.stat(adapterDir).catch(() => null);
+    if (!stat) continue;
+
+    const adapterConfig = await readJsonIfExists(path.join(adapterDir, 'adapter_config.json'));
+    const baseModelRefRaw =
+      String(adapterConfig?.base_model_name_or_path || current?.baseModelRef || '').trim() || null;
+
+    const localBasePath = await tryResolveExistingLocalDir(baseModelRefRaw);
+    const linkedBaseModel = localBasePath ? modelsByPath.get(localBasePath) : null;
+
+    const mergedPath = current?.mergedPath && (await isExistingDir(current.mergedPath))
+      ? await normalizePathSafe(current.mergedPath)
+      : null;
+
+    const packagePath = current?.packagePath && (await isExistingFile(current.packagePath))
+      ? path.resolve(current.packagePath)
+      : null;
+
+    const linkedMergedModel = mergedPath ? modelsByPath.get(mergedPath) : null;
+
+    if (current) {
+      next.push({
+        ...current,
+        adapterPath: adapterDir,
+        status: 'ready',
+        error: null,
+        baseModelRef: baseModelRefRaw || current.baseModelRef || null,
+        baseModelId: linkedBaseModel?.id || current.baseModelId || null,
+        baseModelName:
+          linkedBaseModel?.name ||
+          current.baseModelName ||
+          (localBasePath ? path.basename(localBasePath) : baseModelRefRaw || null),
+        mergedPath,
+        mergeStatus: mergedPath ? 'ready' : 'not_built',
+        mergeProgress: mergedPath ? 100 : 0,
+        mergePid: null,
+        packagePath,
+        packageStatus: packagePath ? 'ready' : 'not_built',
+        packagePid: null,
+        mergedModelId: linkedMergedModel?.id || (mergedPath ? current.mergedModelId || null : null),
+      });
+      updated += 1;
+      continue;
+    }
+
+    next.push({
+      id: uid('lora'),
+      name: path.basename(adapterDir),
+      jobId: null,
+      baseModelId: linkedBaseModel?.id || null,
+      baseModelName:
+        linkedBaseModel?.name ||
+        (localBasePath ? path.basename(localBasePath) : baseModelRefRaw || null),
+      baseModelRef: baseModelRefRaw,
+      adapterPath: adapterDir,
+      mergedPath: null,
+      packagePath: null,
+      createdAt: createdAtFromStat(stat),
+      status: 'ready',
+      mergeStatus: 'not_built',
+      mergeProgress: 0,
+      mergePid: null,
+      packageStatus: 'not_built',
+      packagePid: null,
+      error: null,
+      configPath: null,
+      mergeLogFile: null,
+      mergeOptions: null,
+      mergeArtifacts: [],
+      mergedModelId: null,
+      mergedModelSize: null,
+      mergedModelSizeHuman: null,
+      discoveredBy: 'filesystem-scan',
+    });
+    added += 1;
+  }
+
+  for (const item of existing) {
+    const normalized = await normalizePathSafe(item?.adapterPath);
+    if (!normalized) {
+      removed += 1;
+      continue;
+    }
+
+    if (discoveredSet.has(normalized)) continue;
+
+    const pathExists = await isExistingDir(normalized);
+    const isActive = item.mergeStatus === 'building' || item.packageStatus === 'building';
+
+    if (isActive && pathExists) {
+      next.push(item);
+      preservedActive += 1;
+    } else {
+      removed += 1;
+    }
+  }
+
+  await replaceLoras(next);
+
+  return {
+    totalAfter: next.length,
+    added,
+    updated,
+    removed,
+    preservedActive,
+  };
+}
+
+async function runReconcile(runId, reason) {
+  reconcileState.isRunning = true;
+  reconcileState.currentRunId = runId;
+  reconcileState.lastRunId = runId;
+  reconcileState.lastReason = reason;
+  reconcileState.lastStartedAt = nowIso();
+  reconcileState.lastFinishedAt = null;
+  reconcileState.lastError = null;
+
+  emitEvent('reconcile_started', getReconcileStatus());
+  logger.info('Background reconcile started', { runId, reason });
+
+  try {
+    const models = await reconcileModelsFromFilesystem();
+    const loras = await reconcileLorasFromFilesystem();
+
+    const result = {
+      runId,
+      reason,
+      startedAt: reconcileState.lastStartedAt,
+      finishedAt: nowIso(),
+      models,
+      loras,
+    };
+
+    reconcileState.isRunning = false;
+    reconcileState.currentRunId = null;
+    reconcileState.lastFinishedAt = result.finishedAt;
+    reconcileState.lastResult = result;
+    reconcileState.lastError = null;
+
+    emitEvent('reconcile_completed', result);
+    logger.info('Background reconcile completed', result);
+
+    return result;
+  } catch (err) {
+    const message = String(err.message || err);
+
+    reconcileState.isRunning = false;
+    reconcileState.currentRunId = null;
+    reconcileState.lastFinishedAt = nowIso();
+    reconcileState.lastError = message;
+
+    emitEvent('reconcile_failed', {
+      runId,
+      reason,
+      error: message,
+      finishedAt: reconcileState.lastFinishedAt,
+    });
+
+    logger.error('Background reconcile failed', {
+      runId,
+      reason,
+      error: message,
+    });
+
+    throw err;
+  }
+}
+
+function startBackgroundReconcile({ reason = 'manual' } = {}) {
+  if (reconcileState.isRunning) {
+    return {
+      ok: true,
+      started: false,
+      alreadyRunning: true,
+      status: getReconcileStatus(),
+    };
+  }
+
+  const runId = uid('reconcile');
+
+  reconcileState.isRunning = true;
+  reconcileState.currentRunId = runId;
+  reconcileState.lastRunId = runId;
+  reconcileState.lastReason = reason;
+  reconcileState.lastStartedAt = nowIso();
+  reconcileState.lastFinishedAt = null;
+  reconcileState.lastError = null;
+
+  setImmediate(() => {
+    activeRunPromise = runReconcile(runId, reason)
+      .catch(() => {})
+      .finally(() => {
+        activeRunPromise = null;
+      });
+  });
+
+  return {
+    ok: true,
+    started: true,
+    runId,
+    status: getReconcileStatus(),
+  };
+}
+
+module.exports = {
+  startBackgroundReconcile,
+  getReconcileStatus,
+};
+
+
 path: /services/runtime.js
 ----------------------------------------
 // services/runtime.js
@@ -9231,7 +9893,7 @@ module.exports = {
 path: /services/state.js
 ----------------------------------------
 const { CONFIG } = require('../config');
-const { ensureDir, exists, readJson, writeJson } = require('../utils/fs');
+const { ensureDir, ensureJsonFile, readJson, writeJson } = require('../utils/fs');
 
 const locks = new Map();
 
@@ -9397,14 +10059,14 @@ async function ensureWorkspace() {
     await ensureDir(dir);
   }
 
-  if (!exists(CONFIG.settingsFile)) await writeJson(CONFIG.settingsFile, DEFAULT_SETTINGS);
-  if (!exists(CONFIG.jobsFile)) await writeJson(CONFIG.jobsFile, []);
-  if (!exists(CONFIG.datasetsFile)) await writeJson(CONFIG.datasetsFile, []);
-  if (!exists(CONFIG.evalDatasetsFile)) await writeJson(CONFIG.evalDatasetsFile, []);
-  if (!exists(CONFIG.modelsFile)) await writeJson(CONFIG.modelsFile, []);
-  if (!exists(CONFIG.lorasFile)) await writeJson(CONFIG.lorasFile, []);
-  if (!exists(CONFIG.runtimeFile)) await writeJson(CONFIG.runtimeFile, DEFAULT_RUNTIME);
-  if (!exists(CONFIG.managedProcessesFile)) await writeJson(CONFIG.managedProcessesFile, []);
+  await ensureJsonFile(CONFIG.settingsFile, DEFAULT_SETTINGS);
+  await ensureJsonFile(CONFIG.jobsFile, []);
+  await ensureJsonFile(CONFIG.datasetsFile, []);
+  await ensureJsonFile(CONFIG.evalDatasetsFile, []);
+  await ensureJsonFile(CONFIG.modelsFile, []);
+  await ensureJsonFile(CONFIG.lorasFile, []);
+  await ensureJsonFile(CONFIG.runtimeFile, DEFAULT_RUNTIME);
+  await ensureJsonFile(CONFIG.managedProcessesFile, []);
 }
 
 async function getSettings() {
@@ -9548,6 +10210,14 @@ async function saveModels(items) {
   await writeJson(CONFIG.modelsFile, items);
 }
 
+async function replaceModels(items) {
+  return withLock(CONFIG.modelsFile, async () => {
+    const next = Array.isArray(items) ? items : [];
+    await saveModels(next);
+    return next;
+  });
+}
+
 async function addModel(meta) {
   return withLock(CONFIG.modelsFile, async () => {
     const list = await getModels();
@@ -9594,6 +10264,14 @@ async function getLoras() {
 
 async function saveLoras(items) {
   await writeJson(CONFIG.lorasFile, items);
+}
+
+async function replaceLoras(items) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const next = Array.isArray(items) ? items : [];
+    await saveLoras(next);
+    return next;
+  });
 }
 
 async function addLora(meta) {
@@ -9770,12 +10448,14 @@ module.exports = {
   removeEvalDataset,
   getModels,
   saveModels,
+  replaceModels,
   addModel,
   upsertModel,
   getModelById,
   removeModel,
   getLoras,
   saveLoras,
+  replaceLoras,
   addLora,
   upsertLora,
   getLoraById,
@@ -10318,6 +10998,7 @@ path: /utils/fs.js
 ----------------------------------------
 const fs = require('fs');
 const fsp = require('fs/promises');
+const path = require('path');
 
 function exists(p) {
   try {
@@ -10332,16 +11013,116 @@ async function ensureDir(p) {
   await fsp.mkdir(p, { recursive: true });
 }
 
-async function readJson(file, fallback = null) {
+function toJsonText(data) {
+  return `${JSON.stringify(data, null, 2)}\n`;
+}
+
+async function writeFileAtomic(file, content) {
+  await ensureDir(path.dirname(file));
+
+  const tempFile = `${file}.tmp-${process.pid}-${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+
+  const fh = await fsp.open(tempFile, 'w', 0o600);
   try {
-    return JSON.parse(await fsp.readFile(file, 'utf8'));
-  } catch {
-    return fallback;
+    await fh.writeFile(content, 'utf8');
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+
+  await fsp.rename(tempFile, file);
+}
+
+async function readJsonCandidate(file) {
+  try {
+    const raw = await fsp.readFile(file, 'utf8');
+
+    if (!String(raw).trim()) {
+      return { ok: false, reason: 'empty', value: null, text: raw };
+    }
+
+    return {
+      ok: true,
+      reason: 'ok',
+      value: JSON.parse(raw),
+      text: raw,
+    };
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      return { ok: false, reason: 'missing', value: null, text: '' };
+    }
+
+    return {
+      ok: false,
+      reason: 'invalid',
+      value: null,
+      text: '',
+      error: err,
+    };
   }
 }
 
+async function readJson(file, fallback = null) {
+  const primary = await readJsonCandidate(file);
+  if (primary.ok) return primary.value;
+
+  const backupFile = `${file}.bak`;
+  const backup = await readJsonCandidate(backupFile);
+
+  if (backup.ok) {
+    try {
+      await writeFileAtomic(file, backup.text || toJsonText(backup.value));
+    } catch {
+      // ignore repair errors here
+    }
+    return backup.value;
+  }
+
+  return fallback;
+}
+
+async function ensureJsonFile(file, defaultValue) {
+  const primary = await readJsonCandidate(file);
+  const backupFile = `${file}.bak`;
+
+  if (primary.ok) {
+    if (!exists(backupFile)) {
+      try {
+        await writeFileAtomic(backupFile, primary.text || toJsonText(primary.value));
+      } catch {
+        // ignore backup creation failure
+      }
+    }
+    return primary.value;
+  }
+
+  const backup = await readJsonCandidate(backupFile);
+  if (backup.ok) {
+    try {
+      await writeFileAtomic(file, backup.text || toJsonText(backup.value));
+    } catch {
+      // ignore repair failure
+    }
+    return backup.value;
+  }
+
+  await writeJson(file, defaultValue);
+  return defaultValue;
+}
+
 async function writeJson(file, data) {
-  await fsp.writeFile(file, JSON.stringify(data, null, 2), 'utf8');
+  const text = toJsonText(data);
+  const backupFile = `${file}.bak`;
+
+  await writeFileAtomic(file, text);
+
+  try {
+    await writeFileAtomic(backupFile, text);
+  } catch {
+    // primary already written, backup failure is non-fatal
+  }
 }
 
 async function readText(file, fallback = '') {
@@ -10369,6 +11150,7 @@ async function resetFile(file) {
 module.exports = {
   exists,
   ensureDir,
+  ensureJsonFile,
   readJson,
   writeJson,
   readText,
@@ -10987,8 +11769,8 @@ module.exports = {
 
 
 === SUMMARY ===
-included: 47
+included: 49
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 306690
+totalBytes(approx): 326295

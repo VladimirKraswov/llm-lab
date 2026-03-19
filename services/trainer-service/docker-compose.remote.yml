@@ -3,15 +3,15 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: itk-ai-trainer-service
+    image: itk-ai-trainer-service:qwen-0.5
     env_file:
       - .env.remote.example
+    environment:
+      CONFIG_SOURCE: remote
+      CONFIG_REF: https://example.com/job.remote.json
+      HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - ./output:/output
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    gpus: all
+    shm_size: "16gb"
+    restart: "no"

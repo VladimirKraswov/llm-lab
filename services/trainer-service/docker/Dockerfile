@@ -1,10 +1,14 @@
-FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+FROM igortet/model-qwen-0.5
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
     VIRTUAL_ENV=/opt/venv \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    HF_HOME=/cache/huggingface \
+    TRANSFORMERS_CACHE=/cache/huggingface \
+    HUGGINGFACE_HUB_CACHE=/cache/huggingface \
+    HF_HUB_DISABLE_TELEMETRY=1
 
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -12,20 +16,25 @@ RUN apt-get update && apt-get install -y \
     python3-venv \
     git \
     curl \
+    bash \
+    ca-certificates \
+    libgomp1 \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
 
-WORKDIR /app
+WORKDIR /trainer
 
-COPY requirements.txt /app/requirements.txt
+COPY requirements.txt /trainer/requirements.txt
 
 RUN pip install -U pip setuptools wheel
-RUN pip install -r /app/requirements.txt
+RUN pip install -r /trainer/requirements.txt
 
-COPY app /app/app
-COPY docker/entrypoint.sh /app/entrypoint.sh
+COPY app /trainer/app
+COPY docker/entrypoint.sh /trainer/entrypoint.sh
 
-RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /trainer/entrypoint.sh && \
+    mkdir -p /output /cache/huggingface
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/trainer/entrypoint.sh"]
