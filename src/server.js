@@ -19,6 +19,8 @@ const monitorRoute = require('./routes/monitor');
 const syntheticRoute = require('./routes/synthetic');
 const comparisonsRoute = require('./routes/comparisons');
 const evaluationsRoute = require('./routes/evaluations');
+const syncRoute = require('./routes/sync');
+const { startBackgroundReconcile } = require('./services/reconcile');
 
 function buildCorsOrigin() {
   if (!CONFIG.webUiOrigin || CONFIG.webUiOrigin === '*') {
@@ -63,6 +65,7 @@ async function main() {
   app.use('/synthetic', syntheticRoute);
   app.use('/comparisons', comparisonsRoute);
   app.use('/evaluations', evaluationsRoute);
+  app.use('/sync', syncRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -84,7 +87,8 @@ async function main() {
         req.path.startsWith('/monitor') ||
         req.path.startsWith('/synthetic') ||
         req.path.startsWith('/comparisons') ||
-        req.path.startsWith('/evaluations')
+        req.path.startsWith('/evaluations') ||
+        req.path.startsWith('/sync')
       ) {
         return next();
       }
@@ -105,6 +109,9 @@ async function main() {
     console.log(`Workspace: ${CONFIG.workspace}`);
     console.log(`Python: ${CONFIG.pythonBin}`);
     console.log(`Web UI origin: ${CONFIG.webUiOrigin}`);
+    
+    const reconcileKickoff = startBackgroundReconcile({ reason: 'startup' });
+    console.log('Background reconcile scheduled:', reconcileKickoff);
   });
 
   server.on('error', (err) => {

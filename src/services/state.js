@@ -1,5 +1,5 @@
 const { CONFIG } = require('../config');
-const { ensureDir, exists, readJson, writeJson } = require('../utils/fs');
+const { ensureDir, ensureJsonFile, readJson, writeJson } = require('../utils/fs');
 
 const locks = new Map();
 
@@ -165,14 +165,14 @@ async function ensureWorkspace() {
     await ensureDir(dir);
   }
 
-  if (!exists(CONFIG.settingsFile)) await writeJson(CONFIG.settingsFile, DEFAULT_SETTINGS);
-  if (!exists(CONFIG.jobsFile)) await writeJson(CONFIG.jobsFile, []);
-  if (!exists(CONFIG.datasetsFile)) await writeJson(CONFIG.datasetsFile, []);
-  if (!exists(CONFIG.evalDatasetsFile)) await writeJson(CONFIG.evalDatasetsFile, []);
-  if (!exists(CONFIG.modelsFile)) await writeJson(CONFIG.modelsFile, []);
-  if (!exists(CONFIG.lorasFile)) await writeJson(CONFIG.lorasFile, []);
-  if (!exists(CONFIG.runtimeFile)) await writeJson(CONFIG.runtimeFile, DEFAULT_RUNTIME);
-  if (!exists(CONFIG.managedProcessesFile)) await writeJson(CONFIG.managedProcessesFile, []);
+  await ensureJsonFile(CONFIG.settingsFile, DEFAULT_SETTINGS);
+  await ensureJsonFile(CONFIG.jobsFile, []);
+  await ensureJsonFile(CONFIG.datasetsFile, []);
+  await ensureJsonFile(CONFIG.evalDatasetsFile, []);
+  await ensureJsonFile(CONFIG.modelsFile, []);
+  await ensureJsonFile(CONFIG.lorasFile, []);
+  await ensureJsonFile(CONFIG.runtimeFile, DEFAULT_RUNTIME);
+  await ensureJsonFile(CONFIG.managedProcessesFile, []);
 }
 
 async function getSettings() {
@@ -316,6 +316,14 @@ async function saveModels(items) {
   await writeJson(CONFIG.modelsFile, items);
 }
 
+async function replaceModels(items) {
+  return withLock(CONFIG.modelsFile, async () => {
+    const next = Array.isArray(items) ? items : [];
+    await saveModels(next);
+    return next;
+  });
+}
+
 async function addModel(meta) {
   return withLock(CONFIG.modelsFile, async () => {
     const list = await getModels();
@@ -362,6 +370,14 @@ async function getLoras() {
 
 async function saveLoras(items) {
   await writeJson(CONFIG.lorasFile, items);
+}
+
+async function replaceLoras(items) {
+  return withLock(CONFIG.lorasFile, async () => {
+    const next = Array.isArray(items) ? items : [];
+    await saveLoras(next);
+    return next;
+  });
 }
 
 async function addLora(meta) {
@@ -538,12 +554,14 @@ module.exports = {
   removeEvalDataset,
   getModels,
   saveModels,
+  replaceModels,
   addModel,
   upsertModel,
   getModelById,
   removeModel,
   getLoras,
   saveLoras,
+  replaceLoras,
   addLora,
   upsertLora,
   getLoraById,

@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-18T14:27:56.058Z
+generated: 2026-03-19T12:03:41.783Z
 
 
 
@@ -2138,86 +2138,162 @@ if __name__ == "__main__":
 
 path: /python/start_vllm.py
 ----------------------------------------
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+start_vllm.py — надёжный запуск vLLM с полной валидацией и защитой от ошибок
+Исправлены все известные проблемы с локальными путями и валидацией
+"""
+
 import json
 import os
 import sys
-import subprocess
+import shlex
+from pathlib import Path
+from typing import Dict, Any, List
+
+
+def eprint(*args, **kwargs):
+    print("[start_vllm]", *args, file=sys.stderr, **kwargs)
+
+
+def validate_and_normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Валидация + нормализация конфига"""
+    required = {"vllmBin", "model", "port"}
+    missing = required - set(cfg)
+    if missing:
+        raise ValueError(f"Отсутствуют обязательные поля: {', '.join(missing)}")
+
+    # Нормализация пути модели — всегда абсолютный
+    model_path = Path(cfg["model"]).resolve()
+    cfg["model"] = str(model_path)  # перезаписываем в cfg
+
+    if not model_path.is_dir():
+        raise NotADirectoryError(f"Путь к модели не является директорией: {model_path}")
+
+    config_json = model_path / "config.json"
+    if not config_json.is_file():
+        raise FileNotFoundError(
+            f"config.json не найден в директории модели.\n"
+            f"Путь: {config_json}\n"
+            f"vLLM не запустится без этого файла!"
+        )
+
+    port = cfg.get("port")
+    if not isinstance(port, (int, float)) or not (1 <= port <= 65535):
+        raise ValueError(f"Порт должен быть числом 1–65535, получено: {port}")
+
+    # gpu-memory-utilization: приводим к float 0.0–1.0
+    gpu_util = cfg.get("gpuMemoryUtilization", 0.9)
+    if not isinstance(gpu_util, (int, float)) or not (0.01 <= gpu_util <= 1.0):
+        eprint(f"Некорректный gpuMemoryUtilization {gpu_util} → исправлено на 0.90")
+        cfg["gpuMemoryUtilization"] = 0.9
+
+    # tensor-parallel-size: минимум 1
+    tps = cfg.get("tensorParallelSize", 1)
+    if not isinstance(tps, int) or tps < 1:
+        cfg["tensorParallelSize"] = 1
+
+    return cfg
+
+
+def build_vllm_arguments(cfg: Dict[str, Any]) -> List[str]:
+    """Сборка аргументов для vLLM — безопасно и явно"""
+    args = [
+        cfg["vllmBin"],
+        "serve",
+        cfg["model"],  # уже абсолютный и проверенный путь
+        "--host", cfg.get("host", "0.0.0.0"),
+        "--port", str(int(cfg["port"])),
+        "--gpu-memory-utilization", f"{cfg.get('gpuMemoryUtilization', 0.9):.2f}",
+        "--tensor-parallel-size", str(cfg.get("tensorParallelSize", 1)),
+        "--max-model-len", str(cfg.get("maxModelLen", 8192)),
+        "--max-num-seqs", str(cfg.get("maxNumSeqs", 256)),
+        "--swap-space", str(cfg.get("swapSpace", 4)),
+        "--dtype", str(cfg.get("dtype", "auto")),
+    ]
+
+    # quantization — передаём только если явно задан и не null
+    if quant := cfg.get("quantization"):
+        if quant and quant.lower() not in ("none", "null", ""):
+            args.extend(["--quantization", str(quant)])
+
+    if cfg.get("trustRemoteCode", True):
+        args.append("--trust-remote-code")
+
+    if cfg.get("enforceEager", False):
+        args.append("--enforce-eager")
+
+    if kv := cfg.get("kvCacheDtype"):
+        if kv and kv.lower() != "auto":
+            args.extend(["--kv-cache-dtype", str(kv)])
+
+    # LoRA — только если оба параметра заданы
+    if lora_path := cfg.get("loraPath"):
+        if lora_name := cfg.get("loraName"):
+            args.extend(["--enable-lora", "--lora-modules", f"{lora_name}={lora_path}"])
+        else:
+            eprint("Предупреждение: loraPath указан, но loraName отсутствует → LoRA не загружается")
+
+    return args
 
 
 def main():
-    if len(sys.argv) < 2:
-        raise SystemExit("Usage: start_vllm.py <config.json>")
+    if len(sys.argv) != 2:
+        eprint("Использование: start_vllm.py <путь_к_config.json>")
+        sys.exit(2)
 
-    with open(sys.argv[1], "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+    config_file = sys.argv[1]
+    if not Path(config_file).is_file():
+        eprint(f"Файл конфигурации не найден: {config_file}")
+        sys.exit(1)
 
-    vllm_bin = cfg["vllmBin"]
-    model = cfg["model"]
-    host = cfg.get("host", "0.0.0.0")
-    port = int(cfg["port"])
-    gpu_memory_utilization = cfg.get("gpuMemoryUtilization", 0.9)
-    tensor_parallel_size = int(cfg.get("tensorParallelSize", 1))
-    max_model_len = int(cfg.get("maxModelLen", 8192))
-    max_num_seqs = int(cfg.get("maxNumSeqs", 256))
-    swap_space = int(cfg.get("swapSpace", 4))
-    dtype = cfg.get("dtype", "auto")
-    quantization = cfg.get("quantization")
-    trust_remote_code = bool(cfg.get("trustRemoteCode", True))
-    enforce_eager = bool(cfg.get("enforceEager", False))
-    kv_cache_dtype = cfg.get("kvCacheDtype", "auto")
-    lora_path = cfg.get("loraPath")
-    lora_name = cfg.get("loraName")
+    try:
+        with open(config_file, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception as e:
+        eprint(f"Не удалось прочитать конфиг {config_file}: {e}")
+        sys.exit(1)
+
+    try:
+        cfg = validate_and_normalize_config(cfg)
+    except Exception as e:
+        eprint(f"Ошибка проверки конфигурации:\n{e}")
+        sys.exit(1)
+
+    args = build_vllm_arguments(cfg)
     cwd = cfg.get("cwd") or os.getcwd()
 
-    args = [
-        vllm_bin,
-        "serve",
-        model,
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--gpu-memory-utilization",
-        str(gpu_memory_utilization),
-        "--tensor-parallel-size",
-        str(tensor_parallel_size),
-        "--max-model-len",
-        str(max_model_len),
-        "--max-num-seqs",
-        str(max_num_seqs),
-        "--swap-space",
-        str(swap_space),
-        "--dtype",
-        str(dtype or "auto"),
-    ]
-
-    if quantization:
-        args.extend(["--quantization", str(quantization)])
-
-    if trust_remote_code:
-        args.append("--trust-remote-code")
-
-    if enforce_eager:
-        args.append("--enforce-eager")
-
-    if kv_cache_dtype and kv_cache_dtype != "auto":
-        args.extend(["--kv-cache-dtype", str(kv_cache_dtype)])
-
-    if lora_path and lora_name:
-        args.extend(["--enable-lora", "--lora-modules", f"{lora_name}={lora_path}"])
+    print("Запуск vLLM:", shlex.join(args))
+    print(f"Рабочая директория: {cwd}")
+    print(f"Модель (абсолютный путь): {cfg['model']}")
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
-    print(f"vLLM args: {args}")
-
-    # Замещаем текущий процесс процессом vLLM
-    os.chdir(cwd)
-    os.execvpe(vllm_bin, args, env)
+    try:
+        os.chdir(cwd)
+        os.execvpe(args[0], args, env)
+    except FileNotFoundError:
+        eprint(f"Исполняемый файл vLLM не найден: {args[0]}")
+        sys.exit(127)
+    except PermissionError:
+        eprint(f"Нет прав на запуск: {args[0]}")
+        sys.exit(126)
+    except Exception as e:
+        eprint(f"Критическая ошибка при запуске vLLM:\n{e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        eprint("Прервано пользователем")
+        sys.exit(130)
+    except Exception as e:
+        eprint(f"Необработанная ошибка:\n{e}")
+        sys.exit(1)
 
 
 path: /python/train.py
@@ -5799,21 +5875,47 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
   });
 
   const writeLog = (msg, level = 'info', meta = null) => {
-    const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}${
+    // Защита от любых некорректных значений level
+    let safeLevel = 'info';
+    
+    if (typeof level === 'string') {
+      const lowered = level.toLowerCase().trim();
+      // Ограничиваем только допустимыми уровнями (можно расширить)
+      if (['info', 'warn', 'error', 'debug'].includes(lowered)) {
+        safeLevel = lowered;
+      }
+    }
+    // если level был числом, объектом, null и т.д. → остаётся 'info'
+
+    const timestamp = new Date().toISOString();
+    const upperLevel = safeLevel.toUpperCase();
+
+    const line = `[${timestamp}] [${upperLevel}] ${msg}${
       meta ? ` ${JSON.stringify(meta)}` : ''
     }\n`;
+
     logStream.write(line);
 
-    if (level === 'error') logger.error(`Eval ${jobId}: ${msg}`, meta || {});
-    else if (level === 'warn') logger.warn(`Eval ${jobId}: ${msg}`, meta || {});
-    else logger.info(`Eval ${jobId}: ${msg}`, meta || {});
+    // Цветной вывод в консоль (опционально, но удобно при отладке)
+    const colorMap = {
+      info:  '\x1b[32m',   // зелёный
+      warn:  '\x1b[33m',   // жёлтый
+      error: '\x1b[31m',   // красный
+      debug: '\x1b[34m',   // синий
+    };
+    const color = colorMap[safeLevel] || '\x1b[37m'; // белый по умолчанию
+    const reset = '\x1b[0m';
+    
+    console.log(`${timestamp} ${color}${upperLevel}${reset}: ${msg}`,
+      meta ? meta : '');
 
+    // Отправка события (безопасно, даже если meta — не объект)
     emitEvent('job_log', {
       jobId,
       message: msg,
-      level,
-      meta,
-      timestamp: new Date().toISOString(),
+      level: safeLevel,
+      meta: meta || null,
+      timestamp,
     });
   };
 
@@ -8565,8 +8667,10 @@ module.exports = new VllmProvider();
 
 path: /services/runtime.js
 ----------------------------------------
+// services/runtime.js
 const fs = require('fs');
 const fsp = require('fs/promises');
+const path = require('path');
 const { CONFIG } = require('../config');
 const { nowIso } = require('../utils/ids');
 const { isPidRunning } = require('../utils/proc');
@@ -8585,27 +8689,36 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Валидация параметров запуска инференса
+ * @throws {Error} если параметры некорректны
+ */
 function validateInferenceParams(params = {}) {
   if (params.port !== undefined && (!Number.isInteger(params.port) || params.port < 1 || params.port > 65535)) {
     throw new Error('port must be an integer between 1 and 65535');
   }
+
   if (
     params.gpuMemoryUtilization !== undefined &&
     (typeof params.gpuMemoryUtilization !== 'number' ||
       params.gpuMemoryUtilization <= 0 ||
       params.gpuMemoryUtilization > 1)
   ) {
-    throw new Error('gpuMemoryUtilization must be between 0 and 1');
+    throw new Error('gpuMemoryUtilization must be a number between 0 and 1');
   }
-  if (params.maxModelLen !== undefined && (!Number.isInteger(params.maxModelLen) || params.maxModelLen < 1)) {
-    throw new Error('maxModelLen must be a positive integer');
+
+  if (params.maxModelLen !== undefined && (!Number.isInteger(params.maxModelLen) || params.maxModelLen < 512)) {
+    throw new Error('maxModelLen must be an integer >= 512');
   }
+
   if (params.maxNumSeqs !== undefined && (!Number.isInteger(params.maxNumSeqs) || params.maxNumSeqs < 1)) {
     throw new Error('maxNumSeqs must be a positive integer');
   }
+
   if (params.swapSpace !== undefined && (!Number.isInteger(params.swapSpace) || params.swapSpace < 0)) {
     throw new Error('swapSpace must be a non-negative integer');
   }
+
   if (
     params.tensorParallelSize !== undefined &&
     (!Number.isInteger(params.tensorParallelSize) || params.tensorParallelSize < 1)
@@ -8614,19 +8727,21 @@ function validateInferenceParams(params = {}) {
   }
 }
 
+/**
+ * Маппинг torch dtype → vLLM dtype
+ */
 function mapTorchDtypeToVllm(torchDtype) {
-  switch (String(torchDtype || '').toLowerCase()) {
-    case 'float16':
-      return 'half';
-    case 'float32':
-      return 'float';
-    case 'bfloat16':
-      return 'bfloat16';
-    default:
-      return null;
-  }
+  const mapping = {
+    float16: 'half',
+    float32: 'float',
+    bfloat16: 'bfloat16',
+  };
+  return mapping[String(torchDtype || '').toLowerCase()] ?? null;
 }
 
+/**
+ * Чтение и анализ config.json модели (если существует)
+ */
 function resolveModelConfig(modelRef) {
   const result = {
     exists: false,
@@ -8645,71 +8760,76 @@ function resolveModelConfig(modelRef) {
     const normalized = String(modelRef || '').trim();
     if (!normalized) return result;
 
-    const configPath = `${normalized}/config.json`;
+    const configPath = path.join(normalized, 'config.json');
     if (!fs.existsSync(configPath)) {
       return result;
     }
 
     const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const quantMethod = raw?.quantization_config?.quant_method || null;
-    const torchDtype = raw?.torch_dtype || null;
-    const maxPositionEmbeddings = Number(raw?.max_position_embeddings || 0) || null;
-    const slidingWindow = Number(raw?.sliding_window || 0) || null;
-    const modelType = raw?.model_type || null;
 
     result.exists = true;
     result.configPath = configPath;
     result.raw = raw;
+
+    const quantMethod = raw?.quantization_config?.quant_method ?? null;
+    const torchDtype = raw?.torch_dtype ?? null;
+    const maxPosEmb = Number(raw?.max_position_embeddings ?? 0) || null;
+    const sliding = Number(raw?.sliding_window ?? 0) || null;
+    const modelType = raw?.model_type ?? null;
+
     result.detected = {
       quantization: quantMethod ? String(quantMethod).toLowerCase() : null,
       dtype: mapTorchDtypeToVllm(torchDtype),
-      maxModelLen: maxPositionEmbeddings,
-      slidingWindow,
+      maxModelLen: maxPosEmb,
+      slidingWindow: sliding,
       modelType,
     };
 
     return result;
   } catch (err) {
-    logger.warn('Failed to read model config.json', {
+    logger.warn('Не удалось прочитать/распарсить config.json модели', {
       model: modelRef,
-      error: String(err.message || err),
+      error: err.message,
     });
     return result;
   }
 }
 
-function hasOwn(obj, key) {
-  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
-}
-
-function resolveQuantization(params, inf, detected) {
-  if (hasOwn(params, 'quantization') && params.quantization !== null) return params.quantization;
-  if (inf.quantization !== undefined && inf.quantization !== null && inf.quantization !== '') {
-    return inf.quantization;
+function resolveQuantization(params, settingsInf, detected) {
+  if (params.quantization !== undefined && params.quantization !== null) {
+    return params.quantization;
+  }
+  if (settingsInf.quantization !== undefined && settingsInf.quantization !== null) {
+    return settingsInf.quantization;
   }
   return detected.quantization ?? null;
 }
 
-function resolveDtype(params, inf, detected) {
-  if (hasOwn(params, 'dtype') && params.dtype && params.dtype !== 'auto') {
-    return params.dtype;
-  }
-  if (inf.dtype && inf.dtype !== 'auto') {
-    return inf.dtype;
-  }
+function resolveDtype(params, settingsInf, detected) {
+  if (params.dtype && params.dtype !== 'auto') return params.dtype;
+  if (settingsInf.dtype && settingsInf.dtype !== 'auto') return settingsInf.dtype;
+
+  // Для AWQ часто лучше half
   if (detected.quantization === 'awq' && (!detected.dtype || detected.dtype === 'auto')) {
     return 'half';
   }
+
   return detected.dtype ?? 'auto';
 }
 
-function resolveMaxModelLen(params, inf, detected) {
-  const requested = Number(params.maxModelLen ?? inf.maxModelLen ?? 8192);
+function resolveMaxModelLen(params, settingsInf, detected) {
+  const requested = Number(params.maxModelLen ?? settingsInf.maxModelLen ?? 8192);
   const limit = detected.maxModelLen;
+
   if (limit && requested > limit) {
-    logger.warn('Requested maxModelLen exceeds model limit, clamping', { requested, limit });
+    logger.warn('Запрошенный maxModelLen превышает лимит модели → обрезаем', {
+      requested,
+      limit,
+      model: params.model,
+    });
     return limit;
   }
+
   return requested;
 }
 
@@ -8743,39 +8863,70 @@ function buildStoppedInferenceState(settings, overrides = {}) {
       error: null,
     },
     ...overrides,
-    capabilities: {
-      experimental: false,
-      supportsStreaming: true,
-      supportsLora: true,
-      supportsAwq: true,
-      ...((overrides && overrides.capabilities) || {}),
-    },
-    probe: {
-      ok: false,
-      status: 'idle',
-      checkedAt: null,
-      error: null,
-      ...((overrides && overrides.probe) || {}),
-    },
   };
 }
 
+/**
+ * Запуск runtime (vLLM или transformers)
+ * @param {Object} params - параметры запуска
+ * @returns {Promise<Object>} состояние runtime после запуска
+ */
 async function startRuntime(params = {}) {
   const settings = await getSettings();
   const inf = settings.inference || {};
 
-  const requestedModel = String(params.model ?? inf.model ?? settings.baseModel ?? '').trim();
+  // ──────────────────────────────────────────────
+  // 1. Нормализация и проверка пути к модели
+  // ──────────────────────────────────────────────
+  let requestedModel = String(params.model ?? inf.model ?? settings.baseModel ?? '').trim();
   if (!requestedModel) {
-    throw new Error('model is required');
+    throw new Error('Параметр model обязателен');
   }
 
-  const modelCfg = resolveModelConfig(requestedModel);
+  let resolvedModelPath = requestedModel;
+
+  try {
+    resolvedModelPath = path.resolve(requestedModel);
+    const configJsonPath = path.join(resolvedModelPath, 'config.json');
+
+    if (!fs.existsSync(resolvedModelPath)) {
+      throw new Error(`Директория модели не найдена: ${resolvedModelPath}`);
+    }
+
+    if (!fs.existsSync(configJsonPath)) {
+      throw new Error(
+        `Файл config.json отсутствует в директории модели: ${resolvedModelPath}\n` +
+        `vLLM / transformers не смогут загрузить модель без этого файла.`
+      );
+    }
+
+    logger.info('Путь к модели проверен и нормализован', {
+      original: requestedModel,
+      resolved: resolvedModelPath,
+      configExists: true,
+    });
+  } catch (err) {
+    logger.error('Ошибка проверки пути к модели', {
+      requestedModel,
+      error: err.message,
+    });
+    throw err;
+  }
+
+  const modelCfg = resolveModelConfig(resolvedModelPath);
+
+  // ──────────────────────────────────────────────
+  // 2. Определение количества GPU
+  // ──────────────────────────────────────────────
   const { getGpuInfo } = require('../utils/gpu_info');
-  const gpuInfo = await getGpuInfo();
+  const gpuInfo = await getGpuInfo().catch(() => []);
   const numGpus = gpuInfo.length || 1;
 
+  // ──────────────────────────────────────────────
+  // 3. Сборка финальных параметров
+  // ──────────────────────────────────────────────
   const merged = {
-    model: requestedModel,
+    model: resolvedModelPath,  // ← исправленный абсолютный путь
     port: Number(params.port ?? inf.port ?? CONFIG.vllmPort),
     maxModelLen: resolveMaxModelLen(params, inf, modelCfg.detected),
     gpuMemoryUtilization: Number(params.gpuMemoryUtilization ?? inf.gpuMemoryUtilization ?? 0.9),
@@ -8810,8 +8961,11 @@ async function startRuntime(params = {}) {
     provider: requestedProviderId,
   } = merged;
 
+  // ──────────────────────────────────────────────
+  // 4. Выбор провайдера
+  // ──────────────────────────────────────────────
   if (!fs.existsSync(CONFIG.pythonBin)) {
-    throw new Error(`Python binary not found: ${CONFIG.pythonBin}`);
+    throw new Error(`Python бинарник не найден: ${CONFIG.pythonBin}`);
   }
 
   const { provider, compatibility, capabilities } = await providers.resolveProvider(
@@ -8819,27 +8973,46 @@ async function startRuntime(params = {}) {
     modelCfg.detected
   );
 
-  logger.info('Resolved inference provider', {
+  logger.info('Провайдер инференса выбран', {
     requested: requestedProviderId,
     resolved: provider.id,
+    modelPath: model,
     compatibility,
     capabilities,
   });
 
+  // ──────────────────────────────────────────────
+  // 5. Очистка и подготовка
+  // ──────────────────────────────────────────────
   await clearGpuMemory({ types: ['runtime'] });
 
   const runtime = await getRuntime();
   if (runtime.inference?.pid && isPidRunning(runtime.inference.pid)) {
+    logger.info('Остановка существующего runtime перед новым запуском');
     await stopRuntime();
   }
 
-  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
-  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
+  await fsp.mkdir(CONFIG.logsDir, { recursive: true });
+  await fsp.mkdir(CONFIG.trainingConfigsDir, { recursive: true });
 
-  const pid = await provider.start({
-    ...merged,
-    modelConfigPath: modelCfg.configPath,
-  });
+  // ──────────────────────────────────────────────
+  // 6. Запуск провайдера
+  // ──────────────────────────────────────────────
+  let pid;
+  try {
+    pid = await provider.start({
+      ...merged,
+      modelConfigPath: modelCfg.configPath,
+    });
+  } catch (err) {
+    logger.error('Не удалось запустить провайдер инференса', {
+      provider: provider.id,
+      modelPath: model,
+      error: err.message,
+      stack: err.stack?.split('\n').slice(0, 6).join('\n'),
+    });
+    throw err;
+  }
 
   await registerManagedProcess({
     pid,
@@ -8856,12 +9029,14 @@ async function startRuntime(params = {}) {
     },
   });
 
-  await fsp.writeFile(CONFIG.vllmPidFile, String(pid), 'utf8');
+  await fsp.writeFile(CONFIG.vllmPidFile, String(pid), 'utf8').catch(() => {});
 
+  // ──────────────────────────────────────────────
+  // 7. Ожидание готовности (health check)
+  // ──────────────────────────────────────────────
   let healthy = false;
-
   try {
-    for (let i = 0; i < 120; i += 1) {
+    for (let i = 0; i < 120; i++) {
       const h = await provider.health({ port });
       if (h.ok) {
         healthy = true;
@@ -8870,31 +9045,42 @@ async function startRuntime(params = {}) {
 
       if (!isPidRunning(pid)) {
         const logs = await readText(CONFIG.vllmLogFile, '');
-        const lastLines = logs.split('\n').slice(-50).join('\n');
-        throw new Error(`Provider process exited during startup. Last logs:\n${lastLines}`);
+        const lastLines = logs.split('\n').slice(-60).join('\n');
+        throw new Error(
+          `Процесс провайдера завершился во время запуска.\nПоследние логи:\n${lastLines}`
+        );
       }
 
       await sleep(1000);
     }
 
     if (!healthy) {
-      throw new Error('Provider did not become healthy within timeout.');
+      throw new Error('Провайдер не стал доступен в течение 120 секунд');
     }
   } catch (err) {
+    logger.error('Ошибка ожидания готовности runtime', { error: err.message });
     await provider.stop({ pid }).catch(() => {});
     await unregisterManagedProcess(pid).catch(() => {});
     await removeFile(CONFIG.vllmPidFile).catch(() => {});
 
-    const isOom = String(err).includes('CUDA out of memory') || String(err).includes('Out of memory');
-    if (isOom && merged.maxModelLen > 2048) {
-      return await startRuntime({ ...params, maxModelLen: 2048 });
-    } else if (isOom && merged.gpuMemoryUtilization > 0.7) {
-      return await startRuntime({ ...params, gpuMemoryUtilization: 0.7 });
+    const isOom = /out of memory/i.test(String(err));
+    if (isOom) {
+      if (merged.maxModelLen > 2048) {
+        logger.warn('OOM → повторный запуск с уменьшенным maxModelLen=2048');
+        return startRuntime({ ...params, maxModelLen: 2048 });
+      }
+      if (merged.gpuMemoryUtilization > 0.7) {
+        logger.warn('OOM → повторный запуск с gpuMemoryUtilization=0.7');
+        return startRuntime({ ...params, gpuMemoryUtilization: 0.7 });
+      }
     }
 
     throw err;
   }
 
+  // ──────────────────────────────────────────────
+  // 8. Сохранение начального состояния
+  // ──────────────────────────────────────────────
   const nextInference = {
     pid,
     model,
@@ -8921,8 +9107,15 @@ async function startRuntime(params = {}) {
 
   await saveRuntime({ inference: nextInference });
 
-  logger.info('Performing model probe...', { provider: provider.id });
-  const probeResult = await provider.probe(nextInference);
+  // ──────────────────────────────────────────────
+  // 9. Проверка работоспособности модели (probe)
+  // ──────────────────────────────────────────────
+  logger.info('Выполняется проверка модели (probe)...', { provider: provider.id });
+
+  const probeResult = await provider.probe(nextInference).catch((err) => ({
+    ok: false,
+    error: err.message,
+  }));
 
   const finalInference = {
     ...nextInference,
@@ -8937,16 +9130,16 @@ async function startRuntime(params = {}) {
   await saveRuntime({ inference: finalInference });
 
   if (!probeResult.ok) {
-    logger.warn('Runtime probe failed after startup', {
+    logger.warn('Проверка модели (probe) не прошла после запуска', {
       provider: provider.id,
-      error: probeResult.error || null,
+      error: probeResult.error,
     });
 
     await provider.stop(finalInference).catch(() => {});
     await unregisterManagedProcess(pid).catch(() => {});
     await removeFile(CONFIG.vllmPidFile).catch(() => {});
 
-    const failedInference = buildStoppedInferenceState(settings, {
+    const failedState = buildStoppedInferenceState(settings, {
       providerRequested: requestedProviderId,
       providerResolved: provider.id,
       compatibilityRisk: compatibility.risk,
@@ -8955,22 +9148,25 @@ async function startRuntime(params = {}) {
       probe: finalInference.probe,
     });
 
-    await saveRuntime({ inference: failedInference });
-    emitEvent('runtime_stopped', failedInference);
+    await saveRuntime({ inference: failedState });
+    emitEvent('runtime_stopped', failedState);
 
-    throw new Error(`Provider probe failed: ${probeResult.error || 'unknown error'}`);
+    throw new Error(`Проверка модели не прошла: ${probeResult.error || 'неизвестная ошибка'}`);
   }
 
   emitEvent('runtime_started', finalInference);
-
-  logger.info('Runtime started successfully', {
+  logger.info('Runtime успешно запущен', {
     provider: provider.id,
     probe: finalInference.probe,
+    modelPath: model,
   });
 
   return finalInference;
 }
 
+/**
+ * Остановка runtime
+ */
 async function stopRuntime() {
   const runtime = await getRuntime();
   const state = runtime.inference;
@@ -8979,7 +9175,10 @@ async function stopRuntime() {
 
   if (pid && isPidRunning(pid)) {
     const provider = providers.PROVIDERS[providerId] || providers.PROVIDERS.vllm;
-    await provider.stop(state);
+    logger.info('Остановка runtime', { provider: provider.id, pid });
+    await provider.stop(state).catch((err) => {
+      logger.warn('Ошибка при остановке провайдера', { error: err.message });
+    });
   }
 
   if (pid) {
@@ -8987,15 +9186,15 @@ async function stopRuntime() {
   }
 
   await removeFile(CONFIG.vllmPidFile).catch(() => {});
+
   const settings = await getSettings();
+  const stoppedState = buildStoppedInferenceState(settings);
 
-  const nextInference = buildStoppedInferenceState(settings);
+  await saveRuntime({ inference: stoppedState });
+  emitEvent('runtime_stopped', stoppedState);
 
-  await saveRuntime({ inference: nextInference });
-  emitEvent('runtime_stopped', nextInference);
-  logger.info('Runtime stopped');
-
-  return nextInference;
+  logger.info('Runtime остановлен');
+  return stoppedState;
 }
 
 async function getRuntimeHealth(port) {
@@ -9020,15 +9219,12 @@ async function getRuntimeHealth(port) {
   }
 }
 
-const startVllmRuntime = startRuntime;
-const stopVllmRuntime = stopRuntime;
-
 module.exports = {
   startRuntime,
   stopRuntime,
   getRuntimeHealth,
-  startVllmRuntime,
-  stopVllmRuntime,
+  startVllmRuntime: startRuntime,   // алиас для совместимости
+  stopVllmRuntime: stopRuntime,     // алиас для совместимости
 };
 
 
@@ -10795,4 +10991,4 @@ included: 47
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 296102
+totalBytes(approx): 306690
