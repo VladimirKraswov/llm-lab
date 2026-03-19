@@ -5,8 +5,11 @@ import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import { useAuth } from '../../hooks/use-auth';
+import UserManagement from './user-management';
 
 export default function SettingsPage() {
+  const { user } = useAuth();
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const [baseModel, setBaseModel] = useState('');
   const [inferenceModel, setInferenceModel] = useState('');
@@ -209,6 +212,17 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {user?.role === 'admin' && (
+        <Card className="border-blue-500/20 bg-blue-500/5">
+          <CardHeader>
+            <CardTitle>Administration</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <UserManagement />
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="border-amber-500/20 bg-amber-500/5">
         <CardHeader>

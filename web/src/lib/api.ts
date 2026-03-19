@@ -674,7 +674,7 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(payload),
   }),
-  register: (payload: any) => request<AuthResponse>('/auth/register', {
+  createUser: (payload: any) => request<{ user: User }>('/auth/users', {
     method: 'POST',
     body: JSON.stringify(payload),
   }),
@@ -987,6 +987,7 @@ export const api = {
 export type User = {
   id: number;
   username: string;
+  role: string;
 };
 
 export type AuthResponse = {
