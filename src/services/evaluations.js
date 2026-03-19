@@ -96,21 +96,16 @@ function parseEvalTxt(content, sourceName = 'unknown') {
   return { samples, errors };
 }
 
-function buildEvalPrompt(sample) {
-  const tagsText = Array.isArray(sample.hashTags) && sample.hashTags.length
-    ? sample.hashTags.join(', ')
-    : 'none';
-
-  return `Ты — беспристрастный эксперт-оценщик. Тебе предоставлен вопрос и ответ кандидата.
+const DEFAULT_EVAL_PROMPT = `Ты — беспристрастный эксперт-оценщик. Тебе предоставлен вопрос и ответ кандидата.
 Твоя задача — выставить оценку от 0 до 5, где:
 5 — идеально правильный и полный ответ,
 0 — совершенно неверный или отсутствующий ответ.
 
-Теги вопроса: ${tagsText}
+Теги вопроса: \${tagsText}
 Эти теги являются метаданными. Не завышай и не занижай оценку только из-за тегов.
 
-Вопрос: ${sample.question}
-Ответ кандидата: ${sample.candidateAnswer}
+Вопрос: \${question}
+Ответ кандидата: \${candidateAnswer}
 
 Верни результат строго в формате JSON:
 {
@@ -119,6 +114,37 @@ function buildEvalPrompt(sample) {
 }
 
 Если не можешь вернуть JSON, обязательно напиши в конце: "score: X/5"`;
+
+function getAvailableEvalPromptVariables() {
+  return [
+    { name: 'question', description: 'Текст вопроса' },
+    { name: 'candidateAnswer', description: 'Ответ модели-кандидата' },
+    { name: 'referenceScore', description: 'Эталонная оценка (из датасета)' },
+    { name: 'maxScore', description: 'Максимально возможная оценка (обычно 5)' },
+    { name: 'tagsText', description: 'Теги вопроса через запятую' },
+  ];
+}
+
+function renderPromptTemplate(template, sample) {
+  const tagsText = Array.isArray(sample.hashTags) && sample.hashTags.length
+    ? sample.hashTags.join(', ')
+    : 'none';
+
+  const context = {
+    question: sample.question || '',
+    candidateAnswer: sample.candidateAnswer || '',
+    referenceScore: sample.referenceScore ?? '',
+    maxScore: sample.maxScore ?? 5,
+    tagsText,
+  };
+
+  let rendered = template || DEFAULT_EVAL_PROMPT;
+  for (const [key, value] of Object.entries(context)) {
+    const placeholder = `\${${key}}`;
+    rendered = rendered.split(placeholder).join(String(value));
+  }
+
+  return rendered;
 }
 
 function clipText(value, max = 1200) {
@@ -377,6 +403,7 @@ function calculateMetrics(results) {
     return {
       samples: results.length,
       parseSuccessRate: 0,
+      squaredDeltaSquaresMean: null,
       mae: null,
       rmse: null,
       exactRate: 0,
@@ -394,6 +421,7 @@ function calculateMetrics(results) {
   let sumSqError = 0;
   let sumSignedError = 0;
   let sumPredictedScore = 0;
+  let sumSqDeltaSq = 0;
   let exactCount = 0;
   let within1Count = 0;
   let within2Count = 0;
@@ -407,6 +435,11 @@ function calculateMetrics(results) {
     sumSignedError += error;
     sumPredictedScore += r.predictedScore;
 
+    // (v1^2 - v2^2)^2
+    const v1 = r.predictedScore;
+    const v2 = r.referenceScore;
+    sumSqDeltaSq += Math.pow(Math.pow(v1, 2) - Math.pow(v2, 2), 2);
+
     if (absError === 0) exactCount += 1;
     if (absError <= 1) within1Count += 1;
     if (absError <= 2) within2Count += 1;
@@ -415,6 +448,7 @@ function calculateMetrics(results) {
   return {
     samples: results.length,
     parseSuccessRate: n / results.length,
+    squaredDeltaSquaresMean: sumSqDeltaSq / n,
     mae: sumAbsError / n,
     rmse: Math.sqrt(sumSqError / n),
     exactRate: exactCount / n,
@@ -464,7 +498,7 @@ function buildRuntimeParams(target, settings) {
   };
 }
 
-async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
+async function runEvaluationBenchmark(jobId, { datasetId, targets, name, promptTemplate }) {
   const datasets = await getEvalDatasets();
   const dsMeta = datasets.find((d) => d.id === datasetId);
   if (!dsMeta) throw new Error('Evaluation dataset not found');
@@ -479,6 +513,8 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
   const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
 
+  const finalPromptTemplate = promptTemplate || DEFAULT_EVAL_PROMPT;
+
   let job = await upsertJob({
     id: jobId,
     name: name || `Eval: ${dsMeta.name}`,
@@ -490,7 +526,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
     datasetId,
     outputDir,
     logFile,
-    paramsSnapshot: { datasetId, targets: safeTargets },
+    paramsSnapshot: { datasetId, targets: safeTargets, promptTemplate: finalPromptTemplate },
     summaryMetrics: {},
     artifacts: [],
     error: null,
@@ -662,7 +698,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
           totalProgressPercent: totalPercent,
         });
 
-        const prompt = buildEvalPrompt(sample);
+        const prompt = renderPromptTemplate(finalPromptTemplate, sample);
 
         try {
           const response = await provider.chat(runtime, {
@@ -849,6 +885,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
       writeLog(`Finished target ${target.label}`, 'info', {
         mae: metrics.mae,
         rmse: metrics.rmse,
+        squaredDeltaSquaresMean: metrics.squaredDeltaSquaresMean,
         parseErrors: metrics.parseErrors,
         inferenceErrors: metrics.inferenceErrors,
         parseSuccessRate: metrics.parseSuccessRate,
@@ -872,6 +909,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
       'model',
       'samples',
       'parseSuccessRate',
+      'squaredDeltaSquaresMean',
       'mae',
       'rmse',
       'exactRate',
@@ -889,6 +927,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
         csvEscape(m.modelLabel),
         m.samples,
         m.parseSuccessRate,
+        m.squaredDeltaSquaresMean,
         m.mae,
         m.rmse,
         m.exactRate,
@@ -1058,4 +1097,7 @@ module.exports = {
   parseEvalTxt,
   parseModelScore,
   calculateMetrics,
+  getAvailableEvalPromptVariables,
+  renderPromptTemplate,
+  DEFAULT_EVAL_PROMPT,
 };

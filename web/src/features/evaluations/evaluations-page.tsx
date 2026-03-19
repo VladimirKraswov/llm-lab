@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type EvalDataset, type EvalSample, type Job } from '../../lib/api';
 import { PageHeader } from '../../components/page-header';
@@ -7,7 +7,7 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Textarea } from '../../components/ui/textarea';
 import { Select } from '../../components/ui/select';
-import { Trash2, Play, Upload, Eye, CheckCircle, AlertCircle, Loader2, Plus, X, Search, FileText, Clock, BarChart3 } from 'lucide-react';
+import { Trash2, Play, Upload, Eye, CheckCircle, AlertCircle, Loader2, Plus, X, Search, FileText, Clock, BarChart3, MessageSquare } from 'lucide-react';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 
@@ -34,9 +34,11 @@ export default function EvaluationsPage() {
   const [runName, setRunName] = useState('');
   const [selectedDatasetId, setSelectedDatasetId] = useState('');
   const [targets, setTargets] = useState<TargetInput[]>([{ type: 'model', id: '' }]);
+  const [promptTemplate, setPromptTemplate] = useState('');
 
   // UI state
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [isPromptPreviewOpen, setIsPromptPreviewOpen] = useState(false);
   const [previewDataset, setPreviewDataset] = useState<EvalDataset | null>(null);
   const [runSearch, setRunSearch] = useState('');
 
@@ -44,6 +46,18 @@ export default function EvaluationsPage() {
     queryKey: ['eval-datasets'],
     queryFn: () => api.getEvalDatasets(),
   });
+
+  const configQuery = useQuery({
+    queryKey: ['eval-config'],
+    queryFn: () => api.getEvalConfig(),
+    staleTime: Infinity,
+  });
+
+  useEffect(() => {
+    if (configQuery.data?.defaultPromptTemplate && !promptTemplate) {
+      setPromptTemplate(configQuery.data.defaultPromptTemplate);
+    }
+  }, [configQuery.data]);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -101,7 +115,8 @@ export default function EvaluationsPage() {
   });
 
   const runMutation = useMutation({
-    mutationFn: (payload: { datasetId: string; targets: any[]; name?: string }) => api.runEvalBenchmark(payload),
+    mutationFn: (payload: { datasetId: string; targets: any[]; name?: string; promptTemplate?: string }) =>
+      api.runEvalBenchmark(payload),
     onSuccess: (res) => {
       toast.success('Benchmark started');
       navigate(`/jobs/${res.jobId}`);
@@ -176,8 +191,83 @@ export default function EvaluationsPage() {
     runMutation.mutate({
       datasetId: selectedDatasetId,
       targets: resolvedTargets,
-      name: runName || undefined
+      name: runName || undefined,
+      promptTemplate: promptTemplate === configQuery.data?.defaultPromptTemplate ? undefined : promptTemplate
     });
+  };
+
+  const insertVariable = (variable: string) => {
+    const textarea = document.getElementById('prompt-editor') as HTMLTextAreaElement;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = promptTemplate;
+    const before = text.substring(0, start);
+    const after = text.substring(end);
+    const newText = before + `\${${variable}}` + after;
+
+    setPromptTemplate(newText);
+
+    // Reset focus and cursor position after state update
+    setTimeout(() => {
+      textarea.focus();
+      const newPos = start + variable.length + 3;
+      textarea.setSelectionRange(newPos, newPos);
+    }, 0);
+  };
+
+  const renderPreview = () => {
+    if (!selectedDatasetId) {
+      toast.error('Please select a dataset first');
+      return null;
+    }
+    const ds = datasetsQuery.data?.find(d => d.id === selectedDatasetId);
+    if (!ds) return null;
+
+    // We need samples to render. If not loaded, we can't show preview easily without fetching.
+    // However, we can fetch it once or use a placeholder if samples aren't in the list.
+    // api.getEvalDataset(id) returns samples.
+    return ds;
+  };
+
+  const [promptPreviewText, setPromptPreviewText] = useState('');
+
+  const handleShowPromptPreview = async () => {
+    const ds = renderPreview();
+    if (!ds) return;
+
+    try {
+      const fullDs = await api.getEvalDataset(ds.id);
+      const sample = fullDs.samples?.[0];
+      if (!sample) {
+        toast.error('Dataset has no samples');
+        return;
+      }
+
+      const tagsText = Array.isArray(sample.hashTags) && sample.hashTags.length
+        ? sample.hashTags.join(', ')
+        : 'none';
+
+      const context: Record<string, any> = {
+        question: sample.question || '',
+        candidateAnswer: sample.candidateAnswer || '',
+        referenceScore: sample.referenceScore ?? '',
+        maxScore: sample.maxScore ?? 5,
+        tagsText,
+      };
+
+      let rendered = promptTemplate || configQuery.data?.defaultPromptTemplate || '';
+      for (const [key, value] of Object.entries(context)) {
+        const placeholder = `\${${key}}`;
+        rendered = rendered.split(placeholder).join(String(value));
+      }
+
+      setPromptPreviewText(rendered);
+      setIsPromptPreviewOpen(true);
+    } catch (err: any) {
+      toast.error('Failed to load sample for preview');
+    }
   };
 
   const showPreview = async (id: string) => {
@@ -197,7 +287,7 @@ export default function EvaluationsPage() {
         description="Benchmark evaluator models on control datasets."
       />
 
-      <div className="grid gap-4 xl:grid-cols-2 max-h-[500px]">
+      <div className="grid gap-4 xl:grid-cols-2">
         {/* Import Section */}
         <Card className="flex flex-col overflow-hidden">
           <CardHeader className="py-2.5">
@@ -386,6 +476,67 @@ export default function EvaluationsPage() {
             </Button>
           </CardContent>
         </Card>
+
+        {/* Prompt Editor Section */}
+        <Card className="flex flex-col overflow-hidden xl:col-span-2">
+          <CardHeader className="py-2.5 flex flex-row items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-xs">
+              <MessageSquare size={14} className="text-purple-400" /> Evaluation Prompt Template
+            </CardTitle>
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-[10px] text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                onClick={handleShowPromptPreview}
+                disabled={!selectedDatasetId}
+              >
+                <Eye size={12} className="mr-1" /> Preview on Sample
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-[10px] text-slate-500 hover:text-slate-300"
+                onClick={() => setPromptTemplate(configQuery.data?.defaultPromptTemplate || '')}
+              >
+                Reset to Default
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="p-3 grid gap-4 md:grid-cols-[1fr_250px]">
+            <div className="space-y-2">
+              <Textarea
+                id="prompt-editor"
+                className="font-mono text-xs h-[300px] bg-slate-950/50 resize-none scrollbar-thin"
+                placeholder="Enter prompt template..."
+                value={promptTemplate}
+                onChange={e => setPromptTemplate(e.target.value)}
+              />
+              <div className="text-[10px] text-slate-500 italic">
+                Use \${variable} syntax for substitutions.
+              </div>
+            </div>
+
+            <div className="space-y-3 border-l border-slate-800 pl-4 overflow-y-auto max-h-[300px] scrollbar-thin">
+              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Available Variables</div>
+              <div className="space-y-1">
+                {configQuery.data?.availableVariables.map(v => (
+                  <button
+                    key={v.name}
+                    className="w-full text-left p-2 rounded border border-slate-800 bg-slate-900/50 hover:bg-slate-800 hover:border-slate-700 transition group"
+                    onClick={() => insertVariable(v.name)}
+                  >
+                    <div className="text-[11px] font-mono text-purple-400 font-bold group-hover:text-purple-300">
+                      {`\${${v.name}}`}
+                    </div>
+                    <div className="text-[9px] text-slate-500 mt-0.5 leading-tight">{v.description}</div>
+                  </button>
+                ))}
+                {!configQuery.data && <div className="text-[10px] text-slate-600 animate-pulse">Loading variables...</div>}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Datasets List */}
@@ -557,6 +708,28 @@ export default function EvaluationsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Prompt Preview Modal */}
+      {isPromptPreviewOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4">
+          <Card className="w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl border-slate-700 bg-slate-900">
+            <CardHeader className="border-b border-slate-800">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">Prompt Preview (First Sample)</CardTitle>
+                <Button variant="ghost" size="sm" onClick={() => setIsPromptPreviewOpen(false)}>
+                  <X size={18} />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-4 overflow-y-auto font-mono text-xs whitespace-pre-wrap bg-slate-950 text-slate-300">
+              {promptPreviewText}
+            </CardContent>
+            <div className="p-3 border-t border-slate-800 flex justify-end">
+              <Button size="sm" onClick={() => setIsPromptPreviewOpen(false)}>Close</Button>
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Preview Dataset Modal */}
       {isPreviewOpen && previewDataset && (

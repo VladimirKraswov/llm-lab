@@ -7,6 +7,8 @@ const {
   importEvalDataset,
   runEvaluationBenchmark,
   parseEvalTxt,
+  getAvailableEvalPromptVariables,
+  DEFAULT_EVAL_PROMPT,
 } = require('../services/evaluations');
 
 const {
@@ -92,9 +94,20 @@ router.delete('/datasets/:id', async (req, res) => {
   }
 });
 
+router.get('/config', async (_req, res) => {
+  try {
+    res.json({
+      defaultPromptTemplate: DEFAULT_EVAL_PROMPT,
+      availableVariables: getAvailableEvalPromptVariables(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 router.post('/benchmark', async (req, res) => {
   try {
-    const { datasetId, targets, name } = req.body || {};
+    const { datasetId, targets, name, promptTemplate } = req.body || {};
 
     if (!datasetId || !Array.isArray(targets) || targets.length === 0) {
       return res.status(400).json({ error: 'datasetId and targets array are required' });
@@ -102,7 +115,12 @@ router.post('/benchmark', async (req, res) => {
 
     const jobId = uid('job');
 
-    runEvaluationBenchmark(jobId, { datasetId, targets, name }).catch((err) => {
+    runEvaluationBenchmark(jobId, {
+      datasetId,
+      targets,
+      name,
+      promptTemplate,
+    }).catch((err) => {
       console.error('Benchmark background error:', err);
     });
 

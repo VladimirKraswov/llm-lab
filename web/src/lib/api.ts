@@ -241,6 +241,7 @@ export type EvalModelSummary = {
   modelLabel: string;
   samples: number;
   parseSuccessRate: number;
+  squaredDeltaSquaresMean: number | null;
   mae: number | null;
   rmse: number | null;
   exactRate: number;
@@ -482,6 +483,7 @@ export type EvalBenchmarkResult = {
   metrics: {
     samples: number;
     parseSuccessRate: number;
+    squaredDeltaSquaresMean: number | null;
     mae: number | null;
     rmse: number | null;
     exactRate: number;
@@ -935,7 +937,11 @@ export const api = {
     request<{ ok: boolean }>(`/evaluations/datasets/${id}`, {
       method: 'DELETE',
     }),
-  runEvalBenchmark: (payload: { datasetId: string; targets: any[]; name?: string }) =>
+  getEvalConfig: () =>
+    request<{ defaultPromptTemplate: string; availableVariables: Array<{ name: string; description: string }> }>(
+      '/evaluations/config'
+    ),
+  runEvalBenchmark: (payload: { datasetId: string; targets: any[]; name?: string; promptTemplate?: string }) =>
     request<{ jobId: string }>('/evaluations/benchmark', {
       method: 'POST',
       body: JSON.stringify(payload),

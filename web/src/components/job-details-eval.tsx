@@ -236,6 +236,9 @@ export function JobDetailsEval({ job }: { job: Job }) {
                     <th className="px-4 py-3 cursor-pointer hover:text-white" onClick={() => handleSort('modelLabel')}>
                       Model {sortConfig?.key === 'modelLabel' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                     </th>
+                    <th className="px-3 py-3 text-center cursor-pointer hover:text-white" title="(v1^2 - v2^2)^2" onClick={() => handleSort('squaredDeltaSquaresMean')}>
+                      sqΔsq {sortConfig?.key === 'squaredDeltaSquaresMean' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
                     <th className="px-3 py-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('mae')}>
                       MAE {sortConfig?.key === 'mae' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                     </th>
@@ -267,6 +270,9 @@ export function JobDetailsEval({ job }: { job: Job }) {
                           {m.modelId === bestModel?.modelId && <CheckCircle size={14} className="text-emerald-400 shrink-0" />}
                           <span className="truncate">{m.modelLabel}</span>
                         </div>
+                      </td>
+                      <td className="px-3 py-3 text-center text-slate-400">
+                        {m.squaredDeltaSquaresMean?.toFixed(3) || '—'}
                       </td>
                       <td className={`px-3 py-3 text-center font-bold ${m.modelId === bestModel?.modelId ? 'text-emerald-400' : 'text-blue-300'}`}>
                         {m.mae?.toFixed(3) || '—'}
