@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 BASE_DIR = Path(__file__).resolve().parent
