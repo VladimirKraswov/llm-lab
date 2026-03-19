@@ -26,7 +26,7 @@ RUN python3 -m venv /opt/venv
 
 WORKDIR /trainer
 
-# Копируем локальные wheel-файлы PyTorch
+# Копируем локальные wheel-файлы PyTorch (cp312)
 COPY packages/pip /wheels/pip
 
 COPY requirements.txt /trainer/requirements.txt
@@ -36,7 +36,7 @@ RUN pip install -U pip setuptools wheel
 # Установка PyTorch из локальных wheel (без интернета!)
 RUN pip install /wheels/pip/*.whl --no-index --no-deps --break-system-packages
 
-# Установка остальных зависимостей (torch уже стоит, pip пропустит)
+# Установка остальных зависимостей (torch уже стоит → pip пропустит)
 RUN pip install -r /trainer/requirements.txt --break-system-packages
 
 COPY app /trainer/app
