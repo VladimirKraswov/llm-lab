@@ -4,8 +4,11 @@ const path = require('path');
 const fs = require('fs');
 const { CONFIG } = require('./config');
 const { ensureWorkspace, recoverState } = require('./services/state');
+const { initDb } = require('./db');
 
 const healthRoute = require('./routes/health');
+const authRoute = require('./routes/auth');
+const authMiddleware = require('./utils/auth-middleware');
 const settingsRoute = require('./routes/settings');
 const datasetsRoute = require('./routes/datasets');
 const jobsRoute = require('./routes/jobs');
@@ -33,6 +36,8 @@ async function main() {
   try {
     console.log('Initializing workspace...');
     await ensureWorkspace();
+    console.log('Initializing database...');
+    await initDb();
     console.log('Recovering state...');
     await recoverState();
     console.log('Starting Express app...');
@@ -52,20 +57,21 @@ async function main() {
   app.use(express.json({ limit: `${CONFIG.maxJsonMb}mb` }));
 
   app.use('/health', healthRoute);
-  app.use('/settings', settingsRoute);
-  app.use('/datasets', datasetsRoute);
-  app.use('/jobs', jobsRoute);
-  app.use('/runtime', runtimeRoute);
-  app.use('/dashboard', dashboardRoute);
-  app.use('/events', eventsRoute);
-  app.use('/models', modelsRoute);
-  app.use('/loras', lorasRoute);
-  app.use('/logs', logsRoute);
-  app.use('/monitor', monitorRoute);
-  app.use('/synthetic', syntheticRoute);
-  app.use('/comparisons', comparisonsRoute);
-  app.use('/evaluations', evaluationsRoute);
-  app.use('/sync', syncRoute);
+  app.use('/auth', authRoute);
+  app.use('/settings', authMiddleware, settingsRoute);
+  app.use('/datasets', authMiddleware, datasetsRoute);
+  app.use('/jobs', authMiddleware, jobsRoute);
+  app.use('/runtime', authMiddleware, runtimeRoute);
+  app.use('/dashboard', authMiddleware, dashboardRoute);
+  app.use('/events', authMiddleware, eventsRoute);
+  app.use('/models', authMiddleware, modelsRoute);
+  app.use('/loras', authMiddleware, lorasRoute);
+  app.use('/logs', authMiddleware, logsRoute);
+  app.use('/monitor', authMiddleware, monitorRoute);
+  app.use('/synthetic', authMiddleware, syntheticRoute);
+  app.use('/comparisons', authMiddleware, comparisonsRoute);
+  app.use('/evaluations', authMiddleware, evaluationsRoute);
+  app.use('/sync', authMiddleware, syncRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 

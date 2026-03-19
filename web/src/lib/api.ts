@@ -7,6 +7,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers['Content-Type'] = 'application/json';
   }
 
+  const token = localStorage.getItem('llm_lab_token');
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers,
@@ -22,6 +27,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('llm_lab_token');
+      localStorage.removeItem('llm_lab_user');
+      if (!window.location.pathname.startsWith('/login') && !window.location.pathname.startsWith('/register')) {
+        window.location.href = '/login';
+      }
+    }
     const message =
       typeof data === 'object' && data && 'error' in data
         ? String((data as { error?: unknown }).error)
@@ -657,6 +669,16 @@ export function createEventsSource() {
 
 export const api = {
   health: () => request<{ ok: boolean; service?: string; time?: string }>('/health'),
+
+  login: (payload: any) => request<AuthResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+  register: (payload: any) => request<AuthResponse>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+
   getDashboardSummary: () => request<DashboardSummary>('/dashboard/summary'),
 
   getSettings: () => request<Settings>('/settings'),
@@ -960,6 +982,16 @@ export const api = {
       headers: {},
     });
   },
+};
+
+export type User = {
+  id: number;
+  username: string;
+};
+
+export type AuthResponse = {
+  user: User;
+  token: string;
 };
 
 export type Api = typeof api;

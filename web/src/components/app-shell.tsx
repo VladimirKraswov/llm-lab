@@ -17,8 +17,11 @@ import {
   Menu,
   ChevronLeft,
   ChevronRight,
+  LogOut,
+  User as UserIcon,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { useAuth } from '../hooks/use-auth';
 
 const items = [
   { to: '/app', label: 'Dashboard', icon: Gauge, end: true },
@@ -39,6 +42,7 @@ const items = [
 export function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { user, logout } = useAuth();
 
   return (
     <div className="flex h-screen w-full bg-slate-950 text-slate-50 overflow-hidden">
@@ -66,6 +70,19 @@ export function AppShell() {
         </div>
 
         <nav className="flex-1 space-y-1 px-2 overflow-y-auto scrollbar-thin">
+          {user && (
+            <div className={cn("px-2 py-3 mb-2 border-b border-slate-800 flex items-center gap-3 text-slate-400", collapsed && "justify-center")}>
+              <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white shrink-0">
+                <UserIcon size={16} />
+              </div>
+              {!collapsed && (
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-white truncate">{user.username}</div>
+                  <div className="text-[10px] text-slate-500 truncate">Authenticated</div>
+                </div>
+              )}
+            </div>
+          )}
           {items.map((item) => {
             const Icon = item.icon;
             return (
@@ -96,6 +113,19 @@ export function AppShell() {
               </NavLink>
             );
           })}
+          <div className="pt-4 mt-4 border-t border-slate-800">
+            <button
+              onClick={logout}
+              className={cn(
+                'w-full flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-red-400 transition-all hover:bg-red-950/30 hover:text-red-300 group relative',
+                collapsed && 'justify-center px-0'
+              )}
+              title={collapsed ? "Logout" : undefined}
+            >
+              <LogOut size={18} className="shrink-0" />
+              {!collapsed && <span>Logout</span>}
+            </button>
+          </div>
         </nav>
       </aside>
 
@@ -127,6 +157,17 @@ export function AppShell() {
               </button>
             </div>
             <nav className="space-y-1 flex-1 overflow-y-auto">
+              {user && (
+                <div className="px-3 py-4 mb-4 bg-slate-900 rounded-xl flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white shrink-0">
+                    <UserIcon size={20} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-medium text-white truncate">{user.username}</div>
+                    <div className="text-xs text-slate-400">Authenticated</div>
+                  </div>
+                </div>
+              )}
               {items.map((item) => {
                 const Icon = item.icon;
                 return (
@@ -147,6 +188,15 @@ export function AppShell() {
                   </NavLink>
                 );
               })}
+              <div className="pt-6 mt-6 border-t border-slate-800">
+                <button
+                  onClick={logout}
+                  className="w-full flex items-center gap-3 rounded-xl px-3 py-3 text-sm text-red-400 transition hover:bg-red-950/30 hover:text-red-300"
+                >
+                  <LogOut size={18} />
+                  Logout
+                </button>
+              </div>
             </nav>
           </aside>
         </div>
