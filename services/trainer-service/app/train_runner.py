@@ -10,11 +10,13 @@ from typing import Any, Dict, Optional
 
 os.environ["WANDB_DISABLED"] = "true"
 
+import unsloth
+from unsloth import FastLanguageModel
+
 import torch
 from datasets import load_dataset
 from transformers import TrainerCallback, TrainingArguments
 from trl import SFTTrainer
-from unsloth import FastLanguageModel
 
 from reporter import Reporter
 from schemas import JobConfig
@@ -46,7 +48,11 @@ def resolve_model_args(cfg: JobConfig) -> tuple[str, bool]:
     if not model_name:
         raise ValueError("Model path/repo_id is empty")
 
-    load_in_4bit = cfg.model.load_in_4bit if cfg.model.load_in_4bit is not None else (cfg.training.method == "qlora")
+    load_in_4bit = (
+        bool(cfg.model.load_in_4bit)
+        if cfg.model.load_in_4bit is not None
+        else (cfg.training.method == "qlora")
+    )
 
     return model_name, load_in_4bit
 
@@ -183,28 +189,69 @@ def _build_training_args(cfg: JobConfig, checkpoint_dir: str, has_validation: bo
         "optim": cfg.training.optim,
         "report_to": [],
         "push_to_hub": False,
-        "save_safetensors": True,
         "logging_dir": cfg.outputs.logs_dir,
     }
 
     sig = inspect.signature(TrainingArguments.__init__)
     supported = set(sig.parameters.keys())
 
+    filtered_kwargs = {k: v for k, v in common_kwargs.items() if k in supported}
+
     if has_validation:
         if "eval_steps" in supported:
-            common_kwargs["eval_steps"] = cfg.training.eval_steps
+            filtered_kwargs["eval_steps"] = cfg.training.eval_steps
 
         if "eval_strategy" in supported:
-            common_kwargs["eval_strategy"] = "steps"
+            filtered_kwargs["eval_strategy"] = "steps"
         elif "evaluation_strategy" in supported:
-            common_kwargs["evaluation_strategy"] = "steps"
+            filtered_kwargs["evaluation_strategy"] = "steps"
     else:
         if "eval_strategy" in supported:
-            common_kwargs["eval_strategy"] = "no"
+            filtered_kwargs["eval_strategy"] = "no"
         elif "evaluation_strategy" in supported:
-            common_kwargs["evaluation_strategy"] = "no"
+            filtered_kwargs["evaluation_strategy"] = "no"
 
-    return TrainingArguments(**common_kwargs)
+    if "save_safetensors" in supported:
+        filtered_kwargs["save_safetensors"] = True
+
+    return TrainingArguments(**filtered_kwargs)
+
+
+def _build_sft_trainer(
+    cfg: JobConfig,
+    model,
+    tokenizer,
+    train_dataset,
+    eval_dataset,
+    training_args: TrainingArguments,
+):
+    sig = inspect.signature(SFTTrainer.__init__)
+    supported = set(sig.parameters.keys())
+
+    kwargs = {
+        "model": model,
+        "args": training_args,
+        "train_dataset": train_dataset,
+    }
+
+    if eval_dataset is not None and "eval_dataset" in supported:
+        kwargs["eval_dataset"] = eval_dataset
+
+    if "processing_class" in supported:
+        kwargs["processing_class"] = tokenizer
+    elif "tokenizer" in supported:
+        kwargs["tokenizer"] = tokenizer
+
+    if "dataset_text_field" in supported:
+        kwargs["dataset_text_field"] = "text"
+
+    if "packing" in supported:
+        kwargs["packing"] = cfg.training.packing
+
+    if "max_seq_length" in supported:
+        kwargs["max_seq_length"] = cfg.training.max_seq_length
+
+    return SFTTrainer(**kwargs)
 
 
 def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
@@ -212,8 +259,8 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
 
     model_name, load_in_4bit = resolve_model_args(cfg)
 
-    logger.info(f"==> loading model: {model_name}")
-    logger.info(f"==> method: {cfg.training.method}")
+    logger.info("==> loading model: %s", model_name)
+    logger.info("==> method: %s", cfg.training.method)
 
     if reporter:
         reporter.report_status(
@@ -290,14 +337,13 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
         has_validation="validation" in dataset,
     )
 
-    trainer = SFTTrainer(
+    trainer = _build_sft_trainer(
+        cfg=cfg,
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset["train"],
         eval_dataset=dataset["validation"] if "validation" in dataset else None,
-        args=training_args,
-        dataset_text_field="text",
-        packing=cfg.training.packing,
+        training_args=training_args,
     )
 
     trainer.add_callback(TrainingProgressCallback(reporter))
@@ -324,7 +370,7 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
             extra={"path": str(lora_dir)},
         )
 
-    logger.info(f"==> saving lora adapters to {lora_dir}")
+    logger.info("==> saving lora adapters to %s", lora_dir)
     model.save_pretrained(str(lora_dir))
     tokenizer.save_pretrained(str(lora_dir))
 
@@ -339,7 +385,7 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
                 extra={"path": str(merged_dir)},
             )
 
-        logger.info(f"==> saving merged model to {merged_dir}")
+        logger.info("==> saving merged model to %s", merged_dir)
         model.save_pretrained_merged(
             save_directory=str(merged_dir),
             tokenizer=tokenizer,
