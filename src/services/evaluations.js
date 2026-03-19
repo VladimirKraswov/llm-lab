@@ -13,49 +13,81 @@ const logger = require('../utils/logger');
 const { startRuntime, stopRuntime } = require('./runtime');
 const providers = require('./providers');
 
+function parseHashTagsLine(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+
+  return raw
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((tag) => (tag.startsWith('#') ? tag : `#${tag}`));
+}
+
+function normalizeImportedScore(value, scale) {
+  const score = Number.parseFloat(value);
+  if (!Number.isFinite(score)) return null;
+
+  const denom = Number(scale);
+  if (denom === 10) {
+    return score / 2;
+  }
+
+  if (denom === 5) {
+    return score;
+  }
+
+  return null;
+}
+
 function parseEvalTxt(content, sourceName = 'unknown') {
   const samples = [];
   const errors = [];
-  const blocks = String(content || '')
-    .replace(/\r\n/g, '\n')
-    .split(/\n\s*\n+/);
+
+  const text = String(content || '').replace(/\r\n/g, '\n');
+  const blocks = text.split(/\n\s*\n+/).map((x) => x.trim()).filter(Boolean);
 
   for (let i = 0; i < blocks.length; i += 1) {
-    const block = blocks[i].trim();
-    if (!block) continue;
+    const block = blocks[i];
 
-    const qMatch = block.match(/Вопрос:\s*([\s\S]*?)(?=\nОтвет:|$)/i);
-    const aMatch = block.match(/Ответ:\s*([\s\S]*?)(?=\nОценка:|$)/i);
-    const sMatch = block.match(/Оценка:\s*(\d+(?:\.\d+)?)\s*\/\s*10/i);
+    const qMatch = block.match(/question:\s*([\s\S]*?)(?=\nanswer:|\nscore:|\nhashTags:|$)/i);
+    const aMatch = block.match(/answer:\s*([\s\S]*?)(?=\nscore:|\nhashTags:|$)/i);
+    const sMatch = block.match(/score:\s*(\d+(?:\.\d+)?)\s*\/\s*(5|10)/i);
+    const hMatch = block.match(/hashTags:\s*([\s\S]*?)$/i);
 
     if (!qMatch || !aMatch || !sMatch) {
       const missing = [];
-      if (!qMatch) missing.push('Вопрос');
-      if (!aMatch) missing.push('Ответ');
-      if (!sMatch) missing.push('Оценка');
+      if (!qMatch) missing.push('question');
+      if (!aMatch) missing.push('answer');
+      if (!sMatch) missing.push('score');
+
       errors.push({
         index: i,
         error: `Отсутствуют поля: ${missing.join(', ')}`,
-        raw: block.slice(0, 300),
+        raw: block.slice(0, 400),
       });
       continue;
     }
 
-    const score = Number.parseFloat(sMatch[1]);
-    if (!Number.isFinite(score) || score < 0 || score > 10) {
+    const normalizedScore = normalizeImportedScore(sMatch[1], sMatch[2]);
+    if (!Number.isFinite(normalizedScore) || normalizedScore < 0 || normalizedScore > 5) {
       errors.push({
         index: i,
-        error: 'Оценка должна быть числом от 0 до 10',
-        raw: block.slice(0, 300),
+        error: 'score должен быть числом от 0 до 5 (или от 0 до 10 для старого формата)',
+        raw: block.slice(0, 400),
       });
       continue;
     }
+
+    const hashTags = parseHashTagsLine(hMatch?.[1] || '');
 
     samples.push({
       id: uid('sample'),
       question: qMatch[1].trim(),
       candidateAnswer: aMatch[1].trim(),
-      referenceScore: score,
+      referenceScore: normalizedScore,
+      maxScore: 5,
+      hashTags,
       sourceFile: sourceName,
       topic: null,
     });
@@ -65,19 +97,28 @@ function parseEvalTxt(content, sourceName = 'unknown') {
 }
 
 function buildEvalPrompt(sample) {
+  const tagsText = Array.isArray(sample.hashTags) && sample.hashTags.length
+    ? sample.hashTags.join(', ')
+    : 'none';
+
   return `Ты — беспристрастный эксперт-оценщик. Тебе предоставлен вопрос и ответ кандидата.
-Твоя задача — выставить оценку от 0 до 10, где 10 — идеально правильный и полный ответ, а 0 — совершенно неверный или отсутствующий ответ.
+Твоя задача — выставить оценку от 0 до 5, где:
+5 — идеально правильный и полный ответ,
+0 — совершенно неверный или отсутствующий ответ.
+
+Теги вопроса: ${tagsText}
+Эти теги являются метаданными. Не завышай и не занижай оценку только из-за тегов.
 
 Вопрос: ${sample.question}
 Ответ кандидата: ${sample.candidateAnswer}
 
-Верни результат в формате JSON:
+Верни результат строго в формате JSON:
 {
-  "score": <число от 0 до 10>,
+  "score": <число от 0 до 5>,
   "feedback": "<краткое пояснение>"
 }
 
-Если не можешь вернуть JSON, обязательно напиши в конце: "Оценка: X/10"`;
+Если не можешь вернуть JSON, обязательно напиши в конце: "score: X/5"`;
 }
 
 function clipText(value, max = 1200) {
@@ -243,6 +284,26 @@ async function parseProviderResponse(response) {
   };
 }
 
+function normalizeModelScore(value, scale = 5) {
+  const score = Number.parseFloat(value);
+  if (!Number.isFinite(score)) return null;
+
+  const denom = Number(scale);
+  let normalized = score;
+
+  if (denom === 10) {
+    normalized = score / 2;
+  } else if (denom !== 5 && denom !== 0) {
+    return null;
+  }
+
+  if (!Number.isFinite(normalized) || normalized < 0 || normalized > 5) {
+    return null;
+  }
+
+  return normalized;
+}
+
 function parseModelScore(text) {
   if (!text || !String(text).trim()) {
     return { score: null, feedback: null, parseError: true };
@@ -254,14 +315,15 @@ function parseModelScore(text) {
     const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const data = JSON.parse(jsonMatch[0]);
-      let score = null;
 
-      if (typeof data.score === 'number') score = data.score;
-      else if (typeof data.score === 'string') score = Number.parseFloat(data.score);
+      let rawScore = null;
+      if (typeof data.score === 'number') rawScore = data.score;
+      else if (typeof data.score === 'string') rawScore = Number.parseFloat(data.score);
 
-      if (Number.isFinite(score)) {
+      const normalized = normalizeModelScore(rawScore, 5);
+      if (Number.isFinite(normalized)) {
         return {
-          score,
+          score: normalized,
           feedback: data.feedback || data.reasoning || null,
           parseError: false,
         };
@@ -272,27 +334,29 @@ function parseModelScore(text) {
   }
 
   const patterns = [
-    /Оценка:\s*(\d+(?:\.\d+)?)/i,
+    /score:\s*(\d+(?:\.\d+)?)\s*\/\s*(5|10)/i,
+    /оценка:\s*(\d+(?:\.\d+)?)\s*\/\s*(5|10)/i,
+    /(\d+(?:\.\d+)?)\s*\/\s*(5|10)/i,
     /score:\s*(\d+(?:\.\d+)?)/i,
-    /Score:\s*(\d+(?:\.\d+)?)/i,
-    /Итог:\s*(\d+(?:\.\d+)?)/i,
-    /(\d+(?:\.\d+)?)\s*\/\s*10/i,
-    /(\d+(?:\.\d+)?)\s*из\s*10/i,
-    /Final score\s*[:=]\s*(\d+(?:\.\d+)?)/i,
+    /оценка:\s*(\d+(?:\.\d+)?)/i,
+    /final score\s*[:=]\s*(\d+(?:\.\d+)?)/i,
     /^(\d+(?:\.\d+)?)$/m,
   ];
 
   for (const pattern of patterns) {
     const match = cleanText.match(pattern);
-    if (match) {
-      const score = Number.parseFloat(match[1]);
-      if (Number.isFinite(score)) {
-        return {
-          score,
-          feedback: cleanText,
-          parseError: false,
-        };
-      }
+    if (!match) continue;
+
+    const value = match[1];
+    const scale = match[2] || 5;
+    const normalized = normalizeModelScore(value, scale);
+
+    if (Number.isFinite(normalized)) {
+      return {
+        score: normalized,
+        feedback: cleanText,
+        parseError: false,
+      };
     }
   }
 
@@ -452,17 +516,14 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
   });
 
   const writeLog = (msg, level = 'info', meta = null) => {
-    // Защита от любых некорректных значений level
     let safeLevel = 'info';
-    
+
     if (typeof level === 'string') {
       const lowered = level.toLowerCase().trim();
-      // Ограничиваем только допустимыми уровнями (можно расширить)
       if (['info', 'warn', 'error', 'debug'].includes(lowered)) {
         safeLevel = lowered;
       }
     }
-    // если level был числом, объектом, null и т.д. → остаётся 'info'
 
     const timestamp = new Date().toISOString();
     const upperLevel = safeLevel.toUpperCase();
@@ -473,20 +534,17 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
 
     logStream.write(line);
 
-    // Цветной вывод в консоль (опционально, но удобно при отладке)
     const colorMap = {
-      info:  '\x1b[32m',   // зелёный
-      warn:  '\x1b[33m',   // жёлтый
-      error: '\x1b[31m',   // красный
-      debug: '\x1b[34m',   // синий
+      info: '\x1b[32m',
+      warn: '\x1b[33m',
+      error: '\x1b[31m',
+      debug: '\x1b[34m',
     };
-    const color = colorMap[safeLevel] || '\x1b[37m'; // белый по умолчанию
+    const color = colorMap[safeLevel] || '\x1b[37m';
     const reset = '\x1b[0m';
-    
-    console.log(`${timestamp} ${color}${upperLevel}${reset}: ${msg}`,
-      meta ? meta : '');
 
-    // Отправка события (безопасно, даже если meta — не объект)
+    console.log(`${timestamp} ${color}${upperLevel}${reset}: ${msg}`, meta ? meta : '');
+
     emitEvent('job_log', {
       jobId,
       message: msg,
@@ -521,6 +579,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
       dataset: dsMeta.name,
       samples: samples.length,
       models: safeTargets.length,
+      scoreScale: 5,
     });
 
     const settings = await getSettings();
@@ -624,6 +683,8 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
               question: sample.question,
               candidateAnswer: sample.candidateAnswer,
               referenceScore: sample.referenceScore,
+              maxScore: sample.maxScore || 5,
+              hashTags: sample.hashTags || [],
               predictedScore: null,
               predictedFeedback: null,
               rawResponse: parsedResponse.rawText || null,
@@ -669,6 +730,8 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
             question: sample.question,
             candidateAnswer: sample.candidateAnswer,
             referenceScore: sample.referenceScore,
+            maxScore: sample.maxScore || 5,
+            hashTags: sample.hashTags || [],
             predictedScore: scoreParsed.score,
             predictedFeedback: scoreParsed.feedback,
             rawResponse,
@@ -738,6 +801,8 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
             question: sample.question,
             candidateAnswer: sample.candidateAnswer,
             referenceScore: sample.referenceScore,
+            maxScore: sample.maxScore || 5,
+            hashTags: sample.hashTags || [],
             predictedScore: null,
             predictedFeedback: null,
             rawResponse: null,
@@ -845,12 +910,14 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
       'modelId',
       'modelLabel',
       'referenceScore',
+      'maxScore',
       'predictedScore',
       'absoluteError',
       'parseError',
       'inferenceError',
       'errorReason',
       'responseFormat',
+      'hashTags',
       'question',
       'candidateAnswer',
       'predictedFeedback',
@@ -866,12 +933,14 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
             csvEscape(modelRun.target.id),
             csvEscape(modelRun.target.label),
             r.referenceScore,
+            r.maxScore ?? 5,
             r.predictedScore,
             r.absoluteError,
             r.parseError,
             !!r.inferenceError,
             csvEscape(r.errorReason || ''),
             csvEscape(r.responseFormat || ''),
+            csvEscape(Array.isArray(r.hashTags) ? r.hashTags.join(', ') : ''),
             csvEscape(r.question || ''),
             csvEscape(r.candidateAnswer || ''),
             csvEscape(r.predictedFeedback || ''),
@@ -888,6 +957,7 @@ async function runEvaluationBenchmark(jobId, { datasetId, targets, name }) {
         id: dsMeta.id,
         name: dsMeta.name,
         samples: samples.length,
+        scoreScale: 5,
       },
       models: modelSummaries,
       totals: {
@@ -972,6 +1042,7 @@ async function importEvalDataset(name, text) {
     id,
     name,
     samplesCount: samples.length,
+    scoreScale: 5,
     jsonPath,
     txtPath,
     createdAt: nowIso(),
