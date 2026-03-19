@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -6,6 +7,14 @@ from typing import Any
 
 from fastapi import Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = BASE_DIR / "public"
@@ -77,6 +86,7 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 @app.get("/api/health")
 def health():
+    logger.info("Health check requested")
     return {
         "ok": True,
         "public_dir": str(PUBLIC_DIR),
@@ -87,18 +97,24 @@ def health():
 
 @app.post("/api/jobs/status")
 async def job_status(payload: dict[str, Any] = Body(...)):
+    job_id = get_job_id(payload)
+    logger.info("Received status event: job_id=%s, status=%s", job_id, payload.get("status"))
     event = save_event("status", payload)
     return {"ok": True, "job_id": get_job_id(event)}
 
 
 @app.post("/api/jobs/progress")
 async def job_progress(payload: dict[str, Any] = Body(...)):
+    job_id = get_job_id(payload)
+    logger.info("Received progress event: job_id=%s, stage=%s, progress=%s", job_id, payload.get("stage"), payload.get("progress"))
     event = save_event("progress", payload)
     return {"ok": True, "job_id": get_job_id(event)}
 
 
 @app.post("/api/jobs/final")
 async def job_final(payload: dict[str, Any] = Body(...)):
+    job_id = get_job_id(payload)
+    logger.info("Received final event: job_id=%s, status=%s", job_id, payload.get("status"))
     event = save_event("final", payload)
     return {"ok": True, "job_id": get_job_id(event)}
 
@@ -112,6 +128,8 @@ async def upload_artifact(
     job_name: str = Form(""),
     artifact_name: str | None = Form(None),
 ):
+    logger.info("Upload started: job_id=%s, artifact_type=%s, filename=%s", job_id, artifact_type, file.filename)
+
     target_name = safe_name(artifact_name or file.filename or f"{artifact_type}.bin")
     target_dir = UPLOADS_DIR / job_id / artifact_type
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -132,6 +150,7 @@ async def upload_artifact(
     }
 
     append_jsonl(EVENTS_DIR / f"{job_id}.events.jsonl", meta)
+    logger.info("Upload completed: job_id=%s, artifact_type=%s, size=%d", job_id, artifact_type, meta["size_bytes"])
 
     base_url = str(request.base_url).rstrip("/")
     download_url = f"{base_url}/uploads/{job_id}/{artifact_type}/{target_name}"
@@ -149,11 +168,13 @@ async def upload_artifact(
 
 @app.get("/api/debug/events/{job_id}")
 def debug_events(job_id: str):
+    logger.info("Debug events requested for job_id=%s", job_id)
     return read_jsonl(EVENTS_DIR / f"{job_id}.events.jsonl")
 
 
 @app.get("/api/debug/job/{job_id}")
 def debug_job(job_id: str):
+    logger.info("Debug job requested for job_id=%s", job_id)
     job_dir = STATUS_DIR / job_id
     uploads_dir = UPLOADS_DIR / job_id
 

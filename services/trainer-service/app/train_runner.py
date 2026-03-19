@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import math
@@ -45,10 +46,7 @@ def resolve_model_args(cfg: JobConfig) -> tuple[str, bool]:
     if not model_name:
         raise ValueError("Model path/repo_id is empty")
 
-    if cfg.model.load_in_4bit is not None:
-        load_in_4bit = bool(cfg.model.load_in_4bit)
-    else:
-        load_in_4bit = cfg.training.method == "qlora"
+    load_in_4bit = cfg.model.load_in_4bit if cfg.model.load_in_4bit is not None else (cfg.training.method == "qlora")
 
     return model_name, load_in_4bit
 
@@ -127,15 +125,13 @@ class TrainingProgressCallback(TrainerCallback):
             return
 
         max_steps = int(state.max_steps or 0)
-        progress = None
-        if max_steps > 0:
-            progress = round((int(state.global_step) / max_steps) * 100, 2)
+        progress = round((int(state.global_step) / max_steps) * 100, 2) if max_steps > 0 else None
 
         payload = {
             "step": int(state.global_step),
             "epoch": safe_float(state.epoch),
+            **logs,
         }
-        payload.update({k: v for k, v in logs.items()})
 
         self.reporter.report_progress(
             stage="training",
@@ -149,9 +145,7 @@ class TrainingProgressCallback(TrainerCallback):
             return
 
         max_steps = int(state.max_steps or 0)
-        progress = None
-        if max_steps > 0:
-            progress = round((int(state.global_step) / max_steps) * 100, 2)
+        progress = round((int(state.global_step) / max_steps) * 100, 2) if max_steps > 0 else None
 
         self.reporter.report_progress(
             stage="training",
@@ -173,31 +167,42 @@ class TrainingProgressCallback(TrainerCallback):
 
 
 def _build_training_args(cfg: JobConfig, checkpoint_dir: str, has_validation: bool) -> TrainingArguments:
-    common_kwargs = dict(
-        output_dir=checkpoint_dir,
-        per_device_train_batch_size=cfg.training.per_device_train_batch_size,
-        gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
-        warmup_ratio=cfg.training.warmup_ratio,
-        num_train_epochs=cfg.training.num_train_epochs,
-        learning_rate=cfg.training.learning_rate,
-        bf16=cfg.training.bf16,
-        fp16=not cfg.training.bf16,
-        logging_steps=cfg.training.logging_steps,
-        save_steps=cfg.training.save_steps,
-        save_strategy="steps",
-        save_total_limit=cfg.training.save_total_limit,
-        optim=cfg.training.optim,
-        report_to=[],
-        push_to_hub=False,
-        save_safetensors=True,
-        logging_dir=cfg.outputs.logs_dir,
-    )
+    common_kwargs = {
+        "output_dir": checkpoint_dir,
+        "per_device_train_batch_size": cfg.training.per_device_train_batch_size,
+        "gradient_accumulation_steps": cfg.training.gradient_accumulation_steps,
+        "warmup_ratio": cfg.training.warmup_ratio,
+        "num_train_epochs": cfg.training.num_train_epochs,
+        "learning_rate": cfg.training.learning_rate,
+        "bf16": cfg.training.bf16,
+        "fp16": not cfg.training.bf16,
+        "logging_steps": cfg.training.logging_steps,
+        "save_steps": cfg.training.save_steps,
+        "save_strategy": "steps",
+        "save_total_limit": cfg.training.save_total_limit,
+        "optim": cfg.training.optim,
+        "report_to": [],
+        "push_to_hub": False,
+        "save_safetensors": True,
+        "logging_dir": cfg.outputs.logs_dir,
+    }
+
+    sig = inspect.signature(TrainingArguments.__init__)
+    supported = set(sig.parameters.keys())
 
     if has_validation:
-        common_kwargs["evaluation_strategy"] = "steps"
-        common_kwargs["eval_steps"] = cfg.training.eval_steps
+        if "eval_steps" in supported:
+            common_kwargs["eval_steps"] = cfg.training.eval_steps
+
+        if "eval_strategy" in supported:
+            common_kwargs["eval_strategy"] = "steps"
+        elif "evaluation_strategy" in supported:
+            common_kwargs["evaluation_strategy"] = "steps"
     else:
-        common_kwargs["evaluation_strategy"] = "no"
+        if "eval_strategy" in supported:
+            common_kwargs["eval_strategy"] = "no"
+        elif "evaluation_strategy" in supported:
+            common_kwargs["evaluation_strategy"] = "no"
 
     return TrainingArguments(**common_kwargs)
 
@@ -207,8 +212,9 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
 
     model_name, load_in_4bit = resolve_model_args(cfg)
 
-    logger.info("==> loading model: %s", model_name)
-    logger.info("==> method: %s", cfg.training.method)
+    logger.info(f"==> loading model: {model_name}")
+    logger.info(f"==> method: {cfg.training.method}")
+
     if reporter:
         reporter.report_status(
             "running",
@@ -284,26 +290,15 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
         has_validation="validation" in dataset,
     )
 
-    try:
-        trainer = SFTTrainer(
-            model=model,
-            processing_class=tokenizer,
-            train_dataset=dataset["train"],
-            eval_dataset=dataset["validation"] if "validation" in dataset else None,
-            args=training_args,
-            dataset_text_field="text",
-            packing=cfg.training.packing,
-        )
-    except TypeError:
-        trainer = SFTTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=dataset["train"],
-            eval_dataset=dataset["validation"] if "validation" in dataset else None,
-            args=training_args,
-            dataset_text_field="text",
-            packing=cfg.training.packing,
-        )
+    trainer = SFTTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset["train"],
+        eval_dataset=dataset["validation"] if "validation" in dataset else None,
+        args=training_args,
+        dataset_text_field="text",
+        packing=cfg.training.packing,
+    )
 
     trainer.add_callback(TrainingProgressCallback(reporter))
 
@@ -329,7 +324,7 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
             extra={"path": str(lora_dir)},
         )
 
-    logger.info("==> saving lora adapters to %s", lora_dir)
+    logger.info(f"==> saving lora adapters to {lora_dir}")
     model.save_pretrained(str(lora_dir))
     tokenizer.save_pretrained(str(lora_dir))
 
@@ -344,7 +339,7 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
                 extra={"path": str(merged_dir)},
             )
 
-        logger.info("==> saving merged model to %s", merged_dir)
+        logger.info(f"==> saving merged model to {merged_dir}")
         model.save_pretrained_merged(
             save_directory=str(merged_dir),
             tokenizer=tokenizer,
@@ -387,6 +382,7 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
         json.dump(train_summary, f, indent=2, ensure_ascii=False)
 
     logger.info("==> training artifacts saved")
+
     if reporter:
         reporter.report_status(
             "running",
