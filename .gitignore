@@ -5,7 +5,6 @@
 /web/build
 /web/dist
 /web/node_modules
-/smoke-test
 /artifacts
 
 artifacts/

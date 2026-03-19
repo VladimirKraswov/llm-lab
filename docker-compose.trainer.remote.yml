@@ -1,0 +1,17 @@
+services:
+  itk-ai-trainer-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: itk-ai-trainer-service:qwen-7b
+    env_file:
+      - .env.remote.example
+    environment:
+      CONFIG_SOURCE: remote
+      CONFIG_REF: http://192.168.31.32:8010/files/job.remote.json
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - /storage/data/llm-lab/artifacts/trainer-smoke-output:/output
+    gpus: all
+    shm_size: "16gb"
+    restart: "no"

@@ -29,7 +29,12 @@ WORKDIR /trainer
 COPY requirements.txt /trainer/requirements.txt
 
 RUN pip install -U pip setuptools wheel
-RUN pip install -r /trainer/requirements.txt
+
+RUN pip install torch torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/cu128 \
+  --timeout=600 --retries=100
+
+RUN pip install -r /trainer/requirements.txt --timeout=600 --retries=100
 
 COPY app /trainer/app
 COPY docker/entrypoint.sh /trainer/entrypoint.sh
