@@ -26,18 +26,17 @@ RUN python3 -m venv /opt/venv
 
 WORKDIR /trainer
 
-# Копируем ВСЕ wheel-файлы (PyTorch + Unsloth + VLLM + остальные)
+# Копируем все предварительно скачанные wheel-файлы
 COPY packages/pip /wheels/pip
-
 COPY requirements.txt /trainer/requirements.txt
 
 RUN pip install -U pip setuptools wheel
 
-# Установка ВСЕХ wheel-файлов оффлайн
-RUN pip install /wheels/pip/*.whl --no-index --no-deps --break-system-packages
-
-# Установка зависимостей (все пакеты уже стоят → pip пропустит)
-RUN pip install -r /trainer/requirements.txt --no-deps --break-system-packages
+# Устанавливаем только те пакеты, которые указаны в requirements.txt,
+# используя локальные колёса (--find-links) и без обращения в интернет (--no-index).
+# Pip сам разрешит и установит все необходимые зависимости (включая транзитивные,
+# такие как urllib3, idna и т.д.) из папки /wheels/pip.
+RUN pip install -r /trainer/requirements.txt --no-index --find-links /wheels/pip --break-system-packages
 
 COPY app /trainer/app
 COPY docker/entrypoint.sh /trainer/entrypoint.sh
