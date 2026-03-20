@@ -1,4 +1,5 @@
-FROM igortet/model-qwen-7b
+ARG BASE_IMAGE=igortet/model-qwen-7b
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \

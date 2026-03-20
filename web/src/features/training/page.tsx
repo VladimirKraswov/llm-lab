@@ -35,9 +35,16 @@ export default function TrainingPage() {
   // Remote specific
   const [isRemote, setIsRemote] = useState(false);
   const [workerId, setWorkerId] = useState('any');
+  const [runtimePresetId, setRuntimePresetId] = useState('');
   const [hfPushEnabled, setHfPushEnabled] = useState(true);
   const [hfRepoLora, setHfRepoLora] = useState('');
   const [hfRepoMerged, setHfRepoMerged] = useState('');
+
+  const presetsQuery = useQuery({
+    queryKey: ['runtime-presets'],
+    queryFn: api.getRuntimePresets,
+    enabled: isRemote
+  });
 
   useEffect(() => {
     if (settingsQuery.data?.qlora) {
@@ -53,6 +60,12 @@ export default function TrainingPage() {
       setLoadIn4bit(!!settingsQuery.data.qlora.loadIn4bit);
     }
   }, [settingsQuery.data]);
+
+  useEffect(() => {
+    if (isRemote && presetsQuery.data && !runtimePresetId) {
+      setRuntimePresetId(presetsQuery.data[0]?.id || '');
+    }
+  }, [isRemote, presetsQuery.data, runtimePresetId]);
 
   useEffect(() => {
     const data = datasetsQuery.data;
@@ -85,6 +98,10 @@ export default function TrainingPage() {
     return null;
   }, [modelsQuery.data, modelId]);
 
+  const selectedPreset = useMemo(() => {
+    return presetsQuery.data?.find(p => p.id === runtimePresetId) || null;
+  }, [presetsQuery.data, runtimePresetId]);
+
   const startMutation = useMutation({
     mutationFn: (payload: any) => isRemote ? api.startRemoteTrain(payload) : api.startFineTune(payload),
     onSuccess: (data: any) => {
@@ -114,6 +131,7 @@ export default function TrainingPage() {
         name,
         qlora: qloraParams,
         workerId: workerId === 'any' ? undefined : workerId,
+        runtimePresetId,
         hfPublish: {
           enabled: hfPushEnabled,
           push_lora: true,
@@ -166,10 +184,16 @@ export default function TrainingPage() {
                   </Select>
                 </div>
               ) : (
-                <div className="rounded-xl bg-slate-900/50 border border-slate-800 p-3 flex flex-col justify-center">
-                   <div className="text-xs text-slate-500 uppercase font-bold mb-1">Base Model</div>
-                   <div className="text-sm text-blue-400 font-medium">Baked into remote image</div>
-                   <div className="text-[10px] text-slate-600 mt-1 italic">Selecting a model is not required for remote mode.</div>
+                <div>
+                  <label className="mb-2 block text-sm text-slate-400">Runtime Preset</label>
+                  <Select value={runtimePresetId} onChange={(e) => setRuntimePresetId(e.target.value)}>
+                    <option value="">Select preset</option>
+                    {presetsQuery.data?.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.title}
+                      </option>
+                    ))}
+                  </Select>
                 </div>
               )}
 
@@ -343,16 +367,20 @@ export default function TrainingPage() {
           <CardContent className="space-y-4">
             <div>
               <div className="text-sm text-slate-400">Selected model</div>
-              <div className="mt-1 text-white">{selectedModel?.name || '—'}</div>
+              <div className="mt-1 text-white">
+                {isRemote ? (selectedPreset?.title || '—') : (selectedModel?.name || '—')}
+              </div>
               <div className="text-[10px] text-slate-500 font-mono uppercase mt-0.5">
-                {selectedModel?.repoId || 'None'}
+                {isRemote ? (selectedPreset?.logicalBaseModelId || 'NONE') : (selectedModel?.repoId || 'None')}
               </div>
             </div>
 
-            {isRemote && (
-              <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 p-3 text-xs text-blue-200/70">
-                <div className="font-bold mb-1">Remote Training Mode</div>
-                В удаленном режиме используется модель, встроенная в Docker-образ трейнера. Выбор модели не требуется.
+            {isRemote && selectedPreset && (
+              <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 p-3 text-[11px] text-blue-200/70 space-y-1">
+                <div className="font-bold text-blue-400 uppercase text-[10px]">Preset Details</div>
+                <div><span className="opacity-50">Base Model:</span> {selectedPreset.logicalBaseModelId}</div>
+                <div><span className="opacity-50">Image:</span> <span className="font-mono">{selectedPreset.trainerImage}</span></div>
+                <div><span className="opacity-50">SHM Size:</span> {selectedPreset.defaultShmSize}</div>
               </div>
             )}
 

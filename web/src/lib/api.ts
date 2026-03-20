@@ -315,6 +315,24 @@ export type JobProgress = {
   updatedAt?: string;
 };
 
+export type RuntimePreset = {
+  id: string;
+  title: string;
+  family: string;
+  logicalBaseModelId: string;
+  localModelPath: string;
+  trainerImage: string;
+  dockerHubRepo: string;
+  defaultShmSize: string;
+  gpuCount: number;
+  supports: {
+    qlora: boolean;
+    lora: boolean;
+    merge: boolean;
+  };
+  enabled: boolean;
+};
+
 export type Job = {
   id: string;
   type: string;
@@ -357,6 +375,8 @@ export type Job = {
   resultDatasetId?: string | null;
   syntheticMeta?: SyntheticMeta;
   workerId?: string | null;
+  runtimePresetId?: string | null;
+  modelLocalPath?: string | null;
   jobConfigUrl?: string | null;
   hfRepoIdLora?: string | null;
   hfRepoIdMerged?: string | null;
@@ -888,6 +908,23 @@ export const api = {
     request<Job>(`/jobs/${id}/retry`, {
       method: 'POST',
     }),
+
+  getRuntimePresets: () => request<RuntimePreset[]>('/jobs/runtime-presets'),
+
+  getJobLaunchCompose: (id: string) =>
+    fetch(`${API_BASE}/jobs/${id}/launch/compose`, {
+      headers: { 'Authorization': `Bearer ${localStorage.getItem('llm_lab_token')}` }
+    }).then(r => r.text()),
+
+  getJobLaunchEnv: (id: string) =>
+    fetch(`${API_BASE}/jobs/${id}/launch/env`, {
+      headers: { 'Authorization': `Bearer ${localStorage.getItem('llm_lab_token')}` }
+    }).then(r => r.text()),
+
+  downloadJobLaunchBundle: (id: string) => {
+    const token = localStorage.getItem('llm_lab_token');
+    window.location.href = `${API_BASE}/jobs/${id}/launch/bundle?token=${token}`;
+  },
 
   getSyntheticJobPreview: (jobId: string, limit = 20) =>
     request<SyntheticJobPreviewResponse>(`/synthetic/jobs/${jobId}/preview?limit=${limit}`),

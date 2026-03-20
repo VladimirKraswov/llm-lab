@@ -1,8 +1,9 @@
-import { Job } from '../lib/api';
+import { Job, api } from '../lib/api';
 import { formatSize } from '../utils';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { CopyButton } from './copy-button';
-import { Terminal } from 'lucide-react';
+import { Terminal, Download, Archive } from 'lucide-react';
+import { Button } from './ui/button';
 
 function fmtDate(value?: string | null) {
   if (!value) return '—';
@@ -14,6 +15,20 @@ function fmtDate(value?: string | null) {
 }
 
 export function JobDetailsFineTune({ job }: { job: Job }) {
+  const handleDownloadBundle = () => {
+    api.downloadJobLaunchBundle(job.id);
+  };
+
+  const handleCopyCompose = async () => {
+    const text = await api.getJobLaunchCompose(job.id);
+    navigator.clipboard.writeText(text);
+  };
+
+  const handleCopyEnv = async () => {
+    const text = await api.getJobLaunchEnv(job.id);
+    navigator.clipboard.writeText(text);
+  };
+
   return (
     <div className="space-y-4">
       <Card className="border-purple-500/20 bg-purple-500/5">
@@ -39,6 +54,13 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
             <div className="mt-1 break-all text-white">{job.baseModel || '—'}</div>
           </div>
 
+          {job.runtimePresetId && (
+            <div className="rounded-xl bg-slate-950/40 p-3">
+              <div className="text-xs text-slate-500">Runtime Preset</div>
+              <div className="mt-1 text-blue-400 font-medium">{job.runtimePresetId}</div>
+            </div>
+          )}
+
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Created</div>
             <div className="mt-1 text-white">{fmtDate(job.createdAt)}</div>
@@ -58,14 +80,25 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
               <Terminal size={18} className="text-blue-400" />
               <CardTitle>Launch Trainer</CardTitle>
             </div>
-            <CopyButton
-              text={job.launch.exampleDockerRun}
-              showLabel
-              size="md"
-              className="bg-blue-600 text-white border-blue-500 hover:bg-blue-500 hover:text-white"
-            >
-              Copy docker command
-            </CopyButton>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDownloadBundle}
+                className="bg-blue-600 text-white border-blue-500 hover:bg-blue-500 hover:text-white h-8"
+              >
+                <Download size={14} className="mr-2" />
+                Download Bundle
+              </Button>
+              <CopyButton
+                text={job.launch.exampleDockerRun}
+                showLabel
+                size="md"
+                className="bg-slate-800 text-white border-slate-700 hover:bg-slate-700 h-8"
+              >
+                Copy docker run
+              </CopyButton>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 md:grid-cols-2">
@@ -81,17 +114,21 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
 
               <div className="rounded-xl bg-slate-950/40 p-3">
                 <div className="text-xs text-slate-500 flex items-center justify-between">
-                  <span>JOB_CONFIG_URL</span>
-                  <CopyButton text={job.launch.env.JOB_CONFIG_URL} />
+                   <span>Launch Files</span>
                 </div>
-                <div className="mt-1 text-[10px] font-mono text-blue-300 truncate" title={job.launch.env.JOB_CONFIG_URL}>
-                  {job.launch.env.JOB_CONFIG_URL}
+                <div className="mt-2 flex gap-2">
+                   <Button variant="ghost" size="xs" onClick={handleCopyCompose} className="text-[10px] text-blue-400 hover:text-blue-300 p-0 h-auto">
+                     <Archive size={10} className="mr-1" /> Copy Compose
+                   </Button>
+                   <Button variant="ghost" size="xs" onClick={handleCopyEnv} className="text-[10px] text-blue-400 hover:text-blue-300 p-0 h-auto">
+                     <Archive size={10} className="mr-1" /> Copy .env
+                   </Button>
                 </div>
               </div>
             </div>
 
             <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3">
-              <div className="text-xs text-slate-500 mb-2">Docker command</div>
+              <div className="text-xs text-slate-500 mb-2">Docker command (Quick run)</div>
               <pre className="text-[10px] font-mono text-slate-300 whitespace-pre-wrap leading-relaxed">
                 {job.launch.exampleDockerRun}
               </pre>

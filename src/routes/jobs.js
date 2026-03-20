@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../db');
+const archiver = require('archiver');
 const {
   startFineTuneJob,
   createRemoteJob,
@@ -30,6 +31,8 @@ const { getDatasets } = require('../services/state');
 const { buildRemoteTrainerConfig } = require('../services/remote-job-config');
 const { CONFIG } = require('../config');
 const { buildPublicBaseUrl } = require('../utils/public-base-url');
+const { getRuntimePresets, getRuntimePresetById } = require('../services/runtime-presets');
+const { generateDockerCompose, generateEnvFile, generateReadme } = require('../services/launch-bundle');
 
 const router = express.Router();
 
@@ -128,6 +131,14 @@ async function buildLaunchInfo(job, req) {
     ].join('\n'),
   };
 }
+
+router.get('/runtime-presets', async (req, res) => {
+  try {
+    res.json(getRuntimePresets());
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
 
 router.get('/', async (req, res) => {
   try {
@@ -380,6 +391,62 @@ router.post('/logs', callbackAuth, async (req, res) => {
     };
 
     res.json(await handleWorkerLogs(normalized.job_id, normalized));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/launch/compose', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    const preset = job.runtimePresetId ? getRuntimePresetById(job.runtimePresetId) : null;
+    res.setHeader('Content-Type', 'text/yaml');
+    res.send(generateDockerCompose(job, preset));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/launch/env', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    const launch = await buildLaunchInfo(job, req);
+    res.setHeader('Content-Type', 'text/plain');
+    res.send(generateEnvFile(job, launch.jobConfigUrl));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/launch/bundle', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    // Validate token if provided in query
+    const token = req.query.token;
+    if (token) {
+      const { verifyToken } = require('../services/auth');
+      const user = await verifyToken(token);
+      if (!user) return res.status(401).json({ error: 'Invalid download token' });
+    } else if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const launch = await buildLaunchInfo(job, req);
+    const preset = job.runtimePresetId ? getRuntimePresetById(job.runtimePresetId) : null;
+
+    const archive = archiver('tar', { gzip: true });
+    res.attachment(`job_bundle_${job.id}.tar.gz`);
+    archive.pipe(res);
+
+    archive.append(generateDockerCompose(job, preset), { name: 'compose.yaml' });
+    archive.append(generateEnvFile(job, launch.jobConfigUrl), { name: '.env.example' });
+    archive.append(generateReadme(job), { name: 'README.txt' });
+
+    archive.finalize();
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }

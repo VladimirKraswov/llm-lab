@@ -1,6 +1,7 @@
 # Trainer image includes Python environment and ML libraries
 # Optimized for Unsloth training
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
+ARG BASE_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
