@@ -164,6 +164,16 @@ def main():
 
         logger.info("==> starting training")
         training_result = run_training(cfg, reporter=reporter)
+
+        logical_base_model_id = cfg.model.logical_base_model_id
+        if logical_base_model_id and not training_result.get("base_model_id"):
+            training_result["base_model_id"] = logical_base_model_id
+            training_result["base_model_name_or_path"] = logical_base_model_id
+            summary = training_result.get("summary")
+            if isinstance(summary, dict):
+                summary.setdefault("base_model_id", logical_base_model_id)
+                summary.setdefault("base_model_name_or_path", logical_base_model_id)
+
         logger.info("==> training finished")
 
         if cfg.postprocess.run_awq_quantization:
@@ -259,6 +269,17 @@ def main():
         if hf_metadata_uploads:
             result["uploads"].update(hf_metadata_uploads)
             write_json(result_path, result)
+
+        if cfg.upload.enabled and cfg.upload.target == "url" and cfg.upload.url_targets.summary_url:
+            try:
+                summary_upload = uploader.upload_summary(str(result_path))
+                if summary_upload:
+                    result["uploads"].update(summary_upload)
+                    write_json(result_path, result)
+            except Exception as exc:
+                logger.exception("summary upload failed")
+                result["upload_errors"]["summary"] = str(exc)
+                write_json(result_path, result)
 
         if result["upload_errors"]:
             logger.warning("==> pipeline finished with upload warnings: %s", result["upload_errors"])

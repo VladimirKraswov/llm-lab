@@ -40,6 +40,44 @@ class ModelConfig(AppBaseModel):
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     max_seq_length: int = 4096
 
+    # Дополнительные поля из remote-config оркестратора.
+    # Они нужны именно как логическая модель для HF metadata,
+    # даже если физически внутри контейнера модель лежит в /app.
+    base_model: Optional[str] = None
+    base_model_name_or_path: Optional[str] = None
+
+    @staticmethod
+    def _is_probably_local_path(value: str) -> bool:
+        value = str(value or "").strip()
+        if not value:
+            return False
+        if value.startswith("/"):
+            return True
+        if value.startswith("./") or value.startswith("../"):
+            return True
+        if value.startswith("\\") or "\\" in value:
+            return True
+        if len(value) > 1 and value[1] == ":":
+            return True
+        return False
+
+    @property
+    def logical_base_model_id(self) -> Optional[str]:
+        for candidate in (
+            self.repo_id,
+            self.base_model_name_or_path,
+            self.base_model,
+        ):
+            if not isinstance(candidate, str):
+                continue
+            value = candidate.strip()
+            if not value:
+                continue
+            if self._is_probably_local_path(value):
+                continue
+            return value
+        return None
+
     @model_validator(mode="after")
     def validate_source(self) -> "ModelConfig":
         if self.source == "local" and not self.local_path:

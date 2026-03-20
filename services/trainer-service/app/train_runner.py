@@ -39,7 +39,7 @@ def ensure_dirs(cfg: JobConfig) -> None:
         Path(path).mkdir(parents=True, exist_ok=True)
 
 
-def resolve_model_args(cfg: JobConfig) -> tuple[str, bool]:
+def resolve_model_args(cfg: JobConfig) -> tuple[str, bool, Optional[str]]:
     if cfg.model.source == "local":
         model_name = cfg.model.local_path
     else:
@@ -54,7 +54,9 @@ def resolve_model_args(cfg: JobConfig) -> tuple[str, bool]:
         else (cfg.training.method == "qlora")
     )
 
-    return model_name, load_in_4bit
+    logical_base_model_id = cfg.model.logical_base_model_id
+
+    return model_name, load_in_4bit, logical_base_model_id
 
 
 def safe_float(value: Any) -> Optional[float]:
@@ -257,9 +259,11 @@ def _build_sft_trainer(
 def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
     ensure_dirs(cfg)
 
-    model_name, load_in_4bit = resolve_model_args(cfg)
+    model_name, load_in_4bit, logical_base_model_id = resolve_model_args(cfg)
 
     logger.info("==> loading model: %s", model_name)
+    if logical_base_model_id:
+        logger.info("==> logical base model id: %s", logical_base_model_id)
     logger.info("==> method: %s", cfg.training.method)
 
     if reporter:
@@ -270,6 +274,7 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
             message="loading base model",
             extra={
                 "model_name": model_name,
+                "logical_base_model_id": logical_base_model_id,
                 "load_in_4bit": load_in_4bit,
                 "dtype": cfg.model.dtype,
             },
@@ -408,6 +413,8 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
         "validation_rows": len(dataset["validation"]) if "validation" in dataset else 0,
         "method": cfg.training.method,
         "base_model": model_name,
+        "base_model_id": logical_base_model_id,
+        "base_model_name_or_path": logical_base_model_id,
         "load_in_4bit": load_in_4bit,
         "bf16": cfg.training.bf16,
         "merged_saved": merged_saved,
@@ -452,6 +459,8 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
         "status": "success",
         "job_name": cfg.job_name,
         "base_model": model_name,
+        "base_model_id": logical_base_model_id,
+        "base_model_name_or_path": logical_base_model_id,
         "lora_dir": str(lora_dir),
         "merged_dir": str(merged_dir) if merged_saved else None,
         "checkpoint_dir": checkpoint_dir,

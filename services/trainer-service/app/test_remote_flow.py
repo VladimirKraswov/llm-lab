@@ -21,8 +21,11 @@ class TestRemoteFlow(unittest.TestCase):
             "job_name": "test-job",
             "mode": "remote",
             "model": {
-                "source": "huggingface",
-                "repo_id": "test/model",
+                "source": "local",
+                "local_path": "/app",
+                "repo_id": "Qwen/Qwen2.5-7B-Instruct",
+                "base_model": "Qwen/Qwen2.5-7B-Instruct",
+                "base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
             },
             "dataset": {
                 "source": "url",
@@ -89,7 +92,9 @@ class TestRemoteFlow(unittest.TestCase):
         mock_run_training.return_value = {
             "status": "success",
             "job_name": self.cfg.job_name,
-            "base_model": "test/model",
+            "base_model": "/app",
+            "base_model_id": "Qwen/Qwen2.5-7B-Instruct",
+            "base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
             "lora_dir": "test_outputs/lora/test-job",
             "merged_dir": "test_outputs/merged/test-job",
             "checkpoint_dir": "test_outputs/checkpoints/test-job",
@@ -100,11 +105,13 @@ class TestRemoteFlow(unittest.TestCase):
         }
 
         mock_uploader = mock_uploader_cls.return_value
+        mock_uploader.ensure_hf_ready.return_value = {}
         mock_uploader.upload_non_summary_artifacts.return_value = (
             {"logs": {"url": "http://example.com/upload/logs", "path": "trainer.log"}},
             {},
         )
         mock_uploader.upload_to_huggingface.return_value = {}
+        mock_uploader.upload_hf_metadata.return_value = {}
         mock_uploader.upload_summary.return_value = {
             "summary": {"url": "http://example.com/upload/summary", "path": "job-result.json"}
         }
@@ -128,6 +135,7 @@ class TestRemoteFlow(unittest.TestCase):
         reporter.report_final.assert_called_once()
 
         mock_asset_manager_cls.return_value.prepare_dataset.assert_called_once_with(self.cfg)
+        mock_asset_manager_cls.return_value.prepare_evaluation_dataset.assert_called_once_with(self.cfg)
 
         mock_archiver = mock_archiver_cls.return_value
         mock_archiver.make_archive.assert_called_once()
@@ -195,7 +203,9 @@ class TestRemoteFlow(unittest.TestCase):
         mock_run_training.return_value = {
             "status": "success",
             "job_name": self.cfg.job_name,
-            "base_model": "test/model",
+            "base_model": "/app",
+            "base_model_id": "Qwen/Qwen2.5-7B-Instruct",
+            "base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
             "lora_dir": "test_outputs/lora/test-job",
             "merged_dir": "test_outputs/merged/test-job",
             "checkpoint_dir": "test_outputs/checkpoints/test-job",
@@ -206,11 +216,13 @@ class TestRemoteFlow(unittest.TestCase):
         }
 
         mock_uploader = mock_uploader_cls.return_value
+        mock_uploader.ensure_hf_ready.return_value = {}
         mock_uploader.upload_non_summary_artifacts.return_value = (
             {"logs": {"url": "http://example.com/upload/logs", "path": "trainer.log"}},
             {"merged_archive": "SSL EOF"},
         )
         mock_uploader.upload_to_huggingface.return_value = {}
+        mock_uploader.upload_hf_metadata.return_value = {}
         mock_uploader.upload_summary.return_value = {
             "summary": {"url": "http://example.com/upload/summary", "path": "job-result.json"}
         }
