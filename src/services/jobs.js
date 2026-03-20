@@ -873,12 +873,14 @@ async function getJobLaunchCommand(id) {
   const image = job.containerImage || 'itk-ai-trainer-service:qwen-7b';
   const hfToken = '${HF_TOKEN}';
 
+  const outputRoot = process.env.OUTPUT_ROOT || '/storage/data/llm-lab/.remote-output';
+
   return [
     'docker run --rm --gpus all \\',
     '  --shm-size 16g \\',
     `  -e JOB_CONFIG_URL="${jobConfigUrl}" \\`,
     `  -e HF_TOKEN="${hfToken}" \\`,
-    '  -v /srv/llm-lab-remote-output:/output \\',
+    `  -v ${outputRoot}:/output \\`,
     `  ${image}`,
   ].join('\n');
 }

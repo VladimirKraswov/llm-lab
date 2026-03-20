@@ -3,6 +3,8 @@ const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+require('dotenv').config();
+
 const ORCHESTRATOR_URL = String(
   process.env.ORCHESTRATOR_URL || 'http://localhost:8787'
 ).replace(/\/+$/, '');
@@ -13,8 +15,8 @@ const POLL_INTERVAL = Number(process.env.POLL_INTERVAL || 10000);
 const HEARTBEAT_INTERVAL = Number(process.env.HEARTBEAT_INTERVAL || 30000);
 
 const TRAINER_IMAGE = process.env.TRAINER_IMAGE || 'itk-ai-trainer-service:qwen-7b';
-const OUTPUT_ROOT = process.env.OUTPUT_ROOT || '/srv/llm-lab-remote-output';
-const CACHE_ROOT = process.env.CACHE_ROOT || '/srv/llm-lab-remote-cache';
+const OUTPUT_ROOT = process.env.OUTPUT_ROOT || '/storage/data/llm-lab/.remote-output';
+const CACHE_ROOT = process.env.CACHE_ROOT || '/storage/data/llm-lab/.remote-cache';
 
 const DOCKER_BIN = process.env.DOCKER_BIN || 'docker';
 const DOCKER_NETWORK = process.env.DOCKER_NETWORK || '';

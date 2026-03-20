@@ -32,11 +32,11 @@ module.exports = {
       args: 'run web:dev',
       env: {
         NODE_ENV: 'development',
-        VITE_API_BASE: 'http://localhost:8787',
+        VITE_API_BASE: 'http://tts.xserver-krv.ru',
       },
       env_production: {
         NODE_ENV: 'production',
-        VITE_API_BASE: 'http://localhost:8787',
+        VITE_API_BASE: 'http://tts.xserver-krv.ru',
       },
       autorestart: true,
     },
