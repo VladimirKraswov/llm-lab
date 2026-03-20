@@ -2,8 +2,10 @@ import { Job, api } from '../lib/api';
 import { formatSize } from '../utils';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { CopyButton } from './copy-button';
-import { Terminal, Download, Archive } from 'lucide-react';
+import { Terminal, Download, Archive, RefreshCw, ExternalLink } from 'lucide-react';
 import { Button } from './ui/button';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 
 function fmtDate(value?: string | null) {
   if (!value) return '—';
@@ -15,6 +17,25 @@ function fmtDate(value?: string | null) {
 }
 
 export function JobDetailsFineTune({ job }: { job: Job }) {
+  const queryClient = useQueryClient();
+
+  const syncMutation = useMutation({
+    mutationFn: () => api.syncJobFromHF(job.id),
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.success('Synced from Hugging Face');
+        queryClient.invalidateQueries({ queryKey: ['job', job.id] });
+        queryClient.invalidateQueries({ queryKey: ['jobs'] });
+        queryClient.invalidateQueries({ queryKey: ['job-logs', job.id] });
+      } else {
+        toast.error(res.message || 'No artifacts found');
+      }
+    },
+    onError: (err: any) => {
+      toast.error(err.message || 'Sync failed');
+    },
+  });
+
   const handleDownloadBundle = () => {
     api.downloadJobLaunchBundle(job.id);
   };
@@ -70,6 +91,44 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
             <div className="text-xs text-slate-500">Finished</div>
             <div className="mt-1 text-white">{fmtDate(job.finishedAt)}</div>
           </div>
+
+          {(job.hfRepoIdLora || job.hfRepoIdMerged || job.hfRepoIdMetadata) && (
+            <div className="rounded-xl bg-slate-950/40 p-3 md:col-span-2">
+              <div className="text-xs text-slate-500 mb-2">Hugging Face Repositories</div>
+              <div className="flex flex-wrap gap-3">
+                {job.hfRepoIdLora && (
+                  <a
+                    href={`https://huggingface.co/${job.hfRepoIdLora}`}
+                    target="_blank"
+                    className="flex items-center gap-1.5 rounded-lg bg-blue-500/10 px-2 py-1 text-xs text-blue-400 hover:bg-blue-500/20 hover:text-blue-300 transition-colors"
+                  >
+                    <ExternalLink size={12} />
+                    LoRA: {job.hfRepoIdLora}
+                  </a>
+                )}
+                {job.hfRepoIdMerged && (
+                  <a
+                    href={`https://huggingface.co/${job.hfRepoIdMerged}`}
+                    target="_blank"
+                    className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2 py-1 text-xs text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300 transition-colors"
+                  >
+                    <ExternalLink size={12} />
+                    Merged: {job.hfRepoIdMerged}
+                  </a>
+                )}
+                {job.hfRepoIdMetadata && (
+                  <a
+                    href={`https://huggingface.co/${job.hfRepoIdMetadata}`}
+                    target="_blank"
+                    className="flex items-center gap-1.5 rounded-lg bg-purple-500/10 px-2 py-1 text-xs text-purple-400 hover:bg-purple-500/20 hover:text-purple-300 transition-colors"
+                  >
+                    <ExternalLink size={12} />
+                    Metadata: {job.hfRepoIdMetadata}
+                  </a>
+                )}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -82,7 +141,6 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
             </div>
             <div className="flex items-center gap-2">
               <Button
-                variant="outline"
                 size="sm"
                 onClick={handleDownloadBundle}
                 className="bg-blue-600 text-white border-blue-500 hover:bg-blue-500 hover:text-white h-8"
@@ -117,10 +175,10 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
                    <span>Launch Files</span>
                 </div>
                 <div className="mt-2 flex gap-2">
-                   <Button variant="ghost" size="xs" onClick={handleCopyCompose} className="text-[10px] text-blue-400 hover:text-blue-300 p-0 h-auto">
+                   <Button size="xs" onClick={handleCopyCompose} className="bg-transparent hover:bg-slate-800/30 text-[10px] text-blue-400 hover:text-blue-300 p-1 h-auto">
                      <Archive size={10} className="mr-1" /> Copy Compose
                    </Button>
-                   <Button variant="ghost" size="xs" onClick={handleCopyEnv} className="text-[10px] text-blue-400 hover:text-blue-300 p-0 h-auto">
+                   <Button size="xs" onClick={handleCopyEnv} className="bg-transparent hover:bg-slate-800/30 text-[10px] text-blue-400 hover:text-blue-300 p-1 h-auto">
                      <Archive size={10} className="mr-1" /> Copy .env
                    </Button>
                 </div>
@@ -138,8 +196,19 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
       )}
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle>Training summary</CardTitle>
+          {job.mode === 'remote' && (job.hfRepoIdLora || job.hfRepoIdMerged || job.hfRepoIdMetadata) && (
+            <Button
+              size="sm"
+              onClick={() => syncMutation.mutate()}
+              disabled={syncMutation.isPending}
+              className="h-7 text-[10px] border-slate-700 bg-slate-800/50 hover:bg-slate-700"
+            >
+              <RefreshCw size={12} className={`mr-1.5 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
+              {syncMutation.isPending ? 'Syncing...' : 'Sync from HF'}
+            </Button>
+          )}
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 text-sm">
           <div className="rounded-xl bg-slate-950/40 p-3">

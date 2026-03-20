@@ -22,6 +22,7 @@ const {
   getJobLaunchCommand,
   getAllJobs,
 } = require('../services/jobs');
+const { syncJobFromHF } = require('../services/hf-sync');
 const {
   verifyCallbackToken,
   generateCallbackToken,
@@ -331,6 +332,18 @@ router.patch('/:id/metadata', async (req, res) => {
 router.post('/:id/stop', async (req, res) => {
   try {
     res.json(await stopJob(req.params.id));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/hf-sync', roleMiddleware(['admin', 'member']), async (req, res) => {
+  try {
+    const result = await syncJobFromHF(req.params.id);
+    if (!result.ok) {
+      return res.status(404).json(result);
+    }
+    res.json(result);
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }

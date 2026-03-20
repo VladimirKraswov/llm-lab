@@ -908,6 +908,10 @@ export const api = {
     request<Job>(`/jobs/${id}/retry`, {
       method: 'POST',
     }),
+  syncJobFromHF: (id: string) =>
+    request<{ ok: boolean; message?: string }>(`/jobs/${id}/hf-sync`, {
+      method: 'POST',
+    }),
 
   getRuntimePresets: () => request<RuntimePreset[]>('/jobs/runtime-presets'),
 
