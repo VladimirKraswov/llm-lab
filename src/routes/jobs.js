@@ -1,7 +1,6 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const archiver = require('archiver');
 const { db } = require('../db');
 const {
   startFineTuneJob,
@@ -22,21 +21,66 @@ const {
   getJobLaunchCommand,
   getAllJobs,
 } = require('../services/jobs');
-const { verifyCallbackToken, generateCallbackToken } = require('../services/auth');
-const authMiddleware = require('../utils/auth-middleware');
+const { verifyCallbackToken } = require('../services/auth');
 const roleMiddleware = require('../utils/role-middleware');
+const { getDatasets } = require('../services/state');
+const { buildRemoteTrainerConfig } = require('../services/remote-job-config');
 
 const router = express.Router();
 
-// All routes here are protected by authMiddleware in server.js
-// but worker callback routes will be exempted or handled differently if needed.
-// However, server.js currently applies authMiddleware to /jobs.
-// We need to move worker callbacks to a separate route or handle them carefully.
+function mapIncomingStatus(status) {
+  const value = String(status || '').trim().toLowerCase();
+
+  if (!value) return 'running';
+  if (value === 'started') return 'running';
+  if (value === 'finished') return 'completed';
+  if (value === 'success') return 'completed';
+  if (value === 'error') return 'failed';
+
+  return value;
+}
+
+async function callbackAuth(req, res, next) {
+  try {
+    if (req.user) return next();
+
+    const authHeader = req.headers.authorization || '';
+    let token = null;
+
+    if (authHeader.startsWith('Bearer ')) {
+      token = authHeader.slice('Bearer '.length).trim();
+    }
+
+    if (!token) {
+      token =
+        req.body?.auth_token ||
+        req.body?.callback_auth_token ||
+        req.query?.token ||
+        null;
+    }
+
+    const jobId = req.body?.job_id || req.params?.id;
+
+    if (!jobId || !token) {
+      return res.status(401).json({ error: 'Auth required' });
+    }
+
+    const isValid = await verifyCallbackToken(token, jobId);
+    if (!isValid) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+
+    req.callbackToken = token;
+    next();
+  } catch (err) {
+    return res.status(500).json({ error: String(err.message || err) });
+  }
+}
 
 router.get('/', async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = parseInt(req.query.offset) || 0;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
     res.json(await getAllJobs(limit, offset));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
@@ -108,37 +152,74 @@ router.post('/:id/cancel', async (req, res) => {
 });
 
 router.get('/:id/config', async (req, res) => {
-  // This endpoint needs to be secure.
-  // It's called by the worker bootstrap.
-  // We should ideally use a one-time bootstrap token.
   try {
     const job = await getJobById(req.params.id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
 
-    // Check if a bootstrap token is provided in query
-    const bootstrapToken = req.query.token;
-    const tokenRecord = await db('job_callback_tokens')
-      .where({ job_id: req.params.id, id: bootstrapToken, is_active: true })
-      .first();
+    const bootstrapToken = req.query.token || null;
 
-    // If no token or invalid token, and not authenticated as user, deny
+    let tokenRecord = null;
+    if (bootstrapToken) {
+      tokenRecord = await db('job_callback_tokens')
+        .where({ job_id: req.params.id, id: bootstrapToken, is_active: true })
+        .first();
+    }
+
     if (!tokenRecord && !req.user) {
       return res.status(403).json({ error: 'Forbidden: Invalid bootstrap token' });
     }
 
+    if (!tokenRecord) {
+      tokenRecord = await db('job_callback_tokens')
+        .where({ job_id: req.params.id, is_active: true })
+        .first();
+    }
+
+    if (!tokenRecord) {
+      return res.status(500).json({ error: 'No active callback token found for job' });
+    }
+
+    const datasets = await getDatasets();
+    const dataset = datasets.find((x) => x.id === job.datasetId);
+    if (!dataset) {
+      return res.status(404).json({ error: 'Dataset not found for job' });
+    }
+
+    const trainerConfig = buildRemoteTrainerConfig({
+      job,
+      dataset,
+      callbackAuthToken: tokenRecord.id,
+    });
+
     res.json({
       job_id: job.id,
       job_name: job.name,
-      callback_auth_token: tokenRecord?.id, // Should we generate a new one?
-      logs_url: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/logs`,
-      reporting: {
-        status: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/status`,
-        progress: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/progress`,
-        final: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/final`,
-        logs: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/logs`,
-      },
-      config: job.paramsSnapshot,
+      callback_auth_token: tokenRecord.id,
+      config: trainerConfig,
     });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/dataset/train', callbackAuth, async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    const datasets = await getDatasets();
+    const dataset = datasets.find((x) => x.id === job.datasetId);
+    if (!dataset?.processedPath) {
+      return res.status(404).json({ error: 'Processed dataset not found' });
+    }
+
+    const resolved = path.resolve(dataset.processedPath);
+    if (!fs.existsSync(resolved)) {
+      return res.status(404).json({ error: 'Dataset file is missing on disk' });
+    }
+
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    return res.sendFile(resolved);
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -185,26 +266,13 @@ router.post('/:id/stop', async (req, res) => {
   }
 });
 
-// Worker Callbacks - These need to be accessible without authMiddleware
-// OR authMiddleware needs to be updated to support callback tokens.
-// Since server.js applies authMiddleware to all /jobs, we have a problem.
-// We should expose these on a separate path or handle token in authMiddleware.
-
-// WORKAROUND: We will assume for this PR that the user will move these or update middleware.
-// For now, we implement them here.
-
-async function callbackAuth(req, res, next) {
-  const { job_id, auth_token } = req.body;
-  if (!job_id || !auth_token) return res.status(401).json({ error: 'Auth required' });
-
-  const isValid = await verifyCallbackToken(auth_token, job_id);
-  if (!isValid) return res.status(403).json({ error: 'Invalid or expired token' });
-  next();
-}
-
 router.post('/status', callbackAuth, async (req, res) => {
   try {
-    res.json(await handleWorkerStatus(req.body.job_id, req.body));
+    const normalized = {
+      ...req.body,
+      status: mapIncomingStatus(req.body.status),
+    };
+    res.json(await handleWorkerStatus(normalized.job_id, normalized));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -212,7 +280,11 @@ router.post('/status', callbackAuth, async (req, res) => {
 
 router.post('/progress', callbackAuth, async (req, res) => {
   try {
-    res.json(await handleWorkerProgress(req.body.job_id, req.body));
+    const normalized = {
+      ...req.body,
+      status: mapIncomingStatus(req.body.status || 'running'),
+    };
+    res.json(await handleWorkerProgress(normalized.job_id, normalized));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -220,7 +292,18 @@ router.post('/progress', callbackAuth, async (req, res) => {
 
 router.post('/final', callbackAuth, async (req, res) => {
   try {
-    res.json(await handleWorkerFinal(req.body.job_id, req.body));
+    const result = req.body?.result || {};
+    const normalized = {
+      ...req.body,
+      status: mapIncomingStatus(req.body.status || result.status),
+      metrics: {
+        training: result?.training?.summary || null,
+        evaluation: result?.evaluation?.summary || null,
+      },
+      artifacts: result?.uploads || {},
+    };
+
+    res.json(await handleWorkerFinal(normalized.job_id, normalized));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -228,13 +311,21 @@ router.post('/final', callbackAuth, async (req, res) => {
 
 router.post('/logs', callbackAuth, async (req, res) => {
   try {
-    res.json(await handleWorkerLogs(req.body.job_id, req.body));
+    const normalized = {
+      ...req.body,
+      logs:
+        req.body.logs ||
+        req.body.chunk ||
+        req.body.content ||
+        '',
+    };
+
+    res.json(await handleWorkerLogs(normalized.job_id, normalized));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
 });
 
-// Legacy Artifact Endpoints
 router.get('/:id/artifacts/metrics', async (req, res) => {
   try {
     const job = await getJobById(req.params.id);

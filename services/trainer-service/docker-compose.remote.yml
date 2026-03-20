@@ -7,8 +7,6 @@ services:
     env_file:
       - .env.remote.example
     environment:
-      CONFIG_SOURCE: remote
-      CONFIG_REF: ${CONFIG_REF}
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - ./output:/output

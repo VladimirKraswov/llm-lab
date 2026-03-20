@@ -1,10 +1,11 @@
-const { verifyToken, verifyCallbackToken } = require('../services/auth');
+const { verifyToken } = require('../services/auth');
 
 function authMiddleware(req, res, next) {
-  // Check for standard JWT auth first
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.split(' ')[1];
+  const authHeader = req.headers.authorization || '';
+
+  // 1. Обычный JWT для UI / API пользователей
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice('Bearer '.length).trim();
     const decoded = verifyToken(token);
     if (decoded) {
       req.user = decoded;
@@ -12,28 +13,36 @@ function authMiddleware(req, res, next) {
     }
   }
 
-  // Fallback to Worker Callback Auth for certain endpoints
-  const isCallback = req.path.startsWith('/status') ||
-                     req.path.startsWith('/progress') ||
-                     req.path.startsWith('/final') ||
-                     req.path.startsWith('/logs');
+  // 2. Worker callbacks: пропускаем дальше, а реальную проверку делает route-level callbackAuth
+  const isCallback =
+    req.method === 'POST' &&
+    (
+      req.path === '/status' ||
+      req.path === '/progress' ||
+      req.path === '/final' ||
+      req.path === '/logs'
+    );
 
-  if (isCallback && req.method === 'POST') {
-    const { job_id, auth_token } = req.body;
-    if (job_id && auth_token) {
-       // We can't easily verify here without making it async,
-       // so we'll let the route handler deal with it if it's a callback.
-       // Or better, we make this middleware async.
-       return next();
+  if (isCallback) {
+    const hasBearer = authHeader.startsWith('Bearer ');
+    const hasBodyToken =
+      !!req.body?.auth_token ||
+      !!req.body?.callback_auth_token;
+
+    if (hasBearer || hasBodyToken) {
+      return next();
     }
   }
 
-  // Also allow GET /jobs/:id/config if token is in query
-  if (req.path.endsWith('/config') && req.query.token) {
+  // 3. Bootstrap config по одноразовому token в query
+  if (req.method === 'GET' && req.path.endsWith('/config') && req.query?.token) {
     return next();
   }
 
-  if (req.user) return next();
+  // 4. Датасет для remote trainer по token в query
+  if (req.method === 'GET' && req.path.includes('/dataset/') && req.query?.token) {
+    return next();
+  }
 
   return res.status(401).json({ error: 'Unauthorized: No valid token provided' });
 }

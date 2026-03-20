@@ -1,11 +1,12 @@
 const express = require('express');
 const { registerWorker, heartbeat, getJobForWorker } = require('../services/workers');
 const { db } = require('../db');
+const { getAvailableWorkers } = require('../services/workers');
+const { generateCallbackToken } = require('../services/auth');
+const authMiddleware = require('../utils/auth-middleware');
+const { CONFIG } = require('../config');
 
 const router = express.Router();
-const { getAvailableWorkers } = require('../services/workers');
-
-const authMiddleware = require('../utils/auth-middleware');
 
 router.get('/', authMiddleware, async (req, res) => {
   try {
@@ -51,24 +52,31 @@ router.get('/request-job', workerAuth, async (req, res) => {
     const job = await getJobForWorker(req.worker.id);
     if (!job) return res.status(204).end();
 
-    // Config as part of request-job is useful for worker bootstrap
-    const tokenRecord = await db('job_callback_tokens')
+    let tokenRecord = await db('job_callback_tokens')
       .where({ job_id: job.id, is_active: true })
       .first();
+
+    if (!tokenRecord) {
+      const token = await generateCallbackToken(job.id);
+      tokenRecord = { id: token };
+    }
+
+    const callbackBase = CONFIG.callbackBaseUrl.replace(/\/+$/, '');
 
     res.json({
       job,
       config: {
         job_id: job.id,
-        callback_auth_token: tokenRecord?.id,
+        callback_auth_token: tokenRecord.id,
+        job_config_url: `${callbackBase}/jobs/${job.id}/config?token=${tokenRecord.id}`,
         reporting: {
-          status: `${process.env.CALLBACK_BASE_URL}/api/jobs/status`,
-          progress: `${process.env.CALLBACK_BASE_URL}/api/jobs/progress`,
-          final: `${process.env.CALLBACK_BASE_URL}/api/jobs/final`,
-          logs: `${process.env.CALLBACK_BASE_URL}/api/jobs/logs`,
+          status: `${callbackBase}/jobs/status`,
+          progress: `${callbackBase}/jobs/progress`,
+          final: `${callbackBase}/jobs/final`,
+          logs: `${callbackBase}/jobs/logs`,
         },
         params: job.paramsSnapshot,
-      }
+      },
     });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });

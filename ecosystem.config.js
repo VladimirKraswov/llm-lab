@@ -7,6 +7,8 @@ module.exports = {
         NODE_ENV: 'development',
         SVC_PORT: 8787,
         SVC_HOST: '0.0.0.0',
+        CALLBACK_BASE_URL: 'http://tts.xserver-krv.ru',
+        REMOTE_BAKED_MODEL_PATH: '/app',
         WORKSPACE: process.env.WORKSPACE || '/opt/deepseek-workspace',
         JWT_SECRET: process.env.JWT_SECRET || 'llm-lab-super-secret-key',
       },

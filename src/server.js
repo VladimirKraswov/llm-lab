@@ -57,23 +57,28 @@ async function main() {
 
   app.use(express.json({ limit: `${CONFIG.maxJsonMb}mb` }));
 
-  app.use('/health', healthRoute);
-  app.use('/auth', authRoute);
-  app.use('/settings', authMiddleware, settingsRoute);
-  app.use('/datasets', authMiddleware, datasetsRoute);
-  app.use('/jobs', authMiddleware, jobsRoute);
-  app.use('/workers', workersRoute);
-  app.use('/runtime', authMiddleware, runtimeRoute);
-  app.use('/dashboard', authMiddleware, dashboardRoute);
-  app.use('/events', authMiddleware, eventsRoute);
-  app.use('/models', authMiddleware, modelsRoute);
-  app.use('/loras', authMiddleware, lorasRoute);
-  app.use('/logs', authMiddleware, logsRoute);
-  app.use('/monitor', authMiddleware, monitorRoute);
-  app.use('/synthetic', authMiddleware, syntheticRoute);
-  app.use('/comparisons', authMiddleware, comparisonsRoute);
-  app.use('/evaluations', authMiddleware, evaluationsRoute);
-  app.use('/sync', authMiddleware, syncRoute);
+  const mount = (route, ...handlers) => {
+    app.use(route, ...handlers);
+    app.use(`/api${route}`, ...handlers);
+  };
+
+  mount('/health', healthRoute);
+  mount('/auth', authRoute);
+  mount('/settings', authMiddleware, settingsRoute);
+  mount('/datasets', authMiddleware, datasetsRoute);
+  mount('/jobs', authMiddleware, jobsRoute);
+  mount('/workers', workersRoute);
+  mount('/runtime', authMiddleware, runtimeRoute);
+  mount('/dashboard', authMiddleware, dashboardRoute);
+  mount('/events', authMiddleware, eventsRoute);
+  mount('/models', authMiddleware, modelsRoute);
+  mount('/loras', authMiddleware, lorasRoute);
+  mount('/logs', authMiddleware, logsRoute);
+  mount('/monitor', authMiddleware, monitorRoute);
+  mount('/synthetic', authMiddleware, syntheticRoute);
+  mount('/comparisons', authMiddleware, comparisonsRoute);
+  mount('/evaluations', authMiddleware, evaluationsRoute);
+  mount('/sync', authMiddleware, syncRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -82,6 +87,7 @@ async function main() {
 
     app.get('*', (req, res, next) => {
       if (
+        req.path.startsWith('/api/') ||
         req.path.startsWith('/health') ||
         req.path.startsWith('/settings') ||
         req.path.startsWith('/datasets') ||
@@ -118,7 +124,7 @@ async function main() {
     console.log(`Workspace: ${CONFIG.workspace}`);
     console.log(`Python: ${CONFIG.pythonBin}`);
     console.log(`Web UI origin: ${CONFIG.webUiOrigin}`);
-    
+
     const reconcileKickoff = startBackgroundReconcile({ reason: 'startup' });
     console.log('Background reconcile scheduled:', reconcileKickoff);
   });

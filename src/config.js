@@ -40,7 +40,7 @@ const CONFIG = {
   // Orchestration
   callbackBaseUrl: process.env.CALLBACK_BASE_URL || `http://localhost:${process.env.SVC_PORT || 8787}`,
   requireJwtSecret: process.env.REQUIRE_JWT_SECRET === 'true',
-  remoteBakedModelPath: process.env.REMOTE_BAKED_MODEL_PATH || '/trainer/model',
+  remoteBakedModelPath: process.env.REMOTE_BAKED_MODEL_PATH || '/app',
 };
 
 CONFIG.stateDir = path.join(CONFIG.workspace, '.llm-lab');

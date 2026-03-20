@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { exec } = require('child_process');
+
 const { CONFIG } = require('../config');
 const { nowIso, uid } = require('../utils/ids');
 const { isPidRunning, killProcessGroup } = require('../utils/proc');
@@ -22,6 +24,46 @@ const {
 } = require('../utils/managed-processes');
 const { db } = require('../db');
 const { generateCallbackToken } = require('./auth');
+const { buildRemoteTrainerConfig } = require('./remote-job-config');
+
+function safeJsonParse(value, fallback = null) {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
+  if (typeof value !== 'string') {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function buildApiUrl(base, apiPath) {
+  const root = String(base || '').replace(/\/+$/, '');
+  if (!root) {
+    throw new Error('CALLBACK_BASE_URL is empty');
+  }
+
+  return root.endsWith('/api')
+    ? `${root}${apiPath.replace(/^\/api/, '')}`
+    : `${root}${apiPath}`;
+}
+
+async function getOrCreateActiveCallbackToken(jobId) {
+  let tokenRecord = await db('job_callback_tokens')
+    .where({ job_id: jobId, is_active: true })
+    .orderBy('created_at', 'desc')
+    .first();
+
+  if (!tokenRecord) {
+    const token = await generateCallbackToken(jobId);
+    tokenRecord = { id: token };
+  }
+
+  return tokenRecord.id;
+}
 
 async function getEnvSnapshot() {
   try {
@@ -42,13 +84,20 @@ print(json.dumps({
     "unsloth": unsloth_version
 }))
 `;
-    const { exec } = require('child_process');
     const output = await new Promise((resolve, reject) => {
-      exec(`${CONFIG.pythonBin} -c '${code.replace(/'/g, "'\\''")}'`, { timeout: 10000 }, (error, stdout) => {
-        if (error) reject(error);
-        else resolve(stdout);
-      });
+      exec(
+        `${CONFIG.pythonBin} -c '${code.replace(/'/g, "'\\''")}'`,
+        { timeout: 10000 },
+        (error, stdout) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(stdout);
+        }
+      );
     });
+
     return JSON.parse(output);
   } catch (err) {
     logger.warn('Failed to get env snapshot', { error: err.message });
@@ -63,7 +112,10 @@ print(json.dumps({
 
 async function getDatasetSnapshot(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return { path: filePath, size: 0, mtime: null, hash: null };
+    if (!fs.existsSync(filePath)) {
+      return { path: filePath, size: 0, mtime: null, hash: null };
+    }
+
     const stats = fs.statSync(filePath);
 
     let hash = null;
@@ -87,7 +139,7 @@ async function getDatasetSnapshot(filePath) {
       mtime: stats.mtime.toISOString(),
       hash,
     };
-  } catch (err) {
+  } catch {
     return { path: filePath, size: 0, mtime: null, hash: null };
   }
 }
@@ -95,6 +147,7 @@ async function getDatasetSnapshot(filePath) {
 function getArtifacts(outputDir) {
   try {
     if (!fs.existsSync(outputDir)) return [];
+
     const files = fs.readdirSync(outputDir);
     return files.map((file) => {
       const filePath = path.join(outputDir, file);
@@ -105,7 +158,7 @@ function getArtifacts(outputDir) {
         path: filePath,
       };
     });
-  } catch (err) {
+  } catch {
     return [];
   }
 }
@@ -171,11 +224,13 @@ async function getAllJobs(limit = 50, offset = 0) {
     .orderBy('created_at', 'desc')
     .limit(limit)
     .offset(offset);
+
   return jobs.map(parseJob);
 }
 
 function parseJob(job) {
   if (!job) return null;
+
   return {
     id: job.id,
     name: job.name,
@@ -192,9 +247,9 @@ function parseJob(job) {
     containerImage: job.container_image,
     containerCommand: job.container_command,
     jobConfigUrl: job.job_config_url,
-    lastStatusPayload: job.last_status_payload ? JSON.parse(job.last_status_payload) : null,
-    lastProgressPayload: job.last_progress_payload ? JSON.parse(job.last_progress_payload) : null,
-    finalPayload: job.final_payload ? JSON.parse(job.final_payload) : null,
+    lastStatusPayload: safeJsonParse(job.last_status_payload, null),
+    lastProgressPayload: safeJsonParse(job.last_progress_payload, null),
+    finalPayload: safeJsonParse(job.final_payload, null),
     logFile: job.log_file,
     logChunkCount: job.log_chunk_count,
     lastLogOffset: job.last_log_offset,
@@ -203,13 +258,13 @@ function parseJob(job) {
     hfRepoIdMetadata: job.hf_repo_id_metadata,
     publishedAt: job.published_at,
     error: job.error,
-    tags: job.tags ? JSON.parse(job.tags) : [],
+    tags: safeJsonParse(job.tags, []),
     notes: job.notes,
-    paramsSnapshot: job.params_snapshot ? JSON.parse(job.params_snapshot) : null,
-    datasetSnapshot: job.dataset_snapshot ? JSON.parse(job.dataset_snapshot) : null,
-    modelSnapshot: job.model_snapshot ? JSON.parse(job.model_snapshot) : null,
-    envSnapshot: job.env_snapshot ? JSON.parse(job.env_snapshot) : null,
-    summaryMetrics: job.summary_metrics ? JSON.parse(job.summary_metrics) : {},
+    paramsSnapshot: safeJsonParse(job.params_snapshot, null),
+    datasetSnapshot: safeJsonParse(job.dataset_snapshot, null),
+    modelSnapshot: safeJsonParse(job.model_snapshot, null),
+    envSnapshot: safeJsonParse(job.env_snapshot, null),
+    summaryMetrics: safeJsonParse(job.summary_metrics, {}),
     datasetId: job.dataset_id,
     modelId: job.model_id,
     baseModel: job.base_model,
@@ -225,6 +280,7 @@ function parseJob(job) {
 
 async function upsertJob(job) {
   const existing = await db('jobs').where({ id: job.id }).first();
+
   const dbJob = {
     id: job.id,
     name: job.name,
@@ -232,7 +288,7 @@ async function upsertJob(job) {
     mode: job.mode || 'local',
     status: job.status,
     current_stage: job.currentStage || null,
-    progress_percent: job.progressPercent || 0,
+    progress_percent: job.progressPercent ?? 0,
     message: job.message || null,
     worker_type: job.workerType || null,
     launch_mode: job.launchMode || null,
@@ -245,8 +301,8 @@ async function upsertJob(job) {
     last_progress_payload: job.lastProgressPayload ? JSON.stringify(job.lastProgressPayload) : null,
     final_payload: job.finalPayload ? JSON.stringify(job.finalPayload) : null,
     log_file: job.logFile || null,
-    log_chunk_count: job.logChunkCount || 0,
-    last_log_offset: job.lastLogOffset || 0,
+    log_chunk_count: job.logChunkCount ?? 0,
+    last_log_offset: job.lastLogOffset ?? 0,
     hf_repo_id_lora: job.hfRepoIdLora || null,
     hf_repo_id_merged: job.hfRepoIdMerged || null,
     hf_repo_id_metadata: job.hfRepoIdMetadata || null,
@@ -276,6 +332,7 @@ async function upsertJob(job) {
     dbJob.created_at = job.createdAt || nowIso();
     await db('jobs').insert(dbJob);
   }
+
   return getJobById(job.id);
 }
 
@@ -340,6 +397,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 
   await upsertJob(job);
   emitEvent('job_updated', job);
+
   logger.info(`Starting local fine-tune job: ${job.name}`, {
     jobId,
     datasetId,
@@ -388,10 +446,12 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     pid: child.pid,
     configPath,
   });
+
   emitEvent('job_updated', runningJob);
 
   child.on('exit', async (code) => {
     await unregisterManagedProcess(child.pid);
+
     const current = await getJobById(jobId);
     if (!current) return;
 
@@ -411,7 +471,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
           logger.warn('Failed to read summary.json', { jobId, error: err.message });
         }
       }
-      // Register artifacts
+
       const artifacts = getArtifacts(current.outputDir);
       for (const art of artifacts) {
         await db('job_artifacts').insert({
@@ -439,40 +499,55 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 }
 
 async function createRemoteJob(payload) {
-  const { name, type, datasetId, modelId, baseModel, qlora, hfPublish, workerId } = payload;
-  const jobId = uid('job');
+  const { name, type, datasetId, baseModel, qlora, workerId } = payload;
+
+  if (!datasetId) {
+    throw new Error('datasetId is required');
+  }
+
+  if (qlora) {
+    validateQLoraParams(qlora);
+  }
 
   const settings = await getSettings();
+  const datasets = await getDatasets();
+  const ds = datasets.find((x) => x.id === datasetId);
 
-  // For remote jobs, we use the baked-in model path by default
+  if (!ds) {
+    throw new Error('dataset not found');
+  }
+
+  const jobId = uid('job');
+  const jobName = String(name || jobId).trim();
   const selectedBaseModel = baseModel || CONFIG.remoteBakedModelPath;
+  const effectiveQlorа = { ...settings.qlora, ...(qlora || {}) };
+  const jobConfigUrl = buildApiUrl(CONFIG.callbackBaseUrl, `/api/jobs/${jobId}/config`);
 
-  const job = {
+  const initialJob = {
     id: jobId,
-    name: name || jobId,
+    name: jobName,
     type: type || 'remote-train',
     mode: 'remote',
     status: 'queued',
+    currentStage: 'queued',
+    progressPercent: 0,
     datasetId,
-    modelId: modelId || null,
+    modelId: null,
     baseModel: selectedBaseModel,
     workerId: workerId || null,
     paramsSnapshot: {
-      baseModel: selectedBaseModel,
-      modelSource: 'local',
-      qlora: { ...settings.qlora, ...(qlora || {}) },
-      hfPublish: hfPublish || { enabled: false },
+      qlora: effectiveQlorа,
     },
     tags: payload.tags || [],
     notes: payload.notes || '',
-    jobConfigUrl: `${CONFIG.callbackBaseUrl}/api/jobs/${jobId}/config`,
+    jobConfigUrl,
   };
 
-  const dbJob = await upsertJob(job);
-  await generateCallbackToken(jobId);
+  const savedJob = await upsertJob(initialJob);
+  await getOrCreateActiveCallbackToken(jobId);
 
-  emitEvent('job_updated', dbJob);
-  return dbJob;
+  emitEvent('job_updated', savedJob);
+  return savedJob;
 }
 
 async function cloneJob(jobId) {
@@ -486,7 +561,6 @@ async function cloneJob(jobId) {
     modelId: source.modelId,
     baseModel: source.baseModel,
     qlora: source.paramsSnapshot?.qlora,
-    hfPublish: source.paramsSnapshot?.hfPublish,
     tags: source.tags,
     notes: source.notes,
   });
@@ -495,39 +569,50 @@ async function cloneJob(jobId) {
 async function retryJob(jobId) {
   const source = await getJobById(jobId);
   if (!source) throw new Error('Job not found');
+
   if (source.status !== 'failed' && source.status !== 'stopped') {
     throw new Error('Can only retry failed or stopped jobs');
   }
 
-  const job = {
-    ...source,
-    id: uid('job'),
-    name: `${source.name} (retry)`,
-    status: 'queued',
-    startedAt: null,
-    finishedAt: null,
-    error: null,
-    progressPercent: 0,
-    currentStage: 'queued',
-    createdAt: nowIso(),
-    jobConfigUrl: source.mode === 'remote' ? `${CONFIG.callbackBaseUrl}/api/jobs/${source.id}/config` : null,
-  };
-
-  const dbJob = await upsertJob(job);
   if (source.mode === 'remote') {
-    await generateCallbackToken(job.id);
-  } else if (source.type === 'fine-tune') {
+    return createRemoteJob({
+      name: `${source.name} (retry)`,
+      type: source.type,
+      datasetId: source.datasetId,
+      modelId: source.modelId,
+      baseModel: source.baseModel,
+      qlora: source.paramsSnapshot?.qlora,
+      tags: source.tags,
+      notes: source.notes,
+      workerId: source.workerId,
+    });
+  }
+
+  if (source.type === 'fine-tune') {
     return startFineTuneJob({
       datasetId: source.datasetId,
-      name: job.name,
+      name: `${source.name} (retry)`,
       modelId: source.modelId,
       baseModel: source.baseModel,
       qlora: source.paramsSnapshot?.qlora,
     });
   }
 
-  emitEvent('job_updated', dbJob);
-  return dbJob;
+  const retried = await upsertJob({
+    ...source,
+    id: uid('job'),
+    name: `${source.name} (retry)`,
+    status: 'queued',
+    currentStage: 'queued',
+    progressPercent: 0,
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+    createdAt: nowIso(),
+  });
+
+  emitEvent('job_updated', retried);
+  return retried;
 }
 
 async function cancelJob(jobId) {
@@ -538,19 +623,29 @@ async function handleWorkerStatus(jobId, payload) {
   const job = await getJobById(jobId);
   if (!job) throw new Error('Job not found');
 
+  let normalizedStatus = String(payload.status || '').trim().toLowerCase();
+  if (normalizedStatus === 'started') normalizedStatus = 'running';
+  if (normalizedStatus === 'finished') normalizedStatus = 'completed';
+
   const patch = {
-    status: payload.status,
-    currentStage: payload.stage,
-    message: payload.message,
+    status: normalizedStatus || job.status,
+    currentStage: payload.stage || job.currentStage,
+    message: payload.message || job.message,
+    progressPercent:
+      payload.progress !== undefined && payload.progress !== null
+        ? Number(payload.progress)
+        : job.progressPercent,
     lastStatusPayload: payload,
   };
 
-  if (payload.status === 'running' && !job.startedAt) {
+  if (normalizedStatus === 'running' && !job.startedAt) {
     patch.startedAt = nowIso();
   }
-  if (['completed', 'failed', 'stopped'].includes(payload.status)) {
+
+  if (['completed', 'failed', 'stopped'].includes(normalizedStatus)) {
     patch.finishedAt = nowIso();
   }
+
   if (payload.error) {
     patch.error = payload.error;
   }
@@ -569,77 +664,137 @@ async function handleWorkerStatus(jobId, payload) {
 
 async function handleWorkerProgress(jobId, payload) {
   const job = await getJobById(jobId);
+  if (!job) throw new Error('Job not found');
+
   const updated = await upsertJob({
     ...job,
-    progressPercent: payload.progress || 0,
+    status: job.status === 'queued' ? 'running' : job.status,
+    progressPercent:
+      payload.progress !== undefined && payload.progress !== null
+        ? Number(payload.progress)
+        : job.progressPercent,
     currentStage: payload.stage || job.currentStage,
+    message: payload.message || job.message,
     lastProgressPayload: payload,
+    startedAt: job.startedAt || nowIso(),
+  });
+
+  await db('job_events').insert({
+    job_id: jobId,
+    type: 'progress',
+    payload: JSON.stringify(payload),
   });
 
   emitEvent('job_progress', { jobId, ...payload });
+  emitEvent('job_updated', updated);
+
   return { ok: true };
 }
 
 async function handleWorkerLogs(jobId, payload) {
-  const { logs, offset } = payload;
+  const job = await getJobById(jobId);
+  if (!job) throw new Error('Job not found');
+
+  const content = String(payload.logs ?? payload.chunk ?? '');
+  const offset = Number(payload.offset || 0);
+
+  if (!content) {
+    return { ok: true };
+  }
 
   await db('job_logs').insert({
     job_id: jobId,
-    content: logs,
-    offset: offset,
+    content,
+    offset,
   });
 
-  emitEvent('job_log_chunk', { jobId, logs, offset });
+  await upsertJob({
+    ...job,
+    logChunkCount: Number(job.logChunkCount || 0) + 1,
+    lastLogOffset: offset,
+  });
+
+  emitEvent('job_log_chunk', { jobId, logs: content, offset });
   return { ok: true };
 }
 
 async function handleWorkerFinal(jobId, payload) {
   const job = await getJobById(jobId);
+  if (!job) throw new Error('Job not found');
+
+  const result = payload.result || {};
+  const failed =
+    String(payload.status || '').toLowerCase() === 'failed' ||
+    String(result.status || '').toLowerCase() === 'failed';
+
   const patch = {
-    status: 'completed',
+    status: failed ? 'failed' : 'completed',
+    currentStage: failed ? 'failed' : 'finished',
+    progressPercent: 100,
     finishedAt: nowIso(),
     finalPayload: payload,
-    summaryMetrics: payload.metrics || {},
-    hfRepoIdLora: payload.hf_repo_id_lora,
-    hfRepoIdMerged: payload.hf_repo_id_merged,
-    hfRepoIdMetadata: payload.hf_repo_id_metadata,
-    publishedAt: payload.published_at || nowIso(),
+    summaryMetrics: {
+      training: result.training?.summary || null,
+      evaluation: result.evaluation?.summary || null,
+    },
+    error: failed ? (result.error || payload.error || 'remote job failed') : null,
   };
 
   const updated = await upsertJob({ ...job, ...patch });
 
-  if (payload.artifacts) {
-    for (const art of payload.artifacts) {
-      await db('job_artifacts').insert({
-        job_id: jobId,
-        name: art.name,
-        type: art.type,
-        url: art.url,
-        size: art.size,
-      });
-    }
+  await db('job_events').insert({
+    job_id: jobId,
+    type: 'final',
+    payload: JSON.stringify(payload),
+  });
+
+  const uploads = result.uploads || {};
+  for (const [artifactType, artifact] of Object.entries(uploads)) {
+    await db('job_artifacts').insert({
+      job_id: jobId,
+      name:
+        artifact?.path ||
+        artifact?.archive_path ||
+        artifact?.repo_id ||
+        artifactType,
+      type: artifactType,
+      path: artifact?.path || artifact?.archive_path || null,
+      url: artifact?.url || artifact?.download_url || artifact?.repo_id || null,
+      size: artifact?.size || null,
+    });
   }
 
   emitEvent('job_finalized', updated);
+  emitEvent('job_updated', updated);
+
   return { ok: true };
 }
 
 async function updateJobMetadata(jobId, { tags, notes }) {
   const current = await getJobById(jobId);
+  if (!current) throw new Error('Job not found');
+
   const next = await upsertJob({
     ...current,
     tags: tags !== undefined ? tags : current.tags,
     notes: notes !== undefined ? notes : current.notes,
   });
+
   emitEvent('job_updated', next);
   return next;
 }
 
 async function stopJob(jobId) {
   const job = await getJobById(jobId);
+  if (!job) throw new Error('Job not found');
 
   if (job.mode === 'remote') {
-    const updated = await upsertJob({ ...job, status: 'stopped', finishedAt: nowIso() });
+    const updated = await upsertJob({
+      ...job,
+      status: 'stopped',
+      currentStage: 'stopped',
+      finishedAt: nowIso(),
+    });
     emitEvent('job_updated', updated);
     return { ok: true, message: 'Stop signal sent to remote worker' };
   }
@@ -654,6 +809,7 @@ async function stopJob(jobId) {
   const next = await upsertJob({
     ...job,
     status: 'stopped',
+    currentStage: 'stopped',
     finishedAt: nowIso(),
     pid: null,
   });
@@ -672,14 +828,17 @@ async function getJobEvents(id) {
   const events = await db('job_events')
     .where({ job_id: id })
     .orderBy('created_at', 'asc');
-  return events.map(e => ({
-    ...e,
-    payload: e.payload ? JSON.parse(e.payload) : null
+
+  return events.map((event) => ({
+    ...event,
+    payload: safeJsonParse(event.payload, null),
   }));
 }
 
 async function getJobLogs(id, tail = 200) {
   const job = await getJobById(id);
+  if (!job) throw new Error('Job not found');
+
   if (job.mode === 'local') {
     const text = await readText(job.logFile, '');
     const lines = text.split('\n');
@@ -688,29 +847,40 @@ async function getJobLogs(id, tail = 200) {
       logFile: job.logFile,
       content: lines.slice(-tail).join('\n'),
     };
-  } else {
-    const logs = await db('job_logs')
-      .where({ job_id: id })
-      .orderBy('created_at', 'desc')
-      .limit(tail);
-    return {
-      id: job.id,
-      content: logs.reverse().map(l => l.content).join('\n'),
-    };
   }
+
+  const logs = await db('job_logs')
+    .where({ job_id: id })
+    .orderBy('created_at', 'desc')
+    .limit(tail);
+
+  return {
+    id: job.id,
+    content: logs.reverse().map((entry) => entry.content).join('\n'),
+  };
 }
 
 async function getJobLaunchCommand(id) {
   const job = await getJobById(id);
   if (!job) throw new Error('Job not found');
 
-  const hfToken = '${HF_TOKEN}';
-  const configUrl = job.jobConfigUrl;
+  if (job.mode !== 'remote') {
+    return 'Local jobs are started by the backend directly';
+  }
 
-  return `docker run --runtime=nvidia --gpus all \\
-  -e JOB_CONFIG_URL=${configUrl} \\
-  -e HF_TOKEN=${hfToken} \\
-  trainer-container-image`;
+  const callbackToken = await getOrCreateActiveCallbackToken(job.id);
+  const jobConfigUrl = `${job.jobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
+  const image = job.containerImage || 'itk-ai-trainer-service:qwen-7b';
+  const hfToken = '${HF_TOKEN}';
+
+  return [
+    'docker run --rm --gpus all \\',
+    '  --shm-size 16g \\',
+    `  -e JOB_CONFIG_URL="${jobConfigUrl}" \\`,
+    `  -e HF_TOKEN="${hfToken}" \\`,
+    '  -v /srv/llm-lab-remote-output:/output \\',
+    `  ${image}`,
+  ].join('\n');
 }
 
 async function startSyntheticGenJob(cfg) {

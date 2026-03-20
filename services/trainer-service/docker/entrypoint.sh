@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_LOCAL_CONFIG="/workspace/configs/trainer/job.json"
+DEFAULT_LOCAL_CONFIG="/configs/job.local.json"
 
 echo "==> trainer-service starting"
 
@@ -17,7 +17,7 @@ if [ -n "${JOB_CONFIG_URL:-}" ]; then
 fi
 
 CONFIG_SOURCE="${CONFIG_SOURCE:-local}"
-CONFIG_REF="${CONFIG_REF:-$DEFAULT_LOCAL_CONFIG}"
+CONFIG_REF="${CONFIG_REF:-}"
 
 if [ -n "${CONFIG_PATH:-}" ]; then
   CONFIG_REF="$CONFIG_PATH"
@@ -25,14 +25,25 @@ if [ -n "${CONFIG_PATH:-}" ]; then
 fi
 
 echo "==> config source: ${CONFIG_SOURCE}"
-echo "==> config ref: ${CONFIG_REF}"
+echo "==> config ref: ${CONFIG_REF:-<empty>}"
 echo "==> model path in image assumed at: /app"
 
-if [ "${CONFIG_SOURCE}" = "local" ]; then
-  if [ ! -f "${CONFIG_REF}" ]; then
-    echo "ERROR: local config file not found: ${CONFIG_REF}"
+if [ "${CONFIG_SOURCE}" = "remote" ]; then
+  if [ -z "${CONFIG_REF}" ]; then
+    echo "ERROR: CONFIG_REF is required when CONFIG_SOURCE=remote"
     exit 1
   fi
+
+  exec python /trainer/app/runner.py --config "${CONFIG_REF}"
+fi
+
+if [ -z "${CONFIG_REF}" ]; then
+  CONFIG_REF="${DEFAULT_LOCAL_CONFIG}"
+fi
+
+if [ ! -f "${CONFIG_REF}" ]; then
+  echo "ERROR: local config file not found: ${CONFIG_REF}"
+  exit 1
 fi
 
 exec python /trainer/app/runner.py --config "${CONFIG_REF}"
