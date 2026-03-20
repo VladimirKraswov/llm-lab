@@ -364,6 +364,14 @@ export type Job = {
 
   mode?: 'local' | 'remote';
   progressPercent?: number;
+
+  launch?: {
+    jobConfigUrl: string;
+    env: {
+      JOB_CONFIG_URL: string;
+    };
+    exampleDockerRun: string;
+  } | null;
 };
 
 export type WorkerItem = {

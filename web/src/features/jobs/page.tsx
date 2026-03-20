@@ -12,6 +12,7 @@ import { JobDetailsComparison } from '../../components/job-details-comparison';
 import { JobDetailsEval } from '../../components/job-details-eval';
 import { PageHeader } from '../../components/page-header';
 import { cn } from '../../lib/utils';
+import { CopyButton } from '../../components/copy-button';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { size?: string }) {
   return (
@@ -96,7 +97,10 @@ function JobListCard({
               <JobTypeBadge type={job.type} />
             </div>
 
-            <div className="mt-1 text-xs text-slate-500">{job.id}</div>
+            <div className="mt-1 flex items-center gap-2">
+              <span className="text-xs text-slate-500 font-mono">{job.id}</span>
+              <CopyButton text={job.id} className="h-4 w-4 px-0.5 py-0 border-none bg-transparent hover:bg-slate-800" />
+            </div>
 
             {isSynthetic ? (
               <div className="mt-2 text-xs text-slate-400">
@@ -550,6 +554,10 @@ export default function JobsPage() {
                     ) : (
                       <div className="flex items-center gap-3">
                         <span>{selectedJob.name}</span>
+                        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-slate-800/50 border border-slate-700/50">
+                           <span className="text-[10px] font-mono text-slate-400">{selectedJob.id}</span>
+                           <CopyButton text={selectedJob.id} className="h-4 w-4 px-0.5 py-0 border-none bg-transparent hover:bg-slate-700" />
+                        </div>
                         <JobTypeBadge type={selectedJob.type} />
                         <StatusBadge value={selectedJob.status} />
                       </div>

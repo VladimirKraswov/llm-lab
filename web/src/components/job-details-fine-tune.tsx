@@ -1,6 +1,8 @@
 import { Job } from '../lib/api';
 import { formatSize } from '../utils';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { CopyButton } from './copy-button';
+import { Terminal } from 'lucide-react';
 
 function fmtDate(value?: string | null) {
   if (!value) return '—';
@@ -19,6 +21,14 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
           <CardTitle>Fine-tune Job</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2 text-sm">
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Job ID</div>
+            <div className="mt-1 flex items-center gap-2">
+               <span className="text-white font-mono">{job.id}</span>
+               <CopyButton text={job.id} className="h-5 w-5 px-1 py-0.5" />
+            </div>
+          </div>
+
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Dataset</div>
             <div className="mt-1 text-white">{job.datasetId || '—'}</div>
@@ -40,6 +50,55 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
           </div>
         </CardContent>
       </Card>
+
+      {job.mode === 'remote' && job.launch && (
+        <Card className="border-blue-500/20 bg-blue-500/5">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Terminal size={18} className="text-blue-400" />
+              <CardTitle>Launch Trainer</CardTitle>
+            </div>
+            <CopyButton
+              text={job.launch.exampleDockerRun}
+              showLabel
+              size="md"
+              className="bg-blue-600 text-white border-blue-500 hover:bg-blue-500 hover:text-white"
+            >
+              Copy docker command
+            </CopyButton>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl bg-slate-950/40 p-3">
+                <div className="text-xs text-slate-500 flex items-center justify-between">
+                  <span>jobConfigUrl</span>
+                  <CopyButton text={job.launch.jobConfigUrl} />
+                </div>
+                <div className="mt-1 text-[10px] font-mono text-blue-300 truncate" title={job.launch.jobConfigUrl}>
+                  {job.launch.jobConfigUrl}
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-slate-950/40 p-3">
+                <div className="text-xs text-slate-500 flex items-center justify-between">
+                  <span>JOB_CONFIG_URL</span>
+                  <CopyButton text={job.launch.env.JOB_CONFIG_URL} />
+                </div>
+                <div className="mt-1 text-[10px] font-mono text-blue-300 truncate" title={job.launch.env.JOB_CONFIG_URL}>
+                  {job.launch.env.JOB_CONFIG_URL}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3">
+              <div className="text-xs text-slate-500 mb-2">Docker command</div>
+              <pre className="text-[10px] font-mono text-slate-300 whitespace-pre-wrap leading-relaxed">
+                {job.launch.exampleDockerRun}
+              </pre>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
