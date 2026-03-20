@@ -925,7 +925,7 @@ async function getJobLogs(id, tail = 200) {
     .orderBy('created_at', 'desc')
     .limit(tail);
 
-  const dbContent = logs.reverse().map((entry) => entry.content).join('\n').trim();
+  const dbContent = logs.reverse().map((entry) => entry.content).join('');
 
   if (dbContent) {
     return {

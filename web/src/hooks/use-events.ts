@@ -12,6 +12,40 @@ export function useEvents() {
     };
 
     source.addEventListener('job_updated', invalidate);
+    source.addEventListener('job_progress', (e: MessageEvent) => {
+      try {
+        const { payload } = JSON.parse(e.data) as { payload: { jobId: string } };
+        queryClient.invalidateQueries({ queryKey: ['job', payload.jobId] });
+        queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      } catch (err) {
+        console.error('Failed to handle job_progress event', err);
+      }
+    });
+    source.addEventListener('job_finalized', (e: MessageEvent) => {
+      try {
+        const { payload } = JSON.parse(e.data) as { payload: { id: string } };
+        queryClient.invalidateQueries({ queryKey: ['job', payload.id] });
+        queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      } catch (err) {
+        console.error('Failed to handle job_finalized event', err);
+      }
+    });
+    source.addEventListener('job_log_chunk', (e: MessageEvent) => {
+      try {
+        const { payload } = JSON.parse(e.data) as { payload: { jobId: string; logs: string } };
+        const { jobId, logs } = payload;
+        queryClient.setQueryData(['job-logs', jobId], (old: { id: string; content: string } | undefined) => {
+          if (!old) return { id: jobId, content: logs };
+          return {
+            ...old,
+            content: (old.content || '') + logs,
+          };
+        });
+      } catch (err) {
+        console.error('Failed to handle job_log_chunk event', err);
+      }
+    });
+
     source.addEventListener('dataset_created', invalidate);
     source.addEventListener('dataset_deleted', invalidate);
     source.addEventListener('runtime_started', invalidate);

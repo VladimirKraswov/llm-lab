@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, apiBase, type Job } from '../../lib/api';
@@ -294,6 +294,18 @@ export default function JobsPage() {
       (curr.summaryMetrics!.final_loss! < prev.summaryMetrics!.final_loss!) ? curr : prev,
     ).id;
   }, [compareJobs]);
+
+  const logContainerRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    const el = logContainerRef.current;
+    if (el) {
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+      if (isNearBottom) {
+        el.scrollTop = el.scrollHeight;
+      }
+    }
+  }, [logsQuery.data?.content]);
 
   return (
     <div className="space-y-4 h-[calc(100vh-140px)] flex flex-col overflow-hidden">
@@ -768,7 +780,10 @@ export default function JobsPage() {
                     <div className="text-[10px] text-slate-500 font-mono">Real-time output</div>
                   </CardHeader>
                   <CardContent className="p-0 flex-1 overflow-hidden bg-slate-950">
-                    <pre className="h-full overflow-auto whitespace-pre-wrap p-4 text-[11px] font-mono text-slate-300 leading-relaxed scrollbar-thin">
+                    <pre
+                      ref={logContainerRef}
+                      className="h-full overflow-auto whitespace-pre-wrap p-4 text-[11px] font-mono text-slate-300 leading-relaxed scrollbar-thin"
+                    >
                       {logsQuery.data?.content || 'No logs yet'}
                     </pre>
                   </CardContent>
