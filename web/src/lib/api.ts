@@ -315,37 +315,56 @@ export type JobProgress = {
   updatedAt?: string;
 };
 
-export interface Job {
+export type Job = {
   id: string;
-  name: string;
   type: string;
-  status: string;
+  name: string;
+  status: JobStatus;
   createdAt: string;
-  startedAt?: string;
-  finishedAt?: string;
-  outputDir?: string;
-  logFile?: string;
-  baseModel?: string;
+  startedAt: string | null;
+  finishedAt: string | null;
   datasetId?: string;
-  modelId?: string;
+  datasetPath?: string;
+  modelId?: string | null;
+  baseModel?: string;
+  qlora?: Partial<Settings['qlora']>;
+  outputDir: string;
+  logFile: string;
+  pid: number | null;
+  error: string | null;
   paramsSnapshot?: any;
-  summaryMetrics?: any;
-  error?: string;
-  artifacts?: any[];
+  modelPath?: string;
+  datasetSnapshot?: {
+    path: string;
+    size: number;
+    mtime: string | null;
+    hash?: string | null;
+  };
+  modelSnapshot?: any;
+  envSnapshot?: {
+    python: string;
+    torch: string;
+    transformers: string;
+    unsloth: string;
+  };
   tags?: string[];
   notes?: string;
+  artifacts?: Array<{ name: string; size: number; path: string }>;
+  progressStep?: string;
+  progress?: JobProgress;
+  runner?: string;
+  summaryMetrics?: SummaryMetrics;
+  resultDatasetId?: string | null;
+  syntheticMeta?: SyntheticMeta;
+  workerId?: string | null;
+  jobConfigUrl?: string | null;
+  hfRepoIdLora?: string | null;
+  hfRepoIdMerged?: string | null;
+  hfRepoIdMetadata?: string | null;
 
-  // Добавляем недостающие поля
-  mode?: 'local' | 'remote';           // строка 114, 130, 659
-  progressPercent?: number;            // строка 130, 131
-  hfRepoIdLora?: string;               // строка 659
-  hfRepoIdMerged?: string;             // строка 659
-  workerId?: string;                   // используется в JobListCard
-  runner?: string;                     // используется в JobListCard
-  syntheticMeta?: any;                 // используется в JobListCard
-  progressStep?: string;               // используется в JobListCard
-  qlora?: any;                         // используется в сравнении
-}
+  mode?: 'local' | 'remote';
+  progressPercent?: number;
+};
 
 export type WorkerItem = {
   id: string;
