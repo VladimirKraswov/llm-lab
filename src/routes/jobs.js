@@ -183,7 +183,7 @@ router.post('/remote-train', roleMiddleware(['admin', 'member']), async (req, re
   }
 });
 
-router.post('/:id/retry', async (req, res) => {
+router.post('/:id/retry', roleMiddleware(['admin', 'member']), async (req, res) => {
   try {
     res.json(await retryJob(req.params.id));
   } catch (err) {

@@ -884,6 +884,10 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
+  retryJob: (id: string) =>
+    request<Job>(`/jobs/${id}/retry`, {
+      method: 'POST',
+    }),
 
   getSyntheticJobPreview: (jobId: string, limit = 20) =>
     request<SyntheticJobPreviewResponse>(`/synthetic/jobs/${jobId}/preview?limit=${limit}`),

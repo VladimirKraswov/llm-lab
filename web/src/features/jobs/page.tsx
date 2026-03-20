@@ -202,6 +202,14 @@ export default function JobsPage() {
     },
   });
 
+  const retryMutation = useMutation({
+    mutationFn: api.retryJob,
+    onSuccess: async (newJob) => {
+      await qc.invalidateQueries({ queryKey: ['jobs'] });
+      setSelectedId(newJob.id);
+    },
+  });
+
   const useOutputMutation = useMutation({
     mutationFn: ({ jobId }: { jobId: string }) => api.useJobOutput(jobId),
     onSuccess: async () => {
@@ -812,6 +820,16 @@ export default function JobsPage() {
                       >
                         Stop
                       </Button>
+
+                      {(selectedJob.status === 'failed' || selectedJob.status === 'stopped') && (
+                        <Button
+                          onClick={() => retryMutation.mutate(selectedJob.id)}
+                          disabled={retryMutation.isPending}
+                          className="bg-amber-600 hover:bg-amber-500"
+                        >
+                          {retryMutation.isPending ? 'Retrying...' : 'Retry'}
+                        </Button>
+                      )}
 
                       <Button
                         onClick={() => useOutputMutation.mutate({ jobId: selectedJob.id })}

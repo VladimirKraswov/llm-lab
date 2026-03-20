@@ -1,0 +1,2 @@
+{"timestamp":"2026-03-20T17:09:15.526Z","level":"info","message":"Background reconcile started","runId":"reconcile_faa163c855a2","reason":"startup"}
+{"timestamp":"2026-03-20T17:09:15.553Z","level":"info","message":"Background reconcile completed","runId":"reconcile_faa163c855a2","reason":"startup","startedAt":"2026-03-20T17:09:15.525Z","finishedAt":"2026-03-20T17:09:15.553Z","models":{"totalAfter":0,"added":0,"updated":0,"removed":0,"preservedActive":0},"loras":{"totalAfter":0,"added":0,"updated":0,"removed":0,"preservedActive":0}}

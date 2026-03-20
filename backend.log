@@ -1,0 +1,51 @@
+
+> llm-lab-service@0.2.0 start
+> node src/server.js
+
+Initializing workspace...
+Initializing database...
+Initializing database (sqlite3)...
+Running migrations...
+Seeding admin user...
+Recovering state...
+Starting Express app...
+LLM Lab Service listening on http://0.0.0.0:8787
+Workspace: /app/test_workspace
+Python: /opt/deepseek-workspace/environments/ml_env/bin/python
+Web UI origin: *
+Background reconcile scheduled: {
+  ok: true,
+  started: true,
+  runId: 'reconcile_faa163c855a2',
+  status: {
+    isRunning: true,
+    currentRunId: 'reconcile_faa163c855a2',
+    lastRunId: 'reconcile_faa163c855a2',
+    lastReason: 'startup',
+    lastStartedAt: '2026-03-20T17:09:15.524Z',
+    lastFinishedAt: null,
+    lastError: null,
+    lastResult: null
+  }
+}
+2026-03-20T17:09:15.526Z [32mINFO[0m: Background reconcile started { runId: 'reconcile_faa163c855a2', reason: 'startup' }
+2026-03-20T17:09:15.554Z [32mINFO[0m: Background reconcile completed {
+  runId: 'reconcile_faa163c855a2',
+  reason: 'startup',
+  startedAt: '2026-03-20T17:09:15.525Z',
+  finishedAt: '2026-03-20T17:09:15.553Z',
+  models: {
+    totalAfter: 0,
+    added: 0,
+    updated: 0,
+    removed: 0,
+    preservedActive: 0
+  },
+  loras: {
+    totalAfter: 0,
+    added: 0,
+    updated: 0,
+    removed: 0,
+    preservedActive: 0
+  }
+}
