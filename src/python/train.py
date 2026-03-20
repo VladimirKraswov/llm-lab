@@ -357,13 +357,22 @@ def main():
 
     report(5)
 
+    model_source = cfg.get("modelSource", "auto")
+    base_model_path = cfg["baseModel"]
+
+    # If modelSource is 'local', we ensure we don't attempt to download from HF
+    # but use the provided local path directly.
+    if model_source == "local":
+        print(f"Using local baked-in model from: {base_model_path}")
+
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=cfg["baseModel"],
+        model_name=base_model_path,
         max_seq_length=qlora_cfg["maxSeqLength"],
         dtype=None,
         load_in_4bit=bool(qlora_cfg.get("loadIn4bit", True)),
         trust_remote_code=trust_remote_code,
         device_map={"": 0},
+        local_files_only=(model_source == "local"),
     )
 
     if tokenizer.pad_token is None:

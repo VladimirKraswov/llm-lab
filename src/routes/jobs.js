@@ -73,6 +73,10 @@ router.get('/:id/launch-command', async (req, res) => {
 
 router.post('/remote-train', roleMiddleware(['admin', 'member']), async (req, res) => {
   try {
+    const { datasetId } = req.body;
+    if (!datasetId) {
+      return res.status(400).json({ error: 'datasetId is required' });
+    }
     res.json(await createRemoteJob(req.body || {}));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
