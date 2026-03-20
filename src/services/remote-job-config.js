@@ -36,6 +36,18 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
     throw new Error('callbackBaseUrl is empty');
   }
 
+  const logicalBaseModelId = String(job.baseModel || '').trim();
+
+  if (
+    hfPublish.enabled &&
+    (!logicalBaseModelId || logicalBaseModelId.startsWith('/'))
+  ) {
+    throw new Error(
+      `Remote job ${job.id} has invalid baseModel for Hugging Face publish: "${logicalBaseModelId}". ` +
+      `Expected HF model id like "Qwen/Qwen2.5-7B-Instruct".`
+    );
+  }
+
   const trainUrl = joinUrl(
     callbackBaseUrl,
     `/api/jobs/${job.id}/dataset/train?token=${encodeURIComponent(callbackAuthToken)}`
@@ -59,7 +71,15 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
 
     model: {
       source: 'local',
+
+      // Фактическая baked model внутри trainer container
       local_path: CONFIG.remoteBakedModelPath,
+
+      // Логическая базовая модель для metadata / README / HF upload
+      base_model: logicalBaseModelId,
+      base_model_name_or_path: logicalBaseModelId,
+      repo_id: logicalBaseModelId,
+
       trust_remote_code: false,
       load_in_4bit: loadIn4bit,
       dtype: 'bfloat16',

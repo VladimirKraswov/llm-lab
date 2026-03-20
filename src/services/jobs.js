@@ -24,7 +24,6 @@ const {
 } = require('../utils/managed-processes');
 const { db } = require('../db');
 const { generateCallbackToken } = require('./auth');
-const { buildRemoteTrainerConfig } = require('./remote-job-config');
 
 function safeJsonParse(value, fallback = null) {
   if (value === null || value === undefined || value === '') {
@@ -164,22 +163,40 @@ function getArtifacts(outputDir) {
 }
 
 function validateQLoraParams(params) {
-  if (params.learningRate !== undefined && (typeof params.learningRate !== 'number' || params.learningRate <= 0)) {
+  if (
+    params.learningRate !== undefined &&
+    (typeof params.learningRate !== 'number' || params.learningRate <= 0)
+  ) {
     throw new Error('learningRate must be a positive number');
   }
-  if (params.numTrainEpochs !== undefined && (!Number.isInteger(params.numTrainEpochs) || params.numTrainEpochs < 1)) {
+  if (
+    params.numTrainEpochs !== undefined &&
+    (!Number.isInteger(params.numTrainEpochs) || params.numTrainEpochs < 1)
+  ) {
     throw new Error('numTrainEpochs must be an integer >= 1');
   }
-  if (params.perDeviceTrainBatchSize !== undefined && (!Number.isInteger(params.perDeviceTrainBatchSize) || params.perDeviceTrainBatchSize < 1)) {
+  if (
+    params.perDeviceTrainBatchSize !== undefined &&
+    (!Number.isInteger(params.perDeviceTrainBatchSize) || params.perDeviceTrainBatchSize < 1)
+  ) {
     throw new Error('perDeviceTrainBatchSize must be an integer >= 1');
   }
-  if (params.gradientAccumulationSteps !== undefined && (!Number.isInteger(params.gradientAccumulationSteps) || params.gradientAccumulationSteps < 1)) {
+  if (
+    params.gradientAccumulationSteps !== undefined &&
+    (!Number.isInteger(params.gradientAccumulationSteps) || params.gradientAccumulationSteps < 1)
+  ) {
     throw new Error('gradientAccumulationSteps must be an integer >= 1');
   }
-  if (params.num_train_epochs !== undefined && (!Number.isInteger(params.num_train_epochs) || params.num_train_epochs < 1)) {
+  if (
+    params.num_train_epochs !== undefined &&
+    (!Number.isInteger(params.num_train_epochs) || params.num_train_epochs < 1)
+  ) {
     throw new Error('num_train_epochs must be an integer >= 1');
   }
-  if (params.per_device_train_batch_size !== undefined && (!Number.isInteger(params.per_device_train_batch_size) || params.per_device_train_batch_size < 1)) {
+  if (
+    params.per_device_train_batch_size !== undefined &&
+    (!Number.isInteger(params.per_device_train_batch_size) || params.per_device_train_batch_size < 1)
+  ) {
     throw new Error('per_device_train_batch_size must be an integer >= 1');
   }
 }
@@ -535,7 +552,17 @@ async function createRemoteJob(payload, options = {}) {
 
   const jobId = uid('job');
   const jobName = String(name || jobId).trim();
-  const selectedBaseModel = baseModel || CONFIG.remoteBakedModelPath || '/app';
+
+  // ЛОГИЧЕСКАЯ базовая модель для metadata / HF publish.
+  // Не должна быть /app.
+  const selectedBaseModel = String(
+    baseModel || settings.baseModel || CONFIG.defaultBaseModel
+  ).trim();
+
+  if (!selectedBaseModel) {
+    throw new Error('baseModel is required');
+  }
+
   const effectiveQlora = { ...settings.qlora, ...(qlora || {}) };
   const effectiveHfPublish = hfPublish || {};
   const effectiveTrainerImage = trainerImage || 'itk-ai-trainer-service:qwen-7b';
@@ -570,8 +597,7 @@ async function createRemoteJob(payload, options = {}) {
 
   const savedJob = await upsertJob(initialJob);
   const callbackToken = await getOrCreateActiveCallbackToken(jobId);
-  const launchJobConfigUrl =
-    `${baseJobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
+  const launchJobConfigUrl = `${baseJobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
 
   return {
     ...savedJob,
@@ -899,9 +925,27 @@ async function getJobLogs(id, tail = 200) {
     .orderBy('created_at', 'desc')
     .limit(tail);
 
+  const dbContent = logs.reverse().map((entry) => entry.content).join('\n').trim();
+
+  if (dbContent) {
+    return {
+      id: job.id,
+      content: dbContent,
+    };
+  }
+
+  const fallback = [
+    job.lastStatusPayload?.logs || '',
+    job.lastProgressPayload?.logs || '',
+    job.finalPayload?.result?.logs || '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+
   return {
     id: job.id,
-    content: logs.reverse().map((entry) => entry.content).join('\n'),
+    content: fallback,
   };
 }
 
