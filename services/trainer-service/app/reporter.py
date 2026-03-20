@@ -4,8 +4,7 @@ import logging
 import time
 from typing import Any, Dict, List
 
-import requests
-
+from archiver import build_retry_session
 from schemas import CallbackConfig, JobConfig
 
 logger = logging.getLogger(__name__)
@@ -16,6 +15,7 @@ class Reporter:
         self.cfg = cfg
         self.job_name = cfg.job_name
         self.job_id = cfg.job_id or cfg.job_name
+        self.session = build_retry_session(total_retries=2)
 
     def _build_headers(self, callback: CallbackConfig) -> Dict[str, str]:
         headers: Dict[str, str] = {"Content-Type": "application/json"}
@@ -62,11 +62,11 @@ class Reporter:
         for callback in callbacks:
             try:
                 logger.info("==> reporting %s to %s", event_kind, callback.url)
-                response = requests.post(
+                response = self.session.post(
                     callback.url,
                     json=payload,
                     headers=self._build_headers(callback),
-                    timeout=callback.timeout_sec,
+                    timeout=(5, callback.timeout_sec),
                 )
                 response.raise_for_status()
             except Exception as exc:

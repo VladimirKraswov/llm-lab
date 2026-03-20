@@ -213,14 +213,14 @@ class UrlArtifactTargets(AppBaseModel):
 class UploadConfig(AppBaseModel):
     enabled: bool = False
     target: Literal["local", "huggingface", "url"] = "local"
-    upload_url: Optional[str] = None  # legacy: full archive upload
+    upload_url: Optional[str] = None
     timeout_sec: int = 120
     auth: AuthConfig = Field(default_factory=AuthConfig)
     url_targets: UrlArtifactTargets = Field(default_factory=UrlArtifactTargets)
 
-    # legacy compatibility for old configs
     repo_id_lora: Optional[str] = None
     repo_id_merged: Optional[str] = None
+    repo_id_metadata: Optional[str] = None
     private: bool = True
     commit_message: str = "trainer-service upload"
 
@@ -231,6 +231,7 @@ class HuggingFacePublishConfig(AppBaseModel):
     push_merged: bool = False
     repo_id_lora: Optional[str] = None
     repo_id_merged: Optional[str] = None
+    repo_id_metadata: Optional[str] = None
     private: bool = True
     commit_message: str = "trainer-service upload"
     revision: Optional[str] = None
@@ -253,5 +254,4 @@ class JobConfig(AppBaseModel):
     huggingface: HuggingFacePublishConfig = Field(default_factory=HuggingFacePublishConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
 
-    # legacy compatibility
     report_url: Optional[str] = None

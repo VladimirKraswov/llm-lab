@@ -10,6 +10,12 @@ if [ "$#" -gt 0 ]; then
   exec python /trainer/app/runner.py "$@"
 fi
 
+if [ -n "${JOB_CONFIG_URL:-}" ]; then
+  echo "==> remote bootstrap via JOB_CONFIG_URL"
+  echo "==> job config url: ${JOB_CONFIG_URL}"
+  exec python /trainer/app/runner.py --job-config-url "${JOB_CONFIG_URL}"
+fi
+
 CONFIG_SOURCE="${CONFIG_SOURCE:-local}"
 CONFIG_REF="${CONFIG_REF:-$DEFAULT_LOCAL_CONFIG}"
 

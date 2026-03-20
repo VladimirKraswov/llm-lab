@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/services/trainer-service
 ignore: .codebun)dleignore
-generated: 2026-03-19T20:22:22.414Z
+generated: 2026-03-20T06:01:01.181Z
 
 
 
@@ -1787,6 +1787,7 @@ path: /app/train_runner.py
 ----------------------------------------
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import math
@@ -1796,11 +1797,13 @@ from typing import Any, Dict, Optional
 
 os.environ["WANDB_DISABLED"] = "true"
 
+import unsloth
+from unsloth import FastLanguageModel
+
 import torch
 from datasets import load_dataset
 from transformers import TrainerCallback, TrainingArguments
 from trl import SFTTrainer
-from unsloth import FastLanguageModel
 
 from reporter import Reporter
 from schemas import JobConfig
@@ -1832,10 +1835,11 @@ def resolve_model_args(cfg: JobConfig) -> tuple[str, bool]:
     if not model_name:
         raise ValueError("Model path/repo_id is empty")
 
-    if cfg.model.load_in_4bit is not None:
-        load_in_4bit = bool(cfg.model.load_in_4bit)
-    else:
-        load_in_4bit = cfg.training.method == "qlora"
+    load_in_4bit = (
+        bool(cfg.model.load_in_4bit)
+        if cfg.model.load_in_4bit is not None
+        else (cfg.training.method == "qlora")
+    )
 
     return model_name, load_in_4bit
 
@@ -1914,15 +1918,13 @@ class TrainingProgressCallback(TrainerCallback):
             return
 
         max_steps = int(state.max_steps or 0)
-        progress = None
-        if max_steps > 0:
-            progress = round((int(state.global_step) / max_steps) * 100, 2)
+        progress = round((int(state.global_step) / max_steps) * 100, 2) if max_steps > 0 else None
 
         payload = {
             "step": int(state.global_step),
             "epoch": safe_float(state.epoch),
+            **logs,
         }
-        payload.update({k: v for k, v in logs.items()})
 
         self.reporter.report_progress(
             stage="training",
@@ -1936,9 +1938,7 @@ class TrainingProgressCallback(TrainerCallback):
             return
 
         max_steps = int(state.max_steps or 0)
-        progress = None
-        if max_steps > 0:
-            progress = round((int(state.global_step) / max_steps) * 100, 2)
+        progress = round((int(state.global_step) / max_steps) * 100, 2) if max_steps > 0 else None
 
         self.reporter.report_progress(
             stage="training",
@@ -1960,33 +1960,85 @@ class TrainingProgressCallback(TrainerCallback):
 
 
 def _build_training_args(cfg: JobConfig, checkpoint_dir: str, has_validation: bool) -> TrainingArguments:
-    common_kwargs = dict(
-        output_dir=checkpoint_dir,
-        per_device_train_batch_size=cfg.training.per_device_train_batch_size,
-        gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
-        warmup_ratio=cfg.training.warmup_ratio,
-        num_train_epochs=cfg.training.num_train_epochs,
-        learning_rate=cfg.training.learning_rate,
-        bf16=cfg.training.bf16,
-        fp16=not cfg.training.bf16,
-        logging_steps=cfg.training.logging_steps,
-        save_steps=cfg.training.save_steps,
-        save_strategy="steps",
-        save_total_limit=cfg.training.save_total_limit,
-        optim=cfg.training.optim,
-        report_to=[],
-        push_to_hub=False,
-        save_safetensors=True,
-        logging_dir=cfg.outputs.logs_dir,
-    )
+    common_kwargs = {
+        "output_dir": checkpoint_dir,
+        "per_device_train_batch_size": cfg.training.per_device_train_batch_size,
+        "gradient_accumulation_steps": cfg.training.gradient_accumulation_steps,
+        "warmup_ratio": cfg.training.warmup_ratio,
+        "num_train_epochs": cfg.training.num_train_epochs,
+        "learning_rate": cfg.training.learning_rate,
+        "bf16": cfg.training.bf16,
+        "fp16": not cfg.training.bf16,
+        "logging_steps": cfg.training.logging_steps,
+        "save_steps": cfg.training.save_steps,
+        "save_strategy": "steps",
+        "save_total_limit": cfg.training.save_total_limit,
+        "optim": cfg.training.optim,
+        "report_to": [],
+        "push_to_hub": False,
+        "logging_dir": cfg.outputs.logs_dir,
+    }
+
+    sig = inspect.signature(TrainingArguments.__init__)
+    supported = set(sig.parameters.keys())
+
+    filtered_kwargs = {k: v for k, v in common_kwargs.items() if k in supported}
 
     if has_validation:
-        common_kwargs["evaluation_strategy"] = "steps"
-        common_kwargs["eval_steps"] = cfg.training.eval_steps
-    else:
-        common_kwargs["evaluation_strategy"] = "no"
+        if "eval_steps" in supported:
+            filtered_kwargs["eval_steps"] = cfg.training.eval_steps
 
-    return TrainingArguments(**common_kwargs)
+        if "eval_strategy" in supported:
+            filtered_kwargs["eval_strategy"] = "steps"
+        elif "evaluation_strategy" in supported:
+            filtered_kwargs["evaluation_strategy"] = "steps"
+    else:
+        if "eval_strategy" in supported:
+            filtered_kwargs["eval_strategy"] = "no"
+        elif "evaluation_strategy" in supported:
+            filtered_kwargs["evaluation_strategy"] = "no"
+
+    if "save_safetensors" in supported:
+        filtered_kwargs["save_safetensors"] = True
+
+    return TrainingArguments(**filtered_kwargs)
+
+
+def _build_sft_trainer(
+    cfg: JobConfig,
+    model,
+    tokenizer,
+    train_dataset,
+    eval_dataset,
+    training_args: TrainingArguments,
+):
+    sig = inspect.signature(SFTTrainer.__init__)
+    supported = set(sig.parameters.keys())
+
+    kwargs = {
+        "model": model,
+        "args": training_args,
+        "train_dataset": train_dataset,
+    }
+
+    if eval_dataset is not None and "eval_dataset" in supported:
+        kwargs["eval_dataset"] = eval_dataset
+
+    if "processing_class" in supported:
+        kwargs["processing_class"] = tokenizer
+    elif "tokenizer" in supported:
+        kwargs["tokenizer"] = tokenizer
+
+    if "dataset_text_field" in supported:
+        kwargs["dataset_text_field"] = "text"
+
+    if "packing" in supported:
+        kwargs["packing"] = cfg.training.packing
+
+    if "max_seq_length" in supported:
+        kwargs["max_seq_length"] = cfg.training.max_seq_length
+
+    return SFTTrainer(**kwargs)
 
 
 def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
@@ -1996,6 +2048,7 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
 
     logger.info("==> loading model: %s", model_name)
     logger.info("==> method: %s", cfg.training.method)
+
     if reporter:
         reporter.report_status(
             "running",
@@ -2071,26 +2124,14 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
         has_validation="validation" in dataset,
     )
 
-    try:
-        trainer = SFTTrainer(
-            model=model,
-            processing_class=tokenizer,
-            train_dataset=dataset["train"],
-            eval_dataset=dataset["validation"] if "validation" in dataset else None,
-            args=training_args,
-            dataset_text_field="text",
-            packing=cfg.training.packing,
-        )
-    except TypeError:
-        trainer = SFTTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=dataset["train"],
-            eval_dataset=dataset["validation"] if "validation" in dataset else None,
-            args=training_args,
-            dataset_text_field="text",
-            packing=cfg.training.packing,
-        )
+    trainer = _build_sft_trainer(
+        cfg=cfg,
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset["train"],
+        eval_dataset=dataset["validation"] if "validation" in dataset else None,
+        training_args=training_args,
+    )
 
     trainer.add_callback(TrainingProgressCallback(reporter))
 
@@ -2174,6 +2215,7 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
         json.dump(train_summary, f, indent=2, ensure_ascii=False)
 
     logger.info("==> training artifacts saved")
+
     if reporter:
         reporter.report_status(
             "running",
@@ -2497,18 +2539,17 @@ RUN python3 -m venv /opt/venv
 
 WORKDIR /trainer
 
-# Копируем локальные wheel-файлы PyTorch (cp312)
+# Копируем все предварительно скачанные wheel-файлы
 COPY packages/pip /wheels/pip
-
 COPY requirements.txt /trainer/requirements.txt
 
 RUN pip install -U pip setuptools wheel
 
-# Установка PyTorch из локальных wheel (без интернета!)
-RUN pip install /wheels/pip/*.whl --no-index --no-deps --break-system-packages
-
-# Установка остальных зависимостей (torch уже стоит → pip пропустит)
-RUN pip install -r /trainer/requirements.txt --break-system-packages
+# Устанавливаем только те пакеты, которые указаны в requirements.txt,
+# используя локальные колёса (--find-links) и без обращения в интернет (--no-index).
+# Pip сам разрешит и установит все необходимые зависимости (включая транзитивные,
+# такие как urllib3, idna и т.д.) из папки /wheels/pip.
+RUN pip install -r /trainer/requirements.txt --no-index --find-links /wheels/pip --break-system-packages
 
 COPY app /trainer/app
 COPY docker/entrypoint.sh /trainer/entrypoint.sh
@@ -3543,11 +3584,10 @@ path: /requirements.txt
 ----------------------------------------
 unsloth
 unsloth-zoo
-
 bitsandbytes>=0.45.0
-xformers==0.0.32.post2
-
-transformers>=4.48.0
+xformers==0.0.35
+transformers>=4.48.0,<5
+tokenizers<0.22
 datasets>=3.6.0
 accelerate>=1.10.1
 trl>=0.19.0
@@ -3563,4 +3603,4 @@ included: 25
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 104902
+totalBytes(approx): 106205

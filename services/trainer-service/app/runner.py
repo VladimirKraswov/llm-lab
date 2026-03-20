@@ -7,32 +7,56 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 from archiver import Archiver
 from artifact_uploader import ArtifactUploader
 from asset_manager import AssetManager
+from bootstrap_loader import load_remote_job_config
 from config_loader import load_config
 from eval_runner import run_evaluation
 from hf_utils import try_hf_login
+from log_streamer import LogStreamer
 from reporter import Reporter
 from train_runner import run_training
 
 logger = logging.getLogger(__name__)
 
 
-def setup_logging(logs_dir: str):
+def setup_logging(
+    logs_dir: str,
+    job_id: Optional[str] = None,
+    job_name: Optional[str] = None,
+    logs_url: Optional[str] = None,
+    logs_bearer_token: Optional[str] = None,
+):
     logs_path = Path(logs_dir)
     logs_path.mkdir(parents=True, exist_ok=True)
     log_file = logs_path / "trainer.log"
 
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(log_file),
+        logging.StreamHandler(sys.stdout),
+    ]
+
+    if logs_url and job_id and job_name:
+        streamer = LogStreamer(
+            logs_url=logs_url,
+            job_id=job_id,
+            job_name=job_name,
+            bearer_token=logs_bearer_token,
+        )
+        streamer.setFormatter(formatter)
+        handlers.append(streamer)
+
+    for handler in handlers:
+        handler.setFormatter(formatter)
+
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout),
-        ],
+        handlers=handlers,
         force=True,
     )
     return log_file
@@ -56,19 +80,44 @@ def write_json(path: Path, payload: Dict[str, Any]) -> None:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
+def resolve_config(args) -> Tuple[Any, str, Dict[str, Any]]:
+    if args.job_config_url:
+        cfg, meta = load_remote_job_config(args.job_config_url)
+        return cfg, args.job_config_url, meta
+
+    if args.config:
+        cfg = load_config(args.config)
+        return cfg, args.config, {}
+
+    raise ValueError("Either --config or --job-config-url must be provided")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
+    parser.add_argument("--config", required=False)
+    parser.add_argument("--job-config-url", required=False)
     args = parser.parse_args()
 
     try:
-        cfg = load_config(args.config)
+        cfg, config_source, bootstrap_meta = resolve_config(args)
     except Exception as exc:
-        print(f"ERROR: failed to load config: {exc}")
+        print(f"ERROR: failed to resolve config: {exc}")
         sys.exit(1)
 
     Path(cfg.outputs.base_dir).mkdir(parents=True, exist_ok=True)
-    log_file = setup_logging(cfg.outputs.logs_dir)
+
+    log_file = setup_logging(
+        cfg.outputs.logs_dir,
+        job_id=cfg.job_id or cfg.job_name,
+        job_name=cfg.job_name,
+        logs_url=bootstrap_meta.get("logs_url"),
+        logs_bearer_token=(
+            bootstrap_meta.get("callback_auth_token")
+            or cfg.reporting.status.auth.bearer_token
+            or cfg.reporting.progress.auth.bearer_token
+            or cfg.reporting.final.auth.bearer_token
+        ),
+    )
 
     reporter = Reporter(cfg)
     asset_manager = AssetManager(cfg)
@@ -81,20 +130,27 @@ def main():
     started_at = utc_now_iso()
 
     try:
-        reporter.report_status("started", message="Training pipeline started", stage="bootstrap", progress=0)
+        reporter.report_status(
+            "started",
+            message="Training pipeline started",
+            stage="bootstrap",
+            progress=0,
+        )
 
         write_json(effective_config_path, json.loads(cfg.model_dump_json()))
         logger.info("==> config loaded")
         logger.info("==> job_name: %s", cfg.job_name)
         logger.info("==> job_id: %s", cfg.job_id or cfg.job_name)
+        logger.info("==> config source: %s", config_source)
 
         reporter.report_status(
             "running",
-            message="Logging in to Hugging Face if token is present",
+            message="Validating Hugging Face access",
             stage="hf_login",
             progress=2,
         )
         try_hf_login()
+        uploader.ensure_hf_ready()
 
         logger.info("==> preparing assets")
         reporter.report_status(
@@ -125,7 +181,7 @@ def main():
             "job_name": cfg.job_name,
             "started_at": started_at,
             "finished_at": utc_now_iso(),
-            "config_source": args.config,
+            "config_source": config_source,
             "training": training_result,
             "evaluation": evaluation_result,
             "artifacts": {
@@ -134,55 +190,87 @@ def main():
                 "result_path": str(result_path),
             },
             "uploads": {},
+            "upload_errors": {},
         }
 
-        # legacy full archive upload
         if cfg.upload.enabled and cfg.upload.target == "url" and cfg.upload.upload_url:
             logger.info("==> legacy full archive upload")
-            archive_path = Path(cfg.outputs.base_dir) / f"{cfg.job_name}.tar.gz"
-            archiver.make_archive(cfg.outputs.base_dir, str(archive_path))
-            archiver.upload_archive(
-                str(archive_path),
-                cfg.upload.upload_url,
-                headers=uploader._headers(),
-                form_data={
-                    "job_id": cfg.job_id or cfg.job_name,
-                    "job_name": cfg.job_name,
-                    "artifact_type": "full_archive",
-                },
-                timeout_sec=cfg.upload.timeout_sec,
+            try:
+                archive_path = Path(cfg.outputs.base_dir) / f"{cfg.job_name}.tar.gz"
+                archiver.make_archive(cfg.outputs.base_dir, str(archive_path))
+                archiver.upload_archive(
+                    str(archive_path),
+                    cfg.upload.upload_url,
+                    headers=uploader._headers(),
+                    form_data={
+                        "job_id": cfg.job_id or cfg.job_name,
+                        "job_name": cfg.job_name,
+                        "artifact_type": "full_archive",
+                    },
+                    timeout_sec=cfg.upload.timeout_sec,
+                )
+                result["uploads"]["legacy_full_archive"] = {
+                    "url": cfg.upload.upload_url,
+                    "archive_path": str(archive_path),
+                }
+            except Exception as exc:
+                logger.exception("legacy full archive upload failed")
+                result["upload_errors"]["legacy_full_archive"] = str(exc)
+
+        if cfg.upload.enabled and cfg.upload.target == "url":
+            reporter.report_status(
+                "running",
+                message="Uploading URL artifacts",
+                stage="upload_artifacts",
+                progress=97,
             )
-            result["uploads"]["legacy_full_archive"] = {
-                "url": cfg.upload.upload_url,
-                "archive_path": str(archive_path),
-            }
+            extra_uploads, extra_upload_errors = uploader.upload_non_summary_artifacts(
+                log_file=str(log_file),
+                effective_config_path=str(effective_config_path),
+                training_result=training_result,
+                eval_result=evaluation_result,
+            )
+            if extra_uploads:
+                result["uploads"].update(extra_uploads)
+            if extra_upload_errors:
+                result["upload_errors"].update(extra_upload_errors)
 
         write_json(result_path, result)
 
-        extra_uploads = uploader.upload_non_summary_artifacts(
+        reporter.report_status(
+            "running",
+            message="Publishing artifacts to Hugging Face",
+            stage="publish_artifacts",
+            progress=98,
+        )
+
+        hf_model_uploads = uploader.upload_to_huggingface(training_result)
+        if hf_model_uploads:
+            result["uploads"].update(hf_model_uploads)
+            write_json(result_path, result)
+
+        hf_metadata_uploads = uploader.upload_hf_metadata(
             log_file=str(log_file),
             effective_config_path=str(effective_config_path),
+            result_path=str(result_path),
             training_result=training_result,
             eval_result=evaluation_result,
         )
-        if extra_uploads:
-            result["uploads"].update(extra_uploads)
-
-        hf_uploads = uploader.upload_to_huggingface(training_result)
-        if hf_uploads:
-            result["uploads"].update(hf_uploads)
-
-        write_json(result_path, result)
-
-        summary_upload = uploader.upload_summary(str(result_path))
-        if summary_upload:
-            result["uploads"].update(summary_upload)
+        if hf_metadata_uploads:
+            result["uploads"].update(hf_metadata_uploads)
             write_json(result_path, result)
+
+        if result["upload_errors"]:
+            logger.warning("==> pipeline finished with upload warnings: %s", result["upload_errors"])
 
         logger.info("==> pipeline finished successfully")
         reporter.report_status(
             "finished",
-            message="Training pipeline finished successfully",
+            message=(
+                "Training pipeline finished successfully"
+                if not result["upload_errors"]
+                else "Training completed, but some URL artifact uploads failed"
+            ),
             stage="finished",
             progress=100,
         )
@@ -205,7 +293,7 @@ def main():
             "job_name": cfg.job_name,
             "started_at": started_at,
             "finished_at": utc_now_iso(),
-            "config_source": args.config,
+            "config_source": config_source,
             "error": error_msg,
             "artifacts": {
                 "log_file": str(log_file),
