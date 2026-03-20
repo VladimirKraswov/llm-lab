@@ -3,6 +3,17 @@ const { registerWorker, heartbeat, getJobForWorker } = require('../services/work
 const { db } = require('../db');
 
 const router = express.Router();
+const { getAvailableWorkers } = require('../services/workers');
+
+const authMiddleware = require('../utils/auth-middleware');
+
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    res.json(await getAvailableWorkers());
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
 
 async function workerAuth(req, res, next) {
   const workerId = req.headers['x-worker-id'];

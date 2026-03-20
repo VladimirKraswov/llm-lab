@@ -259,14 +259,14 @@ async function upsertJob(job) {
     model_snapshot: job.modelSnapshot ? JSON.stringify(job.modelSnapshot) : null,
     env_snapshot: job.envSnapshot ? JSON.stringify(job.envSnapshot) : null,
     summary_metrics: job.summaryMetrics ? JSON.stringify(job.summaryMetrics) : null,
-    dataset_id: job.dataset_id || null,
-    model_id: job.model_id || null,
-    base_model: job.base_model || null,
-    output_dir: job.output_dir || null,
+    dataset_id: job.datasetId || job.dataset_id || null,
+    model_id: job.modelId || job.model_id || null,
+    base_model: job.baseModel || job.base_model || null,
+    output_dir: job.outputDir || job.output_dir || null,
     pid: job.pid || null,
-    config_path: job.config_path || null,
-    started_at: job.startedAt || null,
-    finished_at: job.finishedAt || null,
+    config_path: job.configPath || job.config_path || null,
+    started_at: job.startedAt || job.started_at || null,
+    finished_at: job.finishedAt || job.finished_at || null,
     updated_at: nowIso(),
   };
 
@@ -443,7 +443,9 @@ async function createRemoteJob(payload) {
   const jobId = uid('job');
 
   const settings = await getSettings();
-  const selectedBaseModel = baseModel || settings.baseModel;
+
+  // For remote jobs, we use the baked-in model path by default
+  const selectedBaseModel = baseModel || CONFIG.remoteBakedModelPath;
 
   const job = {
     id: jobId,
@@ -452,10 +454,12 @@ async function createRemoteJob(payload) {
     mode: 'remote',
     status: 'queued',
     datasetId,
-    modelId,
+    modelId: modelId || null,
     baseModel: selectedBaseModel,
     workerId: workerId || null,
     paramsSnapshot: {
+      baseModel: selectedBaseModel,
+      modelSource: 'local',
       qlora: { ...settings.qlora, ...(qlora || {}) },
       hfPublish: hfPublish || { enabled: false },
     },

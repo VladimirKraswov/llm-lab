@@ -112,8 +112,6 @@ export default function TrainingPage() {
       startMutation.mutate({
         datasetId,
         name,
-        modelId,
-        baseModel: selectedModel?.repoId || selectedModel?.name,
         qlora: qloraParams,
         workerId: workerId === 'any' ? undefined : workerId,
         hfPublish: {
@@ -155,17 +153,25 @@ export default function TrainingPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="mb-2 block text-sm text-slate-400">Base model</label>
-                <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-                  <option value="">Select model</option>
-                  {Array.isArray(modelsQuery.data) && modelsQuery.data.map((m) => (
-                    <option key={m.id} value={m.id} disabled={!isRemote && m.status !== 'ready'}>
-                      {m.name} {!isRemote && m.status !== 'ready' ? `(${m.status})` : ''}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+              {!isRemote ? (
+                <div>
+                  <label className="mb-2 block text-sm text-slate-400">Base model</label>
+                  <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
+                    <option value="">Select model</option>
+                    {Array.isArray(modelsQuery.data) && modelsQuery.data.map((m) => (
+                      <option key={m.id} value={m.id} disabled={m.status !== 'ready'}>
+                        {m.name} {m.status !== 'ready' ? `(${m.status})` : ''}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              ) : (
+                <div className="rounded-xl bg-slate-900/50 border border-slate-800 p-3 flex flex-col justify-center">
+                   <div className="text-xs text-slate-500 uppercase font-bold mb-1">Base Model</div>
+                   <div className="text-sm text-blue-400 font-medium">Baked into remote image</div>
+                   <div className="text-[10px] text-slate-600 mt-1 italic">Selecting a model is not required for remote mode.</div>
+                </div>
+              )}
 
               <div>
                 <label className="mb-2 block text-sm text-slate-400">Dataset</label>
@@ -320,7 +326,7 @@ export default function TrainingPage() {
 
             <Button
               onClick={handleStart}
-              disabled={!datasetId || !modelId || startMutation.isPending}
+              disabled={!datasetId || (!isRemote && !modelId) || startMutation.isPending}
               className="w-full"
             >
               {startMutation.isPending ? 'Starting…' : isRemote ? 'Start remote training' : 'Start local fine-tune'}
@@ -344,9 +350,9 @@ export default function TrainingPage() {
             </div>
 
             {isRemote && (
-              <div className="rounded-xl border border-amber-900/30 bg-amber-950/10 p-3 text-xs text-amber-200/70">
+              <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 p-3 text-xs text-blue-200/70">
                 <div className="font-bold mb-1">Remote Training Mode</div>
-                Для удаленного обучения модель будет скачана воркером напрямую из Hugging Face (если не в кеше). Убедись, что HF_TOKEN задан на стороне воркера.
+                В удаленном режиме используется модель, встроенная в Docker-образ трейнера. Выбор модели не требуется.
               </div>
             )}
 
