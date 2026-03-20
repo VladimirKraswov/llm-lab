@@ -11,6 +11,9 @@ const knexConfig = {
       filename: path.join(CONFIG.stateDir, 'db.sqlite'),
     },
     useNullAsDefault: true,
+    migrations: {
+      directory: path.join(__dirname, '..', 'migrations'),
+    },
   },
   pg: {
     client: 'pg',
@@ -21,6 +24,9 @@ const knexConfig = {
       password: process.env.DB_PASSWORD || 'postgres',
       database: process.env.DB_NAME || 'llm_lab',
     },
+    migrations: {
+      directory: path.join(__dirname, '..', 'migrations'),
+    },
   },
 };
 
@@ -29,29 +35,14 @@ const db = knex(knexConfig[dbType] || knexConfig.sqlite3);
 async function initDb() {
   console.log(`Initializing database (${dbType})...`);
 
-  const hasUsersTable = await db.schema.hasTable('users');
-  if (!hasUsersTable) {
-    console.log('Creating users table...');
-    await db.schema.createTable('users', (table) => {
-      table.increments('id').primary();
-      table.string('username').unique().notNullable();
-      table.string('password_hash').notNullable();
-      table.string('role').notNullable().defaultTo('member');
-      table.timestamps(true, true);
-    });
-  } else {
-    const hasRoleColumn = await db.schema.hasColumn('users', 'role');
-    if (!hasRoleColumn) {
-      console.log('Adding role column to users table...');
-      await db.schema.alterTable('users', (table) => {
-        table.string('role').notNullable().defaultTo('member');
-      });
-    }
-  }
+  // Run migrations
+  console.log('Running migrations...');
+  await db.migrate.latest();
 
   // Seed admin user
-  const adminUsername = 'admin';
-  const adminPassword = 'restart987';
+  const adminUsername = process.env.ADMIN_USERNAME || 'admin';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'restart987';
+
   const adminUser = await db('users').where({ username: adminUsername }).first();
 
   if (!adminUser) {

@@ -36,6 +36,10 @@ const CONFIG = {
   defaultBaseModel: process.env.DEFAULT_BASE_MODEL || 'Qwen/Qwen2.5-7B-Instruct',
   maxJsonMb: toNumber(process.env.MAX_JSON_MB, 25),
   webUiOrigin: normalizeOrigin(process.env.WEB_UI_ORIGIN || '*'),
+
+  // Orchestration
+  callbackBaseUrl: process.env.CALLBACK_BASE_URL || `http://localhost:${process.env.SVC_PORT || 8787}`,
+  requireJwtSecret: process.env.REQUIRE_JWT_SECRET === 'true',
 };
 
 CONFIG.stateDir = path.join(CONFIG.workspace, '.llm-lab');
@@ -57,7 +61,7 @@ CONFIG.syntheticFinalDir = path.join(CONFIG.syntheticDir, 'final');
 
 CONFIG.evalDatasetsDir = path.join(CONFIG.workspace, 'evaluations', 'datasets');
 
-CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json');
+CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json'); // Legacy
 CONFIG.settingsFile = path.join(CONFIG.stateDir, 'settings.json');
 CONFIG.datasetsFile = path.join(CONFIG.stateDir, 'datasets.json');
 CONFIG.evalDatasetsFile = path.join(CONFIG.stateDir, 'eval-datasets.json');

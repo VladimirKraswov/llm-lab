@@ -1,5 +1,6 @@
 const { CONFIG } = require('../config');
 const { ensureDir, ensureJsonFile, readJson, writeJson } = require('../utils/fs');
+const { db } = require('../db');
 
 const locks = new Map();
 
@@ -166,7 +167,7 @@ async function ensureWorkspace() {
   }
 
   await ensureJsonFile(CONFIG.settingsFile, DEFAULT_SETTINGS);
-  await ensureJsonFile(CONFIG.jobsFile, []);
+  // Legacy JSON files are no longer primary for jobs
   await ensureJsonFile(CONFIG.datasetsFile, []);
   await ensureJsonFile(CONFIG.evalDatasetsFile, []);
   await ensureJsonFile(CONFIG.modelsFile, []);
@@ -231,29 +232,15 @@ async function setSettings(next) {
   });
 }
 
+// Jobs are now in DB. These are compatibility wrappers.
 async function getJobs() {
-  return (await readJson(CONFIG.jobsFile, [])) || [];
-}
-
-async function saveJobs(jobs) {
-  await writeJson(CONFIG.jobsFile, jobs);
+  const { getAllJobs } = require('./jobs');
+  return getAllJobs(1000, 0);
 }
 
 async function upsertJob(jobPatch) {
-  return withLock(CONFIG.jobsFile, async () => {
-    const jobs = await getJobs();
-    const idx = jobs.findIndex((j) => j.id === jobPatch.id);
-    let result;
-    if (idx === -1) {
-      jobs.push(jobPatch);
-      result = jobPatch;
-    } else {
-      jobs[idx] = { ...jobs[idx], ...jobPatch };
-      result = jobs[idx];
-    }
-    await saveJobs(jobs);
-    return result;
-  });
+  const { upsertJob: dbUpsert } = require('./jobs');
+  return dbUpsert(jobPatch);
 }
 
 async function getDatasets() {
@@ -472,25 +459,22 @@ async function recoverState() {
 
   await pruneDeadManagedProcesses();
 
-  await withLock(CONFIG.jobsFile, async () => {
-    const jobs = await getJobs();
-    let jobsChanged = false;
-
-    for (let i = 0; i < jobs.length; i++) {
-      if (jobs[i].status === 'running' || jobs[i].status === 'queued') {
-        if (!jobs[i].pid || !isPidRunning(jobs[i].pid)) {
-          jobs[i].status = 'failed';
-          jobs[i].finishedAt = nowIso();
-          jobs[i].error = 'Process lost after restart';
-          jobsChanged = true;
-        }
+  // Jobs recovery
+  const { getAllJobs, upsertJob: dbUpsert } = require('./jobs');
+  const jobs = await getAllJobs(1000, 0);
+  for (const job of jobs) {
+    if (job.mode === 'local' && (job.status === 'running' || job.status === 'queued')) {
+      if (!job.pid || !isPidRunning(job.pid)) {
+        await dbUpsert({
+          ...job,
+          status: 'failed',
+          finishedAt: nowIso(),
+          error: 'Process lost after restart',
+          pid: null,
+        });
       }
     }
-
-    if (jobsChanged) {
-      await writeJson(CONFIG.jobsFile, jobs);
-    }
-  });
+  }
 
   await withLock(CONFIG.runtimeFile, async () => {
     const runtime = await getRuntime();
@@ -530,7 +514,7 @@ async function recoverState() {
     }
 
     if (lorasChanged) {
-      await writeJson(CONFIG.lorasFile, loras);
+      await saveLoras(loras);
     }
   });
 }
@@ -542,7 +526,6 @@ module.exports = {
   getSettings,
   setSettings,
   getJobs,
-  saveJobs,
   upsertJob,
   getDatasets,
   saveDatasets,

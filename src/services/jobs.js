@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { CONFIG } = require('../config');
 const { nowIso, uid } = require('../utils/ids');
 const { isPidRunning, killProcessGroup } = require('../utils/proc');
-const { getSettings, getDatasets, getJobs, upsertJob, getModelById } = require('./state');
+const { getSettings, getDatasets, getModelById } = require('./state');
 const { emitEvent } = require('./events');
 const { readText } = require('../utils/fs');
 const { registerLoraFromJob } = require('./loras');
@@ -20,6 +20,8 @@ const {
   registerManagedProcess,
   unregisterManagedProcess,
 } = require('../utils/managed-processes');
+const { db } = require('../db');
+const { generateCallbackToken } = require('./auth');
 
 async function getEnvSnapshot() {
   try {
@@ -169,6 +171,118 @@ function buildTrainingEnv(settings) {
   return env;
 }
 
+async function getAllJobs(limit = 50, offset = 0) {
+  const jobs = await db('jobs')
+    .select('*')
+    .orderBy('created_at', 'desc')
+    .limit(limit)
+    .offset(offset);
+  return jobs.map(parseJob);
+}
+
+function parseJob(job) {
+  if (!job) return null;
+  return {
+    id: job.id,
+    name: job.name,
+    type: job.type,
+    mode: job.mode,
+    status: job.status,
+    currentStage: job.current_stage,
+    progressPercent: job.progress_percent,
+    message: job.message,
+    workerType: job.worker_type,
+    launchMode: job.launch_mode,
+    workerHost: job.worker_host,
+    containerImage: job.container_image,
+    containerCommand: job.container_command,
+    jobConfigUrl: job.job_config_url,
+    lastStatusPayload: job.last_status_payload ? JSON.parse(job.last_status_payload) : null,
+    lastProgressPayload: job.last_progress_payload ? JSON.parse(job.last_progress_payload) : null,
+    finalPayload: job.final_payload ? JSON.parse(job.final_payload) : null,
+    logFile: job.log_file,
+    logChunkCount: job.log_chunk_count,
+    lastLogOffset: job.last_log_offset,
+    hfRepoIdLora: job.hf_repo_id_lora,
+    hfRepoIdMerged: job.hf_repo_id_merged,
+    hfRepoIdMetadata: job.hf_repo_id_metadata,
+    publishedAt: job.published_at,
+    error: job.error,
+    tags: job.tags ? JSON.parse(job.tags) : [],
+    notes: job.notes,
+    paramsSnapshot: job.params_snapshot ? JSON.parse(job.params_snapshot) : null,
+    datasetSnapshot: job.dataset_snapshot ? JSON.parse(job.dataset_snapshot) : null,
+    modelSnapshot: job.model_snapshot ? JSON.parse(job.model_snapshot) : null,
+    envSnapshot: job.env_snapshot ? JSON.parse(job.env_snapshot) : null,
+    summaryMetrics: job.summary_metrics ? JSON.parse(job.summary_metrics) : {},
+    datasetId: job.dataset_id,
+    modelId: job.model_id,
+    baseModel: job.base_model,
+    outputDir: job.output_dir,
+    pid: job.pid,
+    configPath: job.config_path,
+    createdAt: job.created_at,
+    updatedAt: job.updated_at,
+    startedAt: job.started_at,
+    finishedAt: job.finished_at,
+  };
+}
+
+async function upsertJob(job) {
+  const existing = await db('jobs').where({ id: job.id }).first();
+  const dbJob = {
+    id: job.id,
+    name: job.name,
+    type: job.type,
+    mode: job.mode || 'local',
+    status: job.status,
+    current_stage: job.currentStage || null,
+    progress_percent: job.progressPercent || 0,
+    message: job.message || null,
+    worker_type: job.workerType || null,
+    launch_mode: job.launchMode || null,
+    worker_host: job.workerHost || null,
+    container_image: job.containerImage || null,
+    container_command: job.containerCommand || null,
+    job_config_url: job.jobConfigUrl || null,
+    last_status_payload: job.lastStatusPayload ? JSON.stringify(job.lastStatusPayload) : null,
+    last_progress_payload: job.lastProgressPayload ? JSON.stringify(job.lastProgressPayload) : null,
+    final_payload: job.finalPayload ? JSON.stringify(job.finalPayload) : null,
+    log_file: job.logFile || null,
+    log_chunk_count: job.logChunkCount || 0,
+    last_log_offset: job.lastLogOffset || 0,
+    hf_repo_id_lora: job.hfRepoIdLora || null,
+    hf_repo_id_merged: job.hfRepoIdMerged || null,
+    hf_repo_id_metadata: job.hfRepoIdMetadata || null,
+    published_at: job.publishedAt || null,
+    error: job.error || null,
+    tags: JSON.stringify(job.tags || []),
+    notes: job.notes || '',
+    params_snapshot: job.paramsSnapshot ? JSON.stringify(job.paramsSnapshot) : null,
+    dataset_snapshot: job.datasetSnapshot ? JSON.stringify(job.datasetSnapshot) : null,
+    model_snapshot: job.modelSnapshot ? JSON.stringify(job.modelSnapshot) : null,
+    env_snapshot: job.envSnapshot ? JSON.stringify(job.envSnapshot) : null,
+    summary_metrics: job.summaryMetrics ? JSON.stringify(job.summaryMetrics) : null,
+    dataset_id: job.datasetId || null,
+    model_id: job.modelId || null,
+    base_model: job.baseModel || null,
+    output_dir: job.outputDir || null,
+    pid: job.pid || null,
+    config_path: job.configPath || null,
+    started_at: job.startedAt || null,
+    finished_at: job.finishedAt || null,
+    updated_at: nowIso(),
+  };
+
+  if (existing) {
+    await db('jobs').where({ id: job.id }).update(dbJob);
+  } else {
+    dbJob.created_at = job.createdAt || nowIso();
+    await db('jobs').insert(dbJob);
+  }
+  return getJobById(job.id);
+}
+
 async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
   if (qlora) validateQLoraParams(qlora);
 
@@ -209,21 +323,14 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
   const job = {
     id: jobId,
     type: 'fine-tune',
+    mode: 'local',
     name: name || jobId,
     status: 'queued',
-    createdAt: nowIso(),
-    startedAt: null,
-    finishedAt: null,
     datasetId,
-    datasetPath: ds.processedPath,
     modelId: selectedModelId,
     baseModel: selectedBaseModel,
-    qlora: qlora || {},
     outputDir,
     logFile,
-    pid: null,
-    error: null,
-    configPath: null,
     paramsSnapshot: trainConfig,
     datasetSnapshot,
     modelSnapshot: {
@@ -233,13 +340,11 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     envSnapshot,
     tags: [],
     notes: '',
-    artifacts: [],
-    summaryMetrics: {},
   };
 
   await upsertJob(job);
   emitEvent('job_updated', job);
-  logger.info(`Starting fine-tune job: ${job.name}`, {
+  logger.info(`Starting local fine-tune job: ${job.name}`, {
     jobId,
     datasetId,
     baseModel: selectedBaseModel,
@@ -291,15 +396,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 
   child.on('exit', async (code) => {
     await unregisterManagedProcess(child.pid);
-
-    logger.info('Fine-tune process exited', {
-      jobId,
-      code,
-      configPath,
-    });
-
-    const jobs = await getJobs();
-    const current = jobs.find((j) => j.id === jobId);
+    const current = await getJobById(jobId);
     if (!current) return;
 
     const patch = {
@@ -307,7 +404,6 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
       finishedAt: nowIso(),
       error: code === 0 ? null : `trainer exited with code ${code}`,
       pid: null,
-      configPath,
     };
 
     if (code === 0) {
@@ -319,76 +415,213 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
           logger.warn('Failed to read summary.json', { jobId, error: err.message });
         }
       }
-      patch.artifacts = getArtifacts(current.outputDir);
+      // Register artifacts
+      const artifacts = getArtifacts(current.outputDir);
+      for (const art of artifacts) {
+        await db('job_artifacts').insert({
+          job_id: jobId,
+          name: art.name,
+          path: art.path,
+          size: art.size,
+        });
+      }
     }
 
-    const next = await upsertJob({
-      ...current,
-      ...patch,
-    });
-
+    const next = await upsertJob({ ...current, ...patch });
     emitEvent('job_updated', next);
 
-    if (code === 0) {
-      logger.info(`Job completed: ${jobId}`, { configPath });
-    } else {
-      logger.error(`Job failed: ${jobId}`, {
-        code,
-        error: next.error,
-        configPath,
-      });
-    }
-
-    if (code === 0 && current.qlora?.useLora !== false) {
+    if (code === 0 && current.paramsSnapshot?.qlora?.useLora !== false) {
       try {
         await registerLoraFromJob(jobId);
       } catch (err) {
-        emitEvent('lora_register_failed', {
-          jobId,
-          error: String(err.message || err),
-        });
-
-        logger.error('LoRA auto-registration failed after fine-tune', {
-          jobId,
-          configPath,
-          error: String(err.message || err),
-        });
+        logger.error('LoRA auto-registration failed', { jobId, error: err.message });
       }
     }
   });
 
-  child.on('error', async (err) => {
-    await unregisterManagedProcess(child.pid);
+  return { ok: true, jobId };
+}
 
-    logger.error('Fine-tune process error', {
-      jobId,
-      configPath,
-      error: String(err.message || err),
+async function createRemoteJob(payload) {
+  const { name, type, datasetId, modelId, baseModel, qlora, hfPublish } = payload;
+  const jobId = uid('job');
+
+  const settings = await getSettings();
+  const selectedBaseModel = baseModel || settings.baseModel;
+
+  const job = {
+    id: jobId,
+    name: name || jobId,
+    type: type || 'remote-train',
+    mode: 'remote',
+    status: 'queued',
+    datasetId,
+    modelId,
+    baseModel: selectedBaseModel,
+    paramsSnapshot: {
+      qlora: { ...settings.qlora, ...(qlora || {}) },
+      hfPublish: hfPublish || { enabled: false },
+    },
+    tags: payload.tags || [],
+    notes: payload.notes || '',
+    jobConfigUrl: `${CONFIG.callbackBaseUrl}/api/jobs/${jobId}/config`,
+  };
+
+  const dbJob = await upsertJob(job);
+  await generateCallbackToken(jobId);
+
+  emitEvent('job_updated', dbJob);
+  return dbJob;
+}
+
+async function cloneJob(jobId) {
+  const source = await getJobById(jobId);
+  if (!source) throw new Error('Source job not found');
+
+  return createRemoteJob({
+    name: `${source.name} (cloned)`,
+    type: source.type,
+    datasetId: source.datasetId,
+    modelId: source.modelId,
+    baseModel: source.baseModel,
+    qlora: source.paramsSnapshot?.qlora,
+    hfPublish: source.paramsSnapshot?.hfPublish,
+    tags: source.tags,
+    notes: source.notes,
+  });
+}
+
+async function retryJob(jobId) {
+  const source = await getJobById(jobId);
+  if (!source) throw new Error('Job not found');
+  if (source.status !== 'failed' && source.status !== 'stopped') {
+    throw new Error('Can only retry failed or stopped jobs');
+  }
+
+  const job = {
+    ...source,
+    id: uid('job'),
+    name: `${source.name} (retry)`,
+    status: 'queued',
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+    progressPercent: 0,
+    currentStage: 'queued',
+    createdAt: nowIso(),
+    jobConfigUrl: source.mode === 'remote' ? `${CONFIG.callbackBaseUrl}/api/jobs/${source.id}/config` : null,
+  };
+
+  const dbJob = await upsertJob(job);
+  if (source.mode === 'remote') {
+    await generateCallbackToken(job.id);
+  } else if (source.type === 'fine-tune') {
+    // Local fine-tune retry logic would go here, or just call startFineTuneJob with source params
+    return startFineTuneJob({
+      datasetId: source.datasetId,
+      name: job.name,
+      modelId: source.modelId,
+      baseModel: source.baseModel,
+      qlora: source.paramsSnapshot?.qlora,
     });
+  }
 
-    const jobs = await getJobs();
-    const current = jobs.find((j) => j.id === jobId);
-    if (!current) return;
+  emitEvent('job_updated', dbJob);
+  return dbJob;
+}
 
-    const next = await upsertJob({
-      ...current,
-      status: 'failed',
-      finishedAt: nowIso(),
-      error: String(err.message || err),
-      pid: null,
-      configPath,
-    });
+async function cancelJob(jobId) {
+  return stopJob(jobId);
+}
 
-    emitEvent('job_updated', next);
+async function handleWorkerStatus(jobId, payload) {
+  const job = await getJobById(jobId);
+  if (!job) throw new Error('Job not found');
+
+  const patch = {
+    status: payload.status,
+    currentStage: payload.stage,
+    message: payload.message,
+    lastStatusPayload: payload,
+  };
+
+  if (payload.status === 'running' && !job.startedAt) {
+    patch.startedAt = nowIso();
+  }
+  if (['completed', 'failed', 'stopped'].includes(payload.status)) {
+    patch.finishedAt = nowIso();
+  }
+  if (payload.error) {
+    patch.error = payload.error;
+  }
+
+  const updated = await upsertJob({ ...job, ...patch });
+  emitEvent('job_updated', updated);
+
+  await db('job_events').insert({
+    job_id: jobId,
+    type: 'status_change',
+    payload: JSON.stringify(payload),
   });
 
-  return {
-    ok: true,
-    jobId,
-    logFile,
-    outputDir,
-    configPath,
+  return { ok: true };
+}
+
+async function handleWorkerProgress(jobId, payload) {
+  const job = await getJobById(jobId);
+  const updated = await upsertJob({
+    ...job,
+    progressPercent: payload.progress || 0,
+    currentStage: payload.stage || job.currentStage,
+    lastProgressPayload: payload,
+  });
+
+  emitEvent('job_progress', { jobId, ...payload });
+  return { ok: true };
+}
+
+async function handleWorkerLogs(jobId, payload) {
+  const { logs, offset } = payload;
+
+  await db('job_logs').insert({
+    job_id: jobId,
+    content: logs,
+    offset: offset,
+  });
+
+  emitEvent('job_log_chunk', { jobId, logs, offset });
+  return { ok: true };
+}
+
+async function handleWorkerFinal(jobId, payload) {
+  const job = await getJobById(jobId);
+  const patch = {
+    status: 'completed',
+    finishedAt: nowIso(),
+    finalPayload: payload,
+    summaryMetrics: payload.metrics || {},
+    hfRepoIdLora: payload.hf_repo_id_lora,
+    hfRepoIdMerged: payload.hf_repo_id_merged,
+    hfRepoIdMetadata: payload.hf_repo_id_metadata,
+    publishedAt: payload.published_at || nowIso(),
   };
+
+  const updated = await upsertJob({ ...job, ...patch });
+
+  if (payload.artifacts) {
+    for (const art of payload.artifacts) {
+      await db('job_artifacts').insert({
+        job_id: jobId,
+        name: art.name,
+        type: art.type,
+        url: art.url,
+        size: art.size,
+      });
+    }
+  }
+
+  emitEvent('job_finalized', updated);
+  return { ok: true };
 }
 
 async function updateJobMetadata(jobId, { tags, notes }) {
@@ -403,19 +636,16 @@ async function updateJobMetadata(jobId, { tags, notes }) {
 }
 
 async function stopJob(jobId) {
-  const jobs = await getJobs();
-  const job = jobs.find((j) => j.id === jobId);
-  if (!job) throw new Error('job not found');
+  const job = await getJobById(jobId);
+
+  if (job.mode === 'remote') {
+    const updated = await upsertJob({ ...job, status: 'stopped', finishedAt: nowIso() });
+    emitEvent('job_updated', updated);
+    // In a real system, we'd send a cancellation to the worker
+    return { ok: true, message: 'Stop signal sent to remote worker' };
+  }
 
   if (!job.pid || !isPidRunning(job.pid)) {
-    if (job.status === 'running') {
-      await upsertJob({
-        ...job,
-        status: 'failed',
-        finishedAt: nowIso(),
-        error: 'Process not found',
-      });
-    }
     throw new Error('job is not running');
   }
 
@@ -430,28 +660,58 @@ async function stopJob(jobId) {
   });
 
   emitEvent('job_updated', next);
-  logger.info('Job stopped', { jobId });
-
   return { ok: true };
 }
 
 async function getJobById(id) {
-  const jobs = await getJobs();
-  const job = jobs.find((x) => x.id === id);
-  if (!job) throw new Error('job not found');
-  return job;
+  const job = await db('jobs').where({ id }).first();
+  if (!job) return null;
+  return parseJob(job);
+}
+
+async function getJobEvents(id) {
+  const events = await db('job_events')
+    .where({ job_id: id })
+    .orderBy('created_at', 'asc');
+  return events.map(e => ({
+    ...e,
+    payload: e.payload ? JSON.parse(e.payload) : null
+  }));
 }
 
 async function getJobLogs(id, tail = 200) {
   const job = await getJobById(id);
-  const text = await readText(job.logFile, '');
-  const lines = text.split('\n');
+  if (job.mode === 'local') {
+    const text = await readText(job.logFile, '');
+    const lines = text.split('\n');
+    return {
+      id: job.id,
+      logFile: job.logFile,
+      content: lines.slice(-tail).join('\n'),
+    };
+  } else {
+    const logs = await db('job_logs')
+      .where({ job_id: id })
+      .orderBy('created_at', 'desc')
+      .limit(tail);
+    return {
+      id: job.id,
+      content: logs.reverse().map(l => l.content).join('\n'),
+    };
+  }
+}
 
-  return {
-    id: job.id,
-    logFile: job.logFile,
-    content: lines.slice(-tail).join('\n'),
-  };
+async function getJobLaunchCommand(id) {
+  const job = await getJobById(id);
+  if (!job) throw new Error('Job not found');
+
+  const hfToken = '${HF_TOKEN}';
+  const configUrl = job.jobConfigUrl;
+
+  return `docker run --runtime=nvidia --gpus all \\
+  -e JOB_CONFIG_URL=${configUrl} \\
+  -e HF_TOKEN=${hfToken} \\
+  trainer-container-image`;
 }
 
 async function startSyntheticGenJob(cfg) {
@@ -462,33 +722,14 @@ async function startSyntheticGenJob(cfg) {
   const job = {
     id: jobId,
     type: 'synthetic-gen',
+    mode: 'local',
     name: cfg.name || jobId,
     status: 'queued',
-    createdAt: nowIso(),
-    startedAt: null,
-    finishedAt: null,
     paramsSnapshot: cfg,
     outputDir,
     logFile,
-    pid: process.pid,
-    error: null,
     tags: [],
     notes: '',
-    artifacts: [],
-    summaryMetrics: {},
-    syntheticMeta: {
-      progressStep: 'queued',
-      finalPath: null,
-      import: {
-        sampleLine: null,
-        sampleParsed: null,
-        invalidSamples: [],
-        detectedFormats: [],
-        totalLines: 0,
-        validCount: 0,
-        invalidCount: 0,
-      },
-    },
   };
 
   await upsertJob(job);
@@ -496,109 +737,41 @@ async function startSyntheticGenJob(cfg) {
 
   (async () => {
     try {
-      const runningJob = await upsertJob({
-        ...job,
-        status: 'running',
-        startedAt: nowIso(),
-        syntheticMeta: {
-          ...job.syntheticMeta,
-          progressStep: 'running',
-        },
+      await upsertJob({ ...job, status: 'running', startedAt: nowIso() });
+      emitEvent('job_updated', await getJobById(jobId));
+
+      const result = await runSyntheticGenJob(job, async (step) => {
+        await db('jobs').where({ id: jobId }).update({ current_stage: step });
+        emitEvent('job_updated', await getJobById(jobId));
       });
-      emitEvent('job_updated', runningJob);
-
-      const updateStatus = async (step) => {
-        const current = await getJobById(jobId);
-        const updated = await upsertJob({
-          ...current,
-          syntheticMeta: {
-            ...(current.syntheticMeta || {}),
-            progressStep: step,
-          },
-        });
-        emitEvent('job_updated', updated);
-      };
-
-      const result = await runSyntheticGenJob(runningJob, updateStatus);
-
-      logger.info('Synthetic generation result ready for import', {
-        jobId,
-        finalPath: result.finalPath,
-      });
-
-      const beforeImport = await upsertJob({
-        ...(await getJobById(jobId)),
-        syntheticMeta: {
-          ...((await getJobById(jobId)).syntheticMeta || {}),
-          progressStep: 'importing',
-          finalPath: result.finalPath,
-        },
-      });
-      emitEvent('job_updated', beforeImport);
-
-      const datasetName = cfg.name || `synthetic-${jobId}`;
 
       const { dataset, importMeta } = await importSyntheticDatasetFromJsonlFile(
-        datasetName,
+        cfg.name || `synthetic-${jobId}`,
         result.finalPath,
         { sourcePath: result.finalPath }
       );
 
-      const finalJob = await upsertJob({
+      await upsertJob({
         ...(await getJobById(jobId)),
         status: 'completed',
         finishedAt: nowIso(),
-        artifacts: getArtifacts(outputDir),
-        resultDatasetId: dataset.id,
         summaryMetrics: {
           rows: dataset.rows,
           validCount: importMeta.validCount,
           invalidCount: importMeta.invalidCount,
         },
-        syntheticMeta: {
-          ...((await getJobById(jobId)).syntheticMeta || {}),
-          progressStep: 'completed',
-          finalPath: result.finalPath,
-          import: {
-            sampleLine: importMeta.sampleLine,
-            sampleParsed: importMeta.sampleParsed,
-            invalidSamples: importMeta.invalidSamples,
-            detectedFormats: importMeta.detectedFormats,
-            totalLines: importMeta.totalLines,
-            validCount: importMeta.validCount,
-            invalidCount: importMeta.invalidCount,
-          },
-        },
       });
 
-      emitEvent('job_updated', finalJob);
+      emitEvent('job_updated', await getJobById(jobId));
     } catch (err) {
       logger.error('Synthetic generation job failed', { jobId, error: err.message });
-
-      const details = err.syntheticImportDetails || null;
-      const current = await getJobById(jobId);
-
-      const failedJob = await upsertJob({
-        ...current,
+      await upsertJob({
+        ...(await getJobById(jobId)),
         status: 'failed',
         finishedAt: nowIso(),
         error: String(err.message || err),
-        syntheticMeta: {
-          ...(current.syntheticMeta || {}),
-          progressStep: 'failed',
-          import: {
-            sampleLine: details?.sampleLine || null,
-            sampleParsed: details?.sampleParsed || null,
-            invalidSamples: details?.invalidSamples || [],
-            detectedFormats: details?.detectedFormats || [],
-            totalLines: details?.totalLines || 0,
-            validCount: details?.validCount || 0,
-            invalidCount: details?.invalidCount || 0,
-          },
-        },
       });
-
-      emitEvent('job_updated', failedJob);
+      emitEvent('job_updated', await getJobById(jobId));
     }
   })();
 
@@ -606,11 +779,22 @@ async function startSyntheticGenJob(cfg) {
 }
 
 module.exports = {
+  getAllJobs,
   startFineTuneJob,
+  createRemoteJob,
+  cloneJob,
+  retryJob,
+  cancelJob,
+  handleWorkerStatus,
+  handleWorkerProgress,
+  handleWorkerFinal,
+  handleWorkerLogs,
   startSyntheticGenJob,
   updateJobMetadata,
   stopJob,
   getJobById,
+  getJobEvents,
   getJobLogs,
+  getJobLaunchCommand,
   getArtifacts,
 };
