@@ -18,7 +18,8 @@
     "pm2:stop": "pm2 stop ecosystem.config.js",
     "pm2:restart": "pm2 restart ecosystem.config.js",
     "pm2:logs": "pm2 logs",
-    "pm2:all": "npm run web:build && pm2 start ecosystem.config.js"
+    "pm2:all": "npm run web:build && pm2 start ecosystem.config.js",
+    "deploy:full": "git fetch origin && git reset --hard origin/main && npm install && npm --prefix web install && npm run web:build && pm2 restart llm-lab-backend llm-lab-frontend || pm2 start ecosystem.config.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",
