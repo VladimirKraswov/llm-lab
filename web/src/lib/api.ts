@@ -356,6 +356,20 @@ export type Job = {
   summaryMetrics?: SummaryMetrics;
   resultDatasetId?: string | null;
   syntheticMeta?: SyntheticMeta;
+  workerId?: string | null;
+  jobConfigUrl?: string | null;
+  hfRepoIdLora?: string | null;
+  hfRepoIdMerged?: string | null;
+  hfRepoIdMetadata?: string | null;
+};
+
+export type WorkerItem = {
+  id: string;
+  name: string;
+  status: 'online' | 'offline' | 'busy';
+  resources: any;
+  labels: any;
+  lastHeartbeat: string;
 };
 
 export type SyntheticPreviewRow = {
@@ -797,6 +811,8 @@ export const api = {
       method: 'DELETE',
     }),
 
+  getWorkers: () => request<WorkerItem[]>('/workers'),
+
   getJobs: () => request<Job[]>('/jobs'),
   getJob: (id: string) => request<Job>(`/jobs/${id}`),
   getJobLogs: (id: string, tail = 200) =>
@@ -809,6 +825,26 @@ export const api = {
     qlora?: Partial<Settings['qlora']>;
   }) =>
     request<{ ok: boolean; jobId: string; logFile: string; outputDir: string }>('/jobs/fine-tune', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  startRemoteTrain: (payload: {
+    datasetId: string;
+    name?: string;
+    modelId?: string;
+    baseModel?: string;
+    qlora?: Partial<Settings['qlora']>;
+    hfPublish?: {
+      enabled: boolean;
+      push_lora?: boolean;
+      push_merged?: boolean;
+      repo_id_lora?: string;
+      repo_id_merged?: string;
+      private?: boolean;
+    };
+    workerId?: string;
+  }) =>
+    request<Job>('/jobs/remote-train', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),

@@ -111,6 +111,13 @@ function JobListCard({
               <div className="mt-2 text-xs text-slate-400 break-all">{job.baseModel || '—'}</div>
             )}
 
+            {job.mode === 'remote' && (
+              <div className="mt-1 flex items-center gap-1.5">
+                <span className="rounded bg-blue-500/10 px-1 py-0.5 text-[8px] font-bold text-blue-400 uppercase">Remote</span>
+                {job.workerId && <span className="text-[10px] text-slate-500 font-mono">{job.workerId}</span>}
+              </div>
+            )}
+
             {job.runner ? (
               <div className="mt-1 text-[10px] text-slate-500">
                 Runner: {job.runner}
@@ -118,7 +125,12 @@ function JobListCard({
             ) : null}
           </div>
 
-          <StatusBadge value={job.status} />
+          <div className="flex flex-col items-end gap-1">
+            <StatusBadge value={job.status} />
+            {job.mode === 'remote' && job.progressPercent > 0 && job.status === 'running' && (
+              <div className="text-[10px] text-blue-400 font-bold">{job.progressPercent}%</div>
+            )}
+          </div>
         </div>
 
         <div className="mt-2 text-xs text-slate-500">{fmtDate(job.createdAt)}</div>
@@ -643,6 +655,34 @@ export default function JobsPage() {
                           Download W&B Run
                         </a>
                       </div>
+
+                      {selectedJob.mode === 'remote' && (selectedJob.hfRepoIdLora || selectedJob.hfRepoIdMerged) && (
+                        <div className="rounded-xl border border-blue-900/30 bg-blue-950/20 p-3 space-y-2">
+                           <div className="text-[10px] font-bold text-blue-400 uppercase">HF Repositories</div>
+                           <div className="grid gap-2">
+                             {selectedJob.hfRepoIdLora && (
+                               <a
+                                 href={`https://huggingface.co/${selectedJob.hfRepoIdLora}`}
+                                 target="_blank"
+                                 className="flex items-center justify-between group"
+                               >
+                                 <span className="text-xs text-slate-300 group-hover:text-white transition-colors truncate">LoRA: {selectedJob.hfRepoIdLora}</span>
+                                 <span className="text-[10px] text-slate-500">↗</span>
+                               </a>
+                             )}
+                             {selectedJob.hfRepoIdMerged && (
+                               <a
+                                 href={`https://huggingface.co/${selectedJob.hfRepoIdMerged}`}
+                                 target="_blank"
+                                 className="flex items-center justify-between group"
+                               >
+                                 <span className="text-xs text-slate-300 group-hover:text-white transition-colors truncate">Merged: {selectedJob.hfRepoIdMerged}</span>
+                                 <span className="text-[10px] text-slate-500">↗</span>
+                               </a>
+                             )}
+                           </div>
+                        </div>
+                      )}
 
                       {selectedJob.artifacts?.length ? (
                         <div className="max-h-40 overflow-y-auto rounded-xl bg-slate-950/50 p-2 text-[10px]">

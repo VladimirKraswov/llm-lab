@@ -15,6 +15,7 @@ import LogsPage from './features/logs/logs-page';
 import MonitorPage from './features/monitor/monitor-page';
 import ComparisonsPage from './features/comparisons/page';
 import EvaluationsPage from './features/evaluations/evaluations-page';
+import WorkersPage from './features/workers/page';
 import { useEvents } from './hooks/use-events';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -47,6 +48,7 @@ export default function App() {
         <Route path="training" element={<TrainingPage />} />
         <Route path="comparisons" element={<ComparisonsPage />} />
         <Route path="evaluations" element={<EvaluationsPage />} />
+        <Route path="workers" element={<WorkersPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="runtime" element={<RuntimePage />} />
         <Route path="playground" element={<PlaygroundPage />} />

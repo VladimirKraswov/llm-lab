@@ -15,6 +15,7 @@ export default function TrainingPage() {
   const datasetsQuery = useQuery({ queryKey: ['datasets'], queryFn: api.getDatasets });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: api.getModels });
   const lorasQuery = useQuery({ queryKey: ['loras'], queryFn: api.getLoras });
+  const workersQuery = useQuery({ queryKey: ['workers'], queryFn: api.getWorkers });
 
   const [datasetId, setDatasetId] = useState('');
   const [name, setName] = useState('');
@@ -30,6 +31,13 @@ export default function TrainingPage() {
   const [trainingType, setTrainingType] = useState<'standard' | 'lora' | 'qlora'>('qlora');
   const [targetModules, setTargetModules] = useState('q_proj, v_proj, k_proj, o_proj, gate_proj, up_proj, down_proj');
   const [loadIn4bit, setLoadIn4bit] = useState(true);
+
+  // Remote specific
+  const [isRemote, setIsRemote] = useState(false);
+  const [workerId, setWorkerId] = useState('any');
+  const [hfPushEnabled, setHfPushEnabled] = useState(true);
+  const [hfRepoLora, setHfRepoLora] = useState('');
+  const [hfRepoMerged, setHfRepoMerged] = useState('');
 
   useEffect(() => {
     if (settingsQuery.data?.qlora) {
@@ -78,55 +86,158 @@ export default function TrainingPage() {
   }, [modelsQuery.data, modelId]);
 
   const startMutation = useMutation({
-    mutationFn: api.startFineTune,
-    onSuccess: (data) => {
-      navigate(`/app/jobs?selected=${data.jobId}`);
+    mutationFn: (payload: any) => isRemote ? api.startRemoteTrain(payload) : api.startFineTune(payload),
+    onSuccess: (data: any) => {
+      const id = isRemote ? data.id : data.jobId;
+      navigate(`/app/jobs?selected=${id}`);
     },
   });
 
+  const handleStart = () => {
+    const qloraParams = {
+      numTrainEpochs: Number(epochs),
+      learningRate: Number(lr),
+      perDeviceTrainBatchSize: Number(batchSize),
+      gradientAccumulationSteps: Number(gradAcc),
+      maxSeqLength: Number(maxSeqLength),
+      useLora: trainingType !== 'standard',
+      loadIn4bit: loadIn4bit,
+      loraR: Number(loraR),
+      loraAlpha: Number(loraAlpha),
+      loraDropout: Number(loraDropout),
+      targetModules: targetModules.split(',').map(s => s.trim()).filter(Boolean),
+    };
+
+    if (isRemote) {
+      startMutation.mutate({
+        datasetId,
+        name,
+        modelId,
+        baseModel: selectedModel?.repoId || selectedModel?.name,
+        qlora: qloraParams,
+        workerId: workerId === 'any' ? undefined : workerId,
+        hfPublish: {
+          enabled: hfPushEnabled,
+          push_lora: true,
+          push_merged: true,
+          repo_id_lora: hfRepoLora,
+          repo_id_merged: hfRepoMerged,
+        }
+      });
+    } else {
+      startMutation.mutate({
+        datasetId,
+        name,
+        modelId,
+        qlora: qloraParams,
+      });
+    }
+  };
+
   return (
     <div>
-      <PageHeader title="Training" description="Выбери базовую модель, датасет и настройки обучения. Справа видно LoRA уже созданные под эту модель." />
+      <PageHeader title="Training" description="Выбери базовую модель, датасет и настройки обучения. Поддерживается локальное и удаленное обучение на GPU воркерах." />
 
       <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
         <Card>
-          <CardHeader>
-            <CardTitle>New fine-tune job</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <CardTitle>New training job</CardTitle>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs ${!isRemote ? 'text-blue-400 font-bold' : 'text-slate-500'}`}>LOCAL</span>
+              <button
+                onClick={() => setIsRemote(!isRemote)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${isRemote ? 'bg-blue-600' : 'bg-slate-700'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isRemote ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+              <span className={`text-xs ${isRemote ? 'text-blue-400 font-bold' : 'text-slate-500'}`}>REMOTE</span>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <label className="mb-2 block text-sm text-slate-400">Base model</label>
-              <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-                <option value="">Select model</option>
-                {Array.isArray(modelsQuery.data) && modelsQuery.data.map((m) => (
-                  <option key={m.id} value={m.id} disabled={m.status !== 'ready'}>
-                    {m.name} {m.status !== 'ready' ? `(${m.status})` : ''}
-                  </option>
-                ))}
-              </Select>
-              <div className="mt-2 text-xs text-slate-500">
-                Сначала скачай модель на странице Models. Для обучения используется локальная модель из базы.
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Base model</label>
+                <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
+                  <option value="">Select model</option>
+                  {Array.isArray(modelsQuery.data) && modelsQuery.data.map((m) => (
+                    <option key={m.id} value={m.id} disabled={!isRemote && m.status !== 'ready'}>
+                      {m.name} {!isRemote && m.status !== 'ready' ? `(${m.status})` : ''}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Dataset</label>
+                <Select value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
+                  <option value="">Select dataset</option>
+                  {Array.isArray(datasetsQuery.data) && datasetsQuery.data.map((ds) => (
+                    <option key={ds.id} value={ds.id}>
+                      {ds.name} ({ds.rows})
+                    </option>
+                  ))}
+                </Select>
               </div>
             </div>
 
-            <div>
-              <label className="mb-2 block text-sm text-slate-400">Dataset</label>
-              <Select value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
-                <option value="">Select dataset</option>
-                {Array.isArray(datasetsQuery.data) && datasetsQuery.data.map((ds) => (
-                  <option key={ds.id} value={ds.id}>
-                    {ds.name} ({ds.rows})
-                  </option>
-                ))}
-              </Select>
-            </div>
+            {isRemote && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm text-slate-400">Target Worker</label>
+                  <Select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
+                    <option value="any">Any available</option>
+                    {Array.isArray(workersQuery.data) && workersQuery.data.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name} ({w.status})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div>
+                   <label className="mb-2 block text-sm text-slate-400">Job Name</label>
+                   <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="remote-run-01" />
+                </div>
+              </div>
+            )}
 
-            <div>
-              <label className="mb-2 block text-sm text-slate-400">Job / LoRA name</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="support-bot-v1" />
-            </div>
+            {!isRemote && (
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Job / LoRA name</label>
+                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="support-bot-v1" />
+              </div>
+            )}
 
-            <div className="grid gap-4 md:grid-cols-2">
+            {isRemote && (
+              <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-medium text-blue-400">Hugging Face Publishing</h4>
+                  <input
+                    type="checkbox"
+                    checked={hfPushEnabled}
+                    onChange={(e) => setHfPushEnabled(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600"
+                  />
+                </div>
+                {hfPushEnabled && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Input
+                      size="sm"
+                      value={hfRepoLora}
+                      onChange={(e) => setHfRepoLora(e.target.value)}
+                      placeholder="Username/repo-lora"
+                    />
+                    <Input
+                      size="sm"
+                      value={hfRepoMerged}
+                      onChange={(e) => setHfRepoMerged(e.target.value)}
+                      placeholder="Username/repo-merged"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="grid gap-4 md:grid-cols-2 border-t border-slate-800 pt-4">
               <div>
                 <label className="mb-2 block text-sm text-slate-400">Training Type</label>
                 <Select value={trainingType} onChange={(e) => {
@@ -173,6 +284,9 @@ export default function TrainingPage() {
                 <label className="mb-2 block text-sm text-slate-400">Grad accumulation</label>
                 <Input value={gradAcc} onChange={(e) => setGradAcc(e.target.value)} />
               </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-2 block text-sm text-slate-400">Max seq length</label>
                 <Input value={maxSeqLength} onChange={(e) => setMaxSeqLength(e.target.value)} />
@@ -181,7 +295,10 @@ export default function TrainingPage() {
                 <label className="mb-2 block text-sm text-slate-400">LoRA R</label>
                 <Input value={loraR} onChange={(e) => setLoraR(e.target.value)} />
               </div>
-              <div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+               <div>
                 <label className="mb-2 block text-sm text-slate-400">LoRA Alpha</label>
                 <Input value={loraAlpha} onChange={(e) => setLoraAlpha(e.target.value)} />
               </div>
@@ -201,34 +318,12 @@ export default function TrainingPage() {
               />
             </div>
 
-            <div className="rounded-xl bg-slate-950/50 p-3 text-sm text-slate-400">
-              Подсказка: для smoke test используй 1 эпоху, маленький датасет и batch size = 1.
-            </div>
-
             <Button
-              onClick={() =>
-                startMutation.mutate({
-                  datasetId,
-                  name,
-                  modelId,
-                  qlora: {
-                    numTrainEpochs: Number(epochs),
-                    learningRate: Number(lr),
-                    perDeviceTrainBatchSize: Number(batchSize),
-                    gradientAccumulationSteps: Number(gradAcc),
-                    maxSeqLength: Number(maxSeqLength),
-                    useLora: trainingType !== 'standard',
-                    loadIn4bit: loadIn4bit,
-                    loraR: Number(loraR),
-                    loraAlpha: Number(loraAlpha),
-                    loraDropout: Number(loraDropout),
-                    targetModules: targetModules.split(',').map(s => s.trim()).filter(Boolean),
-                  },
-                })
-              }
+              onClick={handleStart}
               disabled={!datasetId || !modelId || startMutation.isPending}
+              className="w-full"
             >
-              {startMutation.isPending ? 'Starting…' : 'Start fine-tune'}
+              {startMutation.isPending ? 'Starting…' : isRemote ? 'Start remote training' : 'Start local fine-tune'}
             </Button>
 
             {startMutation.error ? <p className="text-sm text-rose-300">{(startMutation.error as Error).message}</p> : null}
@@ -237,13 +332,23 @@ export default function TrainingPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Model summary</CardTitle>
+            <CardTitle>Context</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
               <div className="text-sm text-slate-400">Selected model</div>
               <div className="mt-1 text-white">{selectedModel?.name || '—'}</div>
+              <div className="text-[10px] text-slate-500 font-mono uppercase mt-0.5">
+                {selectedModel?.repoId || 'None'}
+              </div>
             </div>
+
+            {isRemote && (
+              <div className="rounded-xl border border-amber-900/30 bg-amber-950/10 p-3 text-xs text-amber-200/70">
+                <div className="font-bold mb-1">Remote Training Mode</div>
+                Для удаленного обучения модель будет скачана воркером напрямую из Hugging Face (если не в кеше). Убедись, что HF_TOKEN задан на стороне воркера.
+              </div>
+            )}
 
             <div>
               <div className="text-sm text-slate-400">Existing LoRAs under this model</div>
@@ -262,7 +367,7 @@ export default function TrainingPage() {
             </div>
 
             <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-sm text-slate-400">
-              После completed job LoRA автоматически появится в списке LoRAs и её можно будет запустить на инференс или упаковать.
+              После завершения обучения LoRA появится в списке LoRAs. В удаленном режиме все веса будут опубликованы в Hugging Face.
             </div>
           </CardContent>
         </Card>
