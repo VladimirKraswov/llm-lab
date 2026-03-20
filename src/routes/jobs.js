@@ -21,10 +21,15 @@ const {
   getJobLaunchCommand,
   getAllJobs,
 } = require('../services/jobs');
-const { verifyCallbackToken } = require('../services/auth');
+const {
+  verifyCallbackToken,
+  generateCallbackToken,
+} = require('../services/auth');
 const roleMiddleware = require('../utils/role-middleware');
 const { getDatasets } = require('../services/state');
 const { buildRemoteTrainerConfig } = require('../services/remote-job-config');
+const { CONFIG } = require('../config');
+const { buildPublicBaseUrl } = require('../utils/public-base-url');
 
 const router = express.Router();
 
@@ -77,6 +82,53 @@ async function callbackAuth(req, res, next) {
   }
 }
 
+async function getOrCreateJobCallbackToken(jobId) {
+  let tokenRecord = await db('job_callback_tokens')
+    .where({ job_id: jobId, is_active: true })
+    .orderBy('created_at', 'desc')
+    .first();
+
+  if (!tokenRecord) {
+    const token = await generateCallbackToken(jobId);
+    tokenRecord = { id: token };
+  }
+
+  return tokenRecord.id;
+}
+
+async function buildLaunchInfo(job, req) {
+  if (!job || job.mode !== 'remote') {
+    return null;
+  }
+
+  const callbackToken = await getOrCreateJobCallbackToken(job.id);
+
+  const baseJobConfigUrl =
+    String(job.jobConfigUrl || '').trim() ||
+    `${buildPublicBaseUrl(req, CONFIG.callbackBaseUrl)}/api/jobs/${job.id}/config`;
+
+  const launchJobConfigUrl =
+    baseJobConfigUrl.includes('?token=')
+      ? baseJobConfigUrl
+      : `${baseJobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
+
+  const image = job.containerImage || 'itk-ai-trainer-service:qwen-7b';
+
+  return {
+    jobConfigUrl: launchJobConfigUrl,
+    env: {
+      JOB_CONFIG_URL: launchJobConfigUrl,
+    },
+    exampleDockerRun: [
+      'docker run --rm --gpus all \\',
+      '  --shm-size 16g \\',
+      `  -e JOB_CONFIG_URL="${launchJobConfigUrl}" \\`,
+      '  -e HF_TOKEN="$HF_TOKEN" \\',
+      `  ${image}`,
+    ].join('\n'),
+  };
+}
+
 router.get('/', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit, 10) || 50;
@@ -93,7 +145,9 @@ router.get('/:id', async (req, res) => {
     if (!job) return res.status(404).json({ error: 'Job not found' });
 
     const artifacts = await db('job_artifacts').where({ job_id: req.params.id });
-    res.json({ ...job, artifacts });
+    const launch = await buildLaunchInfo(job, req);
+
+    res.json({ ...job, artifacts, launch });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -121,7 +175,9 @@ router.post('/remote-train', roleMiddleware(['admin', 'member']), async (req, re
     if (!datasetId) {
       return res.status(400).json({ error: 'datasetId is required' });
     }
-    res.json(await createRemoteJob(req.body || {}));
+
+    const publicBaseUrl = buildPublicBaseUrl(req, CONFIG.callbackBaseUrl);
+    res.json(await createRemoteJob(req.body || {}, { publicBaseUrl }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
@@ -185,10 +241,13 @@ router.get('/:id/config', async (req, res) => {
       return res.status(404).json({ error: 'Dataset not found for job' });
     }
 
+    const publicBaseUrl = buildPublicBaseUrl(req, CONFIG.callbackBaseUrl);
+
     const trainerConfig = buildRemoteTrainerConfig({
       job,
       dataset,
       callbackAuthToken: tokenRecord.id,
+      publicBaseUrl,
     });
 
     res.json({

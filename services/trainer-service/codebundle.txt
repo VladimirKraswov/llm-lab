@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/services/trainer-service
 ignore: .codebun)dleignore
-generated: 2026-03-20T10:18:42.472Z
+generated: 2026-03-20T13:08:12.719Z
 
 
 
@@ -678,6 +678,25 @@ from archiver import build_retry_session
 from schemas import JobConfig
 
 
+def _resolve_callback_url(payload: Dict[str, Any], key: str) -> str | None:
+    explicit = payload.get(f"{key}_url")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    reporting = payload.get("reporting") or {}
+    value = reporting.get(key)
+
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+
+    if isinstance(value, dict):
+        url = value.get("url")
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+
+    return None
+
+
 def load_remote_job_config(
     job_config_url: str,
     timeout_sec: int = 30,
@@ -697,7 +716,7 @@ def load_remote_job_config(
         raise ValueError("Remote job config response must be a JSON object")
 
     callback_auth_token = payload.get("callback_auth_token")
-    logs_url = payload.get("logs_url")
+    logs_url = payload.get("logs_url") or _resolve_callback_url(payload, "logs")
 
     if "config" in payload:
         raw_config = copy.deepcopy(payload.get("config") or {})
@@ -715,15 +734,17 @@ def load_remote_job_config(
 
     reporting = raw_config.setdefault("reporting", {})
     for key in ("status", "progress", "final"):
-        callback_cfg = reporting.get(key) or {}
-        explicit_url = payload.get(f"{key}_url")
+        callback_cfg = copy.deepcopy(reporting.get(key) or {})
+        explicit_url = _resolve_callback_url(payload, key)
+
         if explicit_url:
             callback_cfg["enabled"] = True
             callback_cfg["url"] = explicit_url
 
-        auth_cfg = callback_cfg.get("auth") or {}
+        auth_cfg = copy.deepcopy(callback_cfg.get("auth") or {})
         if callback_auth_token and not auth_cfg.get("bearer_token"):
             auth_cfg["bearer_token"] = callback_auth_token
+
         callback_cfg["auth"] = auth_cfg
 
         if callback_cfg.get("url"):
@@ -3217,7 +3238,7 @@ path: /docker/entrypoint.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_LOCAL_CONFIG="/workspace/configs/trainer/job.json"
+DEFAULT_LOCAL_CONFIG="/configs/job.local.json"
 
 echo "==> trainer-service starting"
 
@@ -3233,7 +3254,7 @@ if [ -n "${JOB_CONFIG_URL:-}" ]; then
 fi
 
 CONFIG_SOURCE="${CONFIG_SOURCE:-local}"
-CONFIG_REF="${CONFIG_REF:-$DEFAULT_LOCAL_CONFIG}"
+CONFIG_REF="${CONFIG_REF:-}"
 
 if [ -n "${CONFIG_PATH:-}" ]; then
   CONFIG_REF="$CONFIG_PATH"
@@ -3241,14 +3262,25 @@ if [ -n "${CONFIG_PATH:-}" ]; then
 fi
 
 echo "==> config source: ${CONFIG_SOURCE}"
-echo "==> config ref: ${CONFIG_REF}"
+echo "==> config ref: ${CONFIG_REF:-<empty>}"
 echo "==> model path in image assumed at: /app"
 
-if [ "${CONFIG_SOURCE}" = "local" ]; then
-  if [ ! -f "${CONFIG_REF}" ]; then
-    echo "ERROR: local config file not found: ${CONFIG_REF}"
+if [ "${CONFIG_SOURCE}" = "remote" ]; then
+  if [ -z "${CONFIG_REF}" ]; then
+    echo "ERROR: CONFIG_REF is required when CONFIG_SOURCE=remote"
     exit 1
   fi
+
+  exec python /trainer/app/runner.py --config "${CONFIG_REF}"
+fi
+
+if [ -z "${CONFIG_REF}" ]; then
+  CONFIG_REF="${DEFAULT_LOCAL_CONFIG}"
+fi
+
+if [ ! -f "${CONFIG_REF}" ]; then
+  echo "ERROR: local config file not found: ${CONFIG_REF}"
+  exit 1
 fi
 
 exec python /trainer/app/runner.py --config "${CONFIG_REF}"
@@ -3288,8 +3320,6 @@ services:
     env_file:
       - .env.remote.example
     environment:
-      CONFIG_SOURCE: remote
-      CONFIG_REF: ${CONFIG_REF}
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - ./output:/output
@@ -4238,27 +4268,9 @@ docker run --rm --gpus all \
   trainer-service
 
 
-path: /requirements.txt
-----------------------------------------
-unsloth
-unsloth-zoo
-bitsandbytes>=0.45.0
-xformers==0.0.35
-transformers>=4.48.0,<5
-tokenizers<0.22
-datasets>=3.6.0
-accelerate>=1.10.1
-trl>=0.19.0
-peft>=0.17.1
-sentencepiece>=0.2.1
-huggingface_hub[hf-xet]
-pydantic>=2.11.7
-requests>=2.32.3
-
-
 === SUMMARY ===
-included: 27
+included: 26
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 127710
+totalBytes(approx): 128248

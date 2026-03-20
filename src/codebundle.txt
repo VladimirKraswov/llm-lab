@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-20T10:17:41.861Z
+generated: 2026-03-20T13:09:35.906Z
 
 
 
@@ -12,130 +12,402 @@ const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://localhost:8787';
+require('dotenv').config();
+
+const ORCHESTRATOR_URL = String(
+  process.env.ORCHESTRATOR_URL || 'http://localhost:8787'
+).replace(/\/+$/, '');
+
 const WORKER_NAME = process.env.WORKER_NAME || 'remote-worker';
-const HF_TOKEN = process.env.HF_TOKEN;
-const POLL_INTERVAL = 10000;
+const HF_TOKEN = process.env.HF_TOKEN || '';
+const POLL_INTERVAL = Number(process.env.POLL_INTERVAL || 10000);
+const HEARTBEAT_INTERVAL = Number(process.env.HEARTBEAT_INTERVAL || 30000);
+
+const TRAINER_IMAGE = process.env.TRAINER_IMAGE || 'itk-ai-trainer-service:qwen-7b';
+const OUTPUT_ROOT = process.env.OUTPUT_ROOT || '/storage/data/llm-lab/.remote-output';
+const CACHE_ROOT = process.env.CACHE_ROOT || '/storage/data/llm-lab/.remote-cache';
+
+const DOCKER_BIN = process.env.DOCKER_BIN || 'docker';
+const DOCKER_NETWORK = process.env.DOCKER_NETWORK || '';
+const NVIDIA_VISIBLE_DEVICES = process.env.NVIDIA_VISIBLE_DEVICES || 'all';
 
 let workerId = null;
 let workerToken = null;
 let currentJobId = null;
+let currentContainerName = null;
 
-async function register() {
-  console.log('Registering worker...');
-  const resources = {
-    gpus: getGpuInfo(),
-    cpu: getCpuInfo(),
-    memory: getMemoryInfo(),
-  };
-
-  const res = await axios.post(`${ORCHESTRATOR_URL}/workers/register`, {
-    name: WORKER_NAME,
-    resources,
-    labels: {
-      docker: true,
-      agent_version: '1.0.0',
-    },
-  });
-
-  workerId = res.data.id;
-  workerToken = res.data.token;
-  console.log(`Registered as ${workerId}`);
+function ensureDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
 }
 
-async function heartbeat() {
-  if (!workerId) return;
-  try {
-    await axios.post(`${ORCHESTRATOR_URL}/workers/heartbeat`, {
-      status: currentJobId ? 'busy' : 'online',
-    }, {
-      headers: { 'x-worker-id': workerId, 'x-worker-token': workerToken }
-    });
-  } catch (err) {
-    console.error('Heartbeat failed', err.message);
-  }
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function pollForJob() {
-  if (currentJobId) return;
-
-  try {
-    const res = await axios.get(`${ORCHESTRATOR_URL}/workers/request-job`, {
-      headers: { 'x-worker-id': workerId, 'x-worker-token': workerToken }
-    });
-
-    if (res.status === 200 && res.data.job) {
-      console.log(`Received job: ${res.data.job.id}`);
-      runJob(res.data.job, res.data.config);
+function getAxiosErrorMessage(err) {
+  if (err?.response?.data) {
+    try {
+      return JSON.stringify(err.response.data);
+    } catch {
+      return String(err.message || err);
     }
-  } catch (err) {
-    console.error('Poll failed', err.message);
   }
+  return String(err?.message || err);
 }
 
-function runJob(job, config) {
-  currentJobId = job.id;
-
-  const containerName = `trainer-${job.id}`;
-  const image = process.env.TRAINER_IMAGE || 'llm-lab-trainer:latest';
-
-  console.log(`Starting container ${containerName} with image ${image}`);
-
-  const args = [
-    'run', '--rm', '--name', containerName,
-    '--runtime=nvidia', '--gpus', 'all',
-    '-e', `JOB_CONFIG_URL=${ORCHESTRATOR_URL}/api/jobs/${job.id}/config?token=${config.callback_auth_token}`,
-    '-e', `HF_TOKEN=${HF_TOKEN}`,
-    image
-  ];
-
-  const child = spawn('docker', args);
-
-  child.stdout.on('data', (data) => {
-    // We could stream logs here too, but the trainer container is expected
-    // to send its own logs via callback. This is just for agent visibility.
-    process.stdout.write(data);
-  });
-
-  child.stderr.on('data', (data) => {
-    process.stderr.write(data);
-  });
-
-  child.on('close', (code) => {
-    console.log(`Trainer container exited with code ${code}`);
-    currentJobId = null;
-  });
+function sanitizeName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'remote-job';
 }
 
-// Helpers
+function resolveJobConfigUrl(job, config) {
+  const explicit = String(config?.job_config_url || '').trim();
+  if (explicit) return explicit;
+
+  const fromJob = String(job?.jobConfigUrl || job?.job_config_url || '').trim();
+  if (fromJob) return fromJob;
+
+  if (job?.id && config?.callback_auth_token) {
+    return `${ORCHESTRATOR_URL}/jobs/${encodeURIComponent(job.id)}/config?token=${encodeURIComponent(
+      config.callback_auth_token
+    )}`;
+  }
+
+  return '';
+}
+
+function buildContainerName(job) {
+  return `trainer-${sanitizeName(job?.id || job?.jobId || 'job')}`;
+}
+
 function getGpuInfo() {
   try {
-    const out = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits').toString();
-    return out.trim().split('\n').map(line => {
-      const [name, memory] = line.split(', ');
-      return { name, memory: parseInt(memory) };
-    });
+    const out = execSync(
+      'nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits',
+      { stdio: ['ignore', 'pipe', 'ignore'] }
+    )
+      .toString()
+      .trim();
+
+    if (!out) return [];
+
+    return out
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [name, memory] = line.split(',').map((x) => x.trim());
+        return {
+          name,
+          memory: Number(memory || 0),
+        };
+      });
   } catch {
     return [];
   }
 }
 
 function getCpuInfo() {
-  return { model: 'generic', cores: 8 };
+  try {
+    const cores = Number(execSync('nproc', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim());
+    return { model: 'generic', cores: Number.isFinite(cores) ? cores : 0 };
+  } catch {
+    return { model: 'generic', cores: 0 };
+  }
 }
 
 function getMemoryInfo() {
-  return { total: 32768 };
+  try {
+    const raw = execSync("awk '/MemTotal/ {print $2}' /proc/meminfo", {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+
+    const kb = Number(raw || 0);
+    const mb = Math.round(kb / 1024);
+    return { total: Number.isFinite(mb) ? mb : 0 };
+  } catch {
+    return { total: 0 };
+  }
+}
+
+async function registerWorker() {
+  console.log('==> registering worker');
+
+  const resources = {
+    gpus: getGpuInfo(),
+    cpu: getCpuInfo(),
+    memory: getMemoryInfo(),
+  };
+
+  const response = await axios.post(`${ORCHESTRATOR_URL}/workers/register`, {
+    name: WORKER_NAME,
+    resources,
+    labels: {
+      docker: true,
+      agent_version: '1.2.0',
+      network_mode: 'public-url',
+      same_host_as_orchestrator: true,
+    },
+  });
+
+  workerId = response.data.id;
+  workerToken = response.data.token;
+
+  if (!workerId || !workerToken) {
+    throw new Error('workers/register did not return id/token');
+  }
+
+  console.log(`==> worker registered: ${workerId}`);
+}
+
+async function sendHeartbeat() {
+  if (!workerId || !workerToken) return;
+
+  try {
+    await axios.post(
+      `${ORCHESTRATOR_URL}/workers/heartbeat`,
+      {
+        status: currentJobId ? 'busy' : 'online',
+        resources: {
+          gpus: getGpuInfo(),
+          cpu: getCpuInfo(),
+          memory: getMemoryInfo(),
+        },
+      },
+      {
+        headers: {
+          'x-worker-id': workerId,
+          'x-worker-token': workerToken,
+        },
+      }
+    );
+  } catch (err) {
+    console.error('==> heartbeat failed:', getAxiosErrorMessage(err));
+  }
+}
+
+async function postFinalFailure(config, job, message) {
+  const finalUrl = String(config?.reporting?.final || '').trim();
+  const token = String(config?.callback_auth_token || '').trim();
+
+  if (!finalUrl || !token || !job?.id) {
+    return;
+  }
+
+  try {
+    await axios.post(
+      finalUrl,
+      {
+        job_id: job.id,
+        job_name: job.name || job.id,
+        event: 'final',
+        status: 'failed',
+        result: {
+          status: 'failed',
+          job_id: job.id,
+          job_name: job.name || job.id,
+          error: message,
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 15000,
+      }
+    );
+  } catch (err) {
+    console.error('==> failed to send synthetic final failure callback:', getAxiosErrorMessage(err));
+  }
+}
+
+function buildDockerArgs({ containerName, jobConfigUrl, outputDir, cacheDir }) {
+  const args = ['run', '--rm', '--name', containerName];
+
+  args.push('--gpus', NVIDIA_VISIBLE_DEVICES);
+  args.push('--shm-size', '16g');
+
+  if (DOCKER_NETWORK) {
+    args.push('--network', DOCKER_NETWORK);
+  }
+
+  args.push('-e', `JOB_CONFIG_URL=${jobConfigUrl}`);
+  args.push('-e', `HF_TOKEN=${HF_TOKEN}`);
+  args.push('-e', 'PYTHONUNBUFFERED=1');
+
+  args.push('-v', `${outputDir}:/output`);
+  args.push('-v', `${cacheDir}:/cache/huggingface`);
+
+  args.push(TRAINER_IMAGE);
+
+  return args;
+}
+
+function attachChildLogs(child, prefix) {
+  child.stdout.on('data', (chunk) => {
+    process.stdout.write(`${prefix}${chunk}`);
+  });
+
+  child.stderr.on('data', (chunk) => {
+    process.stderr.write(`${prefix}${chunk}`);
+  });
+}
+
+async function runJob(job, config) {
+  if (!job?.id) {
+    console.error('==> received invalid job payload');
+    return;
+  }
+
+  currentJobId = job.id;
+  currentContainerName = buildContainerName(job);
+
+  const outputDir = path.join(OUTPUT_ROOT, job.id);
+  const cacheDir = path.join(CACHE_ROOT, job.id);
+  ensureDir(outputDir);
+  ensureDir(cacheDir);
+
+  const jobConfigUrl = resolveJobConfigUrl(job, config);
+  if (!jobConfigUrl) {
+    const message = `job ${job.id} does not contain job_config_url`;
+    console.error(`==> ${message}`);
+    await postFinalFailure(config, job, message);
+    currentJobId = null;
+    currentContainerName = null;
+    return;
+  }
+
+  console.log(`==> starting job ${job.id}`);
+  console.log(`==> container: ${currentContainerName}`);
+  console.log(`==> trainer image: ${TRAINER_IMAGE}`);
+  console.log(`==> job config url: ${jobConfigUrl}`);
+  console.log(`==> output dir: ${outputDir}`);
+  console.log(`==> cache dir: ${cacheDir}`);
+
+  const args = buildDockerArgs({
+    containerName: currentContainerName,
+    jobConfigUrl,
+    outputDir,
+    cacheDir,
+  });
+
+  const child = spawn(DOCKER_BIN, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  attachChildLogs(child, '');
+
+  child.on('error', async (err) => {
+    const message = `failed to start trainer container: ${err.message}`;
+    console.error(`==> ${message}`);
+    await postFinalFailure(config, job, message);
+    currentJobId = null;
+    currentContainerName = null;
+  });
+
+  child.on('close', async (code, signal) => {
+    console.log(`==> trainer container exited, code=${code}, signal=${signal || 'none'}`);
+
+    if (code !== 0) {
+      await postFinalFailure(
+        config,
+        job,
+        `trainer container exited with code ${code}${signal ? `, signal ${signal}` : ''}`
+      );
+    }
+
+    currentJobId = null;
+    currentContainerName = null;
+  });
+}
+
+async function pollForJob() {
+  if (!workerId || !workerToken) return;
+  if (currentJobId) return;
+
+  try {
+    const response = await axios.get(`${ORCHESTRATOR_URL}/workers/request-job`, {
+      headers: {
+        'x-worker-id': workerId,
+        'x-worker-token': workerToken,
+      },
+      validateStatus: (status) => status === 200 || status === 204,
+      timeout: 20000,
+    });
+
+    if (response.status === 204 || !response.data?.job) {
+      return;
+    }
+
+    const { job, config } = response.data;
+    console.log(`==> received job: ${job.id}`);
+    await runJob(job, config || {});
+  } catch (err) {
+    console.error('==> poll failed:', getAxiosErrorMessage(err));
+  }
+}
+
+async function removeStaleContainer() {
+  if (!currentContainerName) return;
+
+  try {
+    spawn(DOCKER_BIN, ['rm', '-f', currentContainerName], {
+      stdio: 'ignore',
+      detached: true,
+    }).unref();
+  } catch {}
 }
 
 async function main() {
-  await register();
-  setInterval(heartbeat, 30000);
-  setInterval(pollForJob, POLL_INTERVAL);
+  ensureDir(OUTPUT_ROOT);
+  ensureDir(CACHE_ROOT);
+
+  while (true) {
+    try {
+      await registerWorker();
+      break;
+    } catch (err) {
+      console.error('==> register failed:', getAxiosErrorMessage(err));
+      await sleep(5000);
+    }
+  }
+
+  setInterval(() => {
+    sendHeartbeat().catch((err) => {
+      console.error('==> heartbeat loop error:', getAxiosErrorMessage(err));
+    });
+  }, HEARTBEAT_INTERVAL);
+
+  setInterval(() => {
+    pollForJob().catch((err) => {
+      console.error('==> poll loop error:', getAxiosErrorMessage(err));
+    });
+  }, POLL_INTERVAL);
+
+  await sendHeartbeat();
+  await pollForJob();
 }
 
-main().catch(err => {
-  console.error('Agent failed', err);
+process.on('SIGINT', async () => {
+  console.log('==> SIGINT received, shutting down');
+  await removeStaleContainer();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('==> SIGTERM received, shutting down');
+  await removeStaleContainer();
+  process.exit(0);
+});
+
+main().catch((err) => {
+  console.error('==> agent failed:', err);
   process.exit(1);
 });
 
@@ -444,7 +716,7 @@ const CONFIG = {
   // Orchestration
   callbackBaseUrl: process.env.CALLBACK_BASE_URL || `http://localhost:${process.env.SVC_PORT || 8787}`,
   requireJwtSecret: process.env.REQUIRE_JWT_SECRET === 'true',
-  remoteBakedModelPath: process.env.REMOTE_BAKED_MODEL_PATH || '/trainer/model',
+  remoteBakedModelPath: process.env.REMOTE_BAKED_MODEL_PATH || '/app',
 };
 
 CONFIG.stateDir = path.join(CONFIG.workspace, '.llm-lab');
@@ -3276,10 +3548,10 @@ module.exports = router;
 
 path: /routes/datasets.js
 ----------------------------------------
-// src/routes/datasets.js
-
 const express = require('express');
+const fs = require('fs');
 const { getDatasets } = require('../services/state');
+const { verifyCallbackToken } = require('../services/auth');
 const {
   createDatasetFromJsonl,
   createDatasetFromItems,
@@ -3291,8 +3563,50 @@ const {
 
 const router = express.Router();
 
+function getBearerToken(req) {
+  const authHeader = String(req.headers.authorization || '');
+  return authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+}
+
 router.get('/', async (_req, res) => {
   res.json(await getDatasets());
+});
+
+router.get('/:id/download', async (req, res) => {
+  try {
+    const datasets = await getDatasets();
+    const ds = datasets.find((x) => x.id === req.params.id);
+
+    if (!ds) {
+      return res.status(404).json({ error: 'dataset not found' });
+    }
+
+    let allowed = !!req.user;
+
+    if (!allowed) {
+      const jobId = String(req.query.job_id || '').trim();
+      const token =
+        String(req.query.token || '').trim() ||
+        getBearerToken(req);
+
+      if (jobId && token) {
+        allowed = await verifyCallbackToken(token, jobId);
+      }
+    }
+
+    if (!allowed) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    if (!ds.processedPath || !fs.existsSync(ds.processedPath)) {
+      return res.status(404).json({ error: 'dataset file not found' });
+    }
+
+    const fileName = `${(ds.name || ds.id).replace(/[^a-z0-9._-]+/gi, '_')}.jsonl`;
+    return res.download(ds.processedPath, fileName);
+  } catch (err) {
+    return res.status(500).json({ error: String(err.message || err) });
+  }
 });
 
 router.post('/validate-jsonl', (req, res) => {
@@ -3628,7 +3942,6 @@ path: /routes/jobs.js
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const archiver = require('archiver');
 const { db } = require('../db');
 const {
   startFineTuneJob,
@@ -3649,21 +3962,66 @@ const {
   getJobLaunchCommand,
   getAllJobs,
 } = require('../services/jobs');
-const { verifyCallbackToken, generateCallbackToken } = require('../services/auth');
-const authMiddleware = require('../utils/auth-middleware');
+const { verifyCallbackToken } = require('../services/auth');
 const roleMiddleware = require('../utils/role-middleware');
+const { getDatasets } = require('../services/state');
+const { buildRemoteTrainerConfig } = require('../services/remote-job-config');
 
 const router = express.Router();
 
-// All routes here are protected by authMiddleware in server.js
-// but worker callback routes will be exempted or handled differently if needed.
-// However, server.js currently applies authMiddleware to /jobs.
-// We need to move worker callbacks to a separate route or handle them carefully.
+function mapIncomingStatus(status) {
+  const value = String(status || '').trim().toLowerCase();
+
+  if (!value) return 'running';
+  if (value === 'started') return 'running';
+  if (value === 'finished') return 'completed';
+  if (value === 'success') return 'completed';
+  if (value === 'error') return 'failed';
+
+  return value;
+}
+
+async function callbackAuth(req, res, next) {
+  try {
+    if (req.user) return next();
+
+    const authHeader = req.headers.authorization || '';
+    let token = null;
+
+    if (authHeader.startsWith('Bearer ')) {
+      token = authHeader.slice('Bearer '.length).trim();
+    }
+
+    if (!token) {
+      token =
+        req.body?.auth_token ||
+        req.body?.callback_auth_token ||
+        req.query?.token ||
+        null;
+    }
+
+    const jobId = req.body?.job_id || req.params?.id;
+
+    if (!jobId || !token) {
+      return res.status(401).json({ error: 'Auth required' });
+    }
+
+    const isValid = await verifyCallbackToken(token, jobId);
+    if (!isValid) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+
+    req.callbackToken = token;
+    next();
+  } catch (err) {
+    return res.status(500).json({ error: String(err.message || err) });
+  }
+}
 
 router.get('/', async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = parseInt(req.query.offset) || 0;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
     res.json(await getAllJobs(limit, offset));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
@@ -3735,37 +4093,74 @@ router.post('/:id/cancel', async (req, res) => {
 });
 
 router.get('/:id/config', async (req, res) => {
-  // This endpoint needs to be secure.
-  // It's called by the worker bootstrap.
-  // We should ideally use a one-time bootstrap token.
   try {
     const job = await getJobById(req.params.id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
 
-    // Check if a bootstrap token is provided in query
-    const bootstrapToken = req.query.token;
-    const tokenRecord = await db('job_callback_tokens')
-      .where({ job_id: req.params.id, id: bootstrapToken, is_active: true })
-      .first();
+    const bootstrapToken = req.query.token || null;
 
-    // If no token or invalid token, and not authenticated as user, deny
+    let tokenRecord = null;
+    if (bootstrapToken) {
+      tokenRecord = await db('job_callback_tokens')
+        .where({ job_id: req.params.id, id: bootstrapToken, is_active: true })
+        .first();
+    }
+
     if (!tokenRecord && !req.user) {
       return res.status(403).json({ error: 'Forbidden: Invalid bootstrap token' });
     }
 
+    if (!tokenRecord) {
+      tokenRecord = await db('job_callback_tokens')
+        .where({ job_id: req.params.id, is_active: true })
+        .first();
+    }
+
+    if (!tokenRecord) {
+      return res.status(500).json({ error: 'No active callback token found for job' });
+    }
+
+    const datasets = await getDatasets();
+    const dataset = datasets.find((x) => x.id === job.datasetId);
+    if (!dataset) {
+      return res.status(404).json({ error: 'Dataset not found for job' });
+    }
+
+    const trainerConfig = buildRemoteTrainerConfig({
+      job,
+      dataset,
+      callbackAuthToken: tokenRecord.id,
+    });
+
     res.json({
       job_id: job.id,
       job_name: job.name,
-      callback_auth_token: tokenRecord?.id, // Should we generate a new one?
-      logs_url: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/logs`,
-      reporting: {
-        status: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/status`,
-        progress: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/progress`,
-        final: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/final`,
-        logs: `${process.env.CALLBACK_BASE_URL || ''}/api/jobs/logs`,
-      },
-      config: job.paramsSnapshot,
+      callback_auth_token: tokenRecord.id,
+      config: trainerConfig,
     });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/dataset/train', callbackAuth, async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    const datasets = await getDatasets();
+    const dataset = datasets.find((x) => x.id === job.datasetId);
+    if (!dataset?.processedPath) {
+      return res.status(404).json({ error: 'Processed dataset not found' });
+    }
+
+    const resolved = path.resolve(dataset.processedPath);
+    if (!fs.existsSync(resolved)) {
+      return res.status(404).json({ error: 'Dataset file is missing on disk' });
+    }
+
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    return res.sendFile(resolved);
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -3812,26 +4207,13 @@ router.post('/:id/stop', async (req, res) => {
   }
 });
 
-// Worker Callbacks - These need to be accessible without authMiddleware
-// OR authMiddleware needs to be updated to support callback tokens.
-// Since server.js applies authMiddleware to all /jobs, we have a problem.
-// We should expose these on a separate path or handle token in authMiddleware.
-
-// WORKAROUND: We will assume for this PR that the user will move these or update middleware.
-// For now, we implement them here.
-
-async function callbackAuth(req, res, next) {
-  const { job_id, auth_token } = req.body;
-  if (!job_id || !auth_token) return res.status(401).json({ error: 'Auth required' });
-
-  const isValid = await verifyCallbackToken(auth_token, job_id);
-  if (!isValid) return res.status(403).json({ error: 'Invalid or expired token' });
-  next();
-}
-
 router.post('/status', callbackAuth, async (req, res) => {
   try {
-    res.json(await handleWorkerStatus(req.body.job_id, req.body));
+    const normalized = {
+      ...req.body,
+      status: mapIncomingStatus(req.body.status),
+    };
+    res.json(await handleWorkerStatus(normalized.job_id, normalized));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -3839,7 +4221,11 @@ router.post('/status', callbackAuth, async (req, res) => {
 
 router.post('/progress', callbackAuth, async (req, res) => {
   try {
-    res.json(await handleWorkerProgress(req.body.job_id, req.body));
+    const normalized = {
+      ...req.body,
+      status: mapIncomingStatus(req.body.status || 'running'),
+    };
+    res.json(await handleWorkerProgress(normalized.job_id, normalized));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -3847,7 +4233,18 @@ router.post('/progress', callbackAuth, async (req, res) => {
 
 router.post('/final', callbackAuth, async (req, res) => {
   try {
-    res.json(await handleWorkerFinal(req.body.job_id, req.body));
+    const result = req.body?.result || {};
+    const normalized = {
+      ...req.body,
+      status: mapIncomingStatus(req.body.status || result.status),
+      metrics: {
+        training: result?.training?.summary || null,
+        evaluation: result?.evaluation?.summary || null,
+      },
+      artifacts: result?.uploads || {},
+    };
+
+    res.json(await handleWorkerFinal(normalized.job_id, normalized));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -3855,13 +4252,21 @@ router.post('/final', callbackAuth, async (req, res) => {
 
 router.post('/logs', callbackAuth, async (req, res) => {
   try {
-    res.json(await handleWorkerLogs(req.body.job_id, req.body));
+    const normalized = {
+      ...req.body,
+      logs:
+        req.body.logs ||
+        req.body.chunk ||
+        req.body.content ||
+        '',
+    };
+
+    res.json(await handleWorkerLogs(normalized.job_id, normalized));
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
 });
 
-// Legacy Artifact Endpoints
 router.get('/:id/artifacts/metrics', async (req, res) => {
   try {
     const job = await getJobById(req.params.id);
@@ -4883,11 +5288,12 @@ path: /routes/workers.js
 const express = require('express');
 const { registerWorker, heartbeat, getJobForWorker } = require('../services/workers');
 const { db } = require('../db');
+const { getAvailableWorkers } = require('../services/workers');
+const { generateCallbackToken } = require('../services/auth');
+const authMiddleware = require('../utils/auth-middleware');
+const { CONFIG } = require('../config');
 
 const router = express.Router();
-const { getAvailableWorkers } = require('../services/workers');
-
-const authMiddleware = require('../utils/auth-middleware');
 
 router.get('/', authMiddleware, async (req, res) => {
   try {
@@ -4933,24 +5339,31 @@ router.get('/request-job', workerAuth, async (req, res) => {
     const job = await getJobForWorker(req.worker.id);
     if (!job) return res.status(204).end();
 
-    // Config as part of request-job is useful for worker bootstrap
-    const tokenRecord = await db('job_callback_tokens')
+    let tokenRecord = await db('job_callback_tokens')
       .where({ job_id: job.id, is_active: true })
       .first();
+
+    if (!tokenRecord) {
+      const token = await generateCallbackToken(job.id);
+      tokenRecord = { id: token };
+    }
+
+    const callbackBase = CONFIG.callbackBaseUrl.replace(/\/+$/, '');
 
     res.json({
       job,
       config: {
         job_id: job.id,
-        callback_auth_token: tokenRecord?.id,
+        callback_auth_token: tokenRecord.id,
+        job_config_url: `${callbackBase}/jobs/${job.id}/config?token=${tokenRecord.id}`,
         reporting: {
-          status: `${process.env.CALLBACK_BASE_URL}/api/jobs/status`,
-          progress: `${process.env.CALLBACK_BASE_URL}/api/jobs/progress`,
-          final: `${process.env.CALLBACK_BASE_URL}/api/jobs/final`,
-          logs: `${process.env.CALLBACK_BASE_URL}/api/jobs/logs`,
+          status: `${callbackBase}/jobs/status`,
+          progress: `${callbackBase}/jobs/progress`,
+          final: `${callbackBase}/jobs/final`,
+          logs: `${callbackBase}/jobs/logs`,
         },
         params: job.paramsSnapshot,
-      }
+      },
     });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
@@ -5021,23 +5434,28 @@ async function main() {
 
   app.use(express.json({ limit: `${CONFIG.maxJsonMb}mb` }));
 
-  app.use('/health', healthRoute);
-  app.use('/auth', authRoute);
-  app.use('/settings', authMiddleware, settingsRoute);
-  app.use('/datasets', authMiddleware, datasetsRoute);
-  app.use('/jobs', authMiddleware, jobsRoute);
-  app.use('/workers', workersRoute);
-  app.use('/runtime', authMiddleware, runtimeRoute);
-  app.use('/dashboard', authMiddleware, dashboardRoute);
-  app.use('/events', authMiddleware, eventsRoute);
-  app.use('/models', authMiddleware, modelsRoute);
-  app.use('/loras', authMiddleware, lorasRoute);
-  app.use('/logs', authMiddleware, logsRoute);
-  app.use('/monitor', authMiddleware, monitorRoute);
-  app.use('/synthetic', authMiddleware, syntheticRoute);
-  app.use('/comparisons', authMiddleware, comparisonsRoute);
-  app.use('/evaluations', authMiddleware, evaluationsRoute);
-  app.use('/sync', authMiddleware, syncRoute);
+  const mount = (route, ...handlers) => {
+    app.use(route, ...handlers);
+    app.use(`/api${route}`, ...handlers);
+  };
+
+  mount('/health', healthRoute);
+  mount('/auth', authRoute);
+  mount('/settings', authMiddleware, settingsRoute);
+  mount('/datasets', authMiddleware, datasetsRoute);
+  mount('/jobs', authMiddleware, jobsRoute);
+  mount('/workers', workersRoute);
+  mount('/runtime', authMiddleware, runtimeRoute);
+  mount('/dashboard', authMiddleware, dashboardRoute);
+  mount('/events', authMiddleware, eventsRoute);
+  mount('/models', authMiddleware, modelsRoute);
+  mount('/loras', authMiddleware, lorasRoute);
+  mount('/logs', authMiddleware, logsRoute);
+  mount('/monitor', authMiddleware, monitorRoute);
+  mount('/synthetic', authMiddleware, syntheticRoute);
+  mount('/comparisons', authMiddleware, comparisonsRoute);
+  mount('/evaluations', authMiddleware, evaluationsRoute);
+  mount('/sync', authMiddleware, syncRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -5046,6 +5464,7 @@ async function main() {
 
     app.get('*', (req, res, next) => {
       if (
+        req.path.startsWith('/api/') ||
         req.path.startsWith('/health') ||
         req.path.startsWith('/settings') ||
         req.path.startsWith('/datasets') ||
@@ -5082,7 +5501,7 @@ async function main() {
     console.log(`Workspace: ${CONFIG.workspace}`);
     console.log(`Python: ${CONFIG.pythonBin}`);
     console.log(`Web UI origin: ${CONFIG.webUiOrigin}`);
-    
+
     const reconcileKickoff = startBackgroundReconcile({ reason: 'startup' });
     console.log('Background reconcile scheduled:', reconcileKickoff);
   });
@@ -7223,6 +7642,8 @@ path: /services/jobs.js
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { exec } = require('child_process');
+
 const { CONFIG } = require('../config');
 const { nowIso, uid } = require('../utils/ids');
 const { isPidRunning, killProcessGroup } = require('../utils/proc');
@@ -7244,6 +7665,46 @@ const {
 } = require('../utils/managed-processes');
 const { db } = require('../db');
 const { generateCallbackToken } = require('./auth');
+const { buildRemoteTrainerConfig } = require('./remote-job-config');
+
+function safeJsonParse(value, fallback = null) {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
+  if (typeof value !== 'string') {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function buildApiUrl(base, apiPath) {
+  const root = String(base || '').replace(/\/+$/, '');
+  if (!root) {
+    throw new Error('CALLBACK_BASE_URL is empty');
+  }
+
+  return root.endsWith('/api')
+    ? `${root}${apiPath.replace(/^\/api/, '')}`
+    : `${root}${apiPath}`;
+}
+
+async function getOrCreateActiveCallbackToken(jobId) {
+  let tokenRecord = await db('job_callback_tokens')
+    .where({ job_id: jobId, is_active: true })
+    .orderBy('created_at', 'desc')
+    .first();
+
+  if (!tokenRecord) {
+    const token = await generateCallbackToken(jobId);
+    tokenRecord = { id: token };
+  }
+
+  return tokenRecord.id;
+}
 
 async function getEnvSnapshot() {
   try {
@@ -7264,13 +7725,20 @@ print(json.dumps({
     "unsloth": unsloth_version
 }))
 `;
-    const { exec } = require('child_process');
     const output = await new Promise((resolve, reject) => {
-      exec(`${CONFIG.pythonBin} -c '${code.replace(/'/g, "'\\''")}'`, { timeout: 10000 }, (error, stdout) => {
-        if (error) reject(error);
-        else resolve(stdout);
-      });
+      exec(
+        `${CONFIG.pythonBin} -c '${code.replace(/'/g, "'\\''")}'`,
+        { timeout: 10000 },
+        (error, stdout) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(stdout);
+        }
+      );
     });
+
     return JSON.parse(output);
   } catch (err) {
     logger.warn('Failed to get env snapshot', { error: err.message });
@@ -7285,7 +7753,10 @@ print(json.dumps({
 
 async function getDatasetSnapshot(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return { path: filePath, size: 0, mtime: null, hash: null };
+    if (!fs.existsSync(filePath)) {
+      return { path: filePath, size: 0, mtime: null, hash: null };
+    }
+
     const stats = fs.statSync(filePath);
 
     let hash = null;
@@ -7309,7 +7780,7 @@ async function getDatasetSnapshot(filePath) {
       mtime: stats.mtime.toISOString(),
       hash,
     };
-  } catch (err) {
+  } catch {
     return { path: filePath, size: 0, mtime: null, hash: null };
   }
 }
@@ -7317,6 +7788,7 @@ async function getDatasetSnapshot(filePath) {
 function getArtifacts(outputDir) {
   try {
     if (!fs.existsSync(outputDir)) return [];
+
     const files = fs.readdirSync(outputDir);
     return files.map((file) => {
       const filePath = path.join(outputDir, file);
@@ -7327,7 +7799,7 @@ function getArtifacts(outputDir) {
         path: filePath,
       };
     });
-  } catch (err) {
+  } catch {
     return [];
   }
 }
@@ -7393,11 +7865,13 @@ async function getAllJobs(limit = 50, offset = 0) {
     .orderBy('created_at', 'desc')
     .limit(limit)
     .offset(offset);
+
   return jobs.map(parseJob);
 }
 
 function parseJob(job) {
   if (!job) return null;
+
   return {
     id: job.id,
     name: job.name,
@@ -7414,9 +7888,9 @@ function parseJob(job) {
     containerImage: job.container_image,
     containerCommand: job.container_command,
     jobConfigUrl: job.job_config_url,
-    lastStatusPayload: job.last_status_payload ? JSON.parse(job.last_status_payload) : null,
-    lastProgressPayload: job.last_progress_payload ? JSON.parse(job.last_progress_payload) : null,
-    finalPayload: job.final_payload ? JSON.parse(job.final_payload) : null,
+    lastStatusPayload: safeJsonParse(job.last_status_payload, null),
+    lastProgressPayload: safeJsonParse(job.last_progress_payload, null),
+    finalPayload: safeJsonParse(job.final_payload, null),
     logFile: job.log_file,
     logChunkCount: job.log_chunk_count,
     lastLogOffset: job.last_log_offset,
@@ -7425,13 +7899,13 @@ function parseJob(job) {
     hfRepoIdMetadata: job.hf_repo_id_metadata,
     publishedAt: job.published_at,
     error: job.error,
-    tags: job.tags ? JSON.parse(job.tags) : [],
+    tags: safeJsonParse(job.tags, []),
     notes: job.notes,
-    paramsSnapshot: job.params_snapshot ? JSON.parse(job.params_snapshot) : null,
-    datasetSnapshot: job.dataset_snapshot ? JSON.parse(job.dataset_snapshot) : null,
-    modelSnapshot: job.model_snapshot ? JSON.parse(job.model_snapshot) : null,
-    envSnapshot: job.env_snapshot ? JSON.parse(job.env_snapshot) : null,
-    summaryMetrics: job.summary_metrics ? JSON.parse(job.summary_metrics) : {},
+    paramsSnapshot: safeJsonParse(job.params_snapshot, null),
+    datasetSnapshot: safeJsonParse(job.dataset_snapshot, null),
+    modelSnapshot: safeJsonParse(job.model_snapshot, null),
+    envSnapshot: safeJsonParse(job.env_snapshot, null),
+    summaryMetrics: safeJsonParse(job.summary_metrics, {}),
     datasetId: job.dataset_id,
     modelId: job.model_id,
     baseModel: job.base_model,
@@ -7447,6 +7921,7 @@ function parseJob(job) {
 
 async function upsertJob(job) {
   const existing = await db('jobs').where({ id: job.id }).first();
+
   const dbJob = {
     id: job.id,
     name: job.name,
@@ -7454,7 +7929,7 @@ async function upsertJob(job) {
     mode: job.mode || 'local',
     status: job.status,
     current_stage: job.currentStage || null,
-    progress_percent: job.progressPercent || 0,
+    progress_percent: job.progressPercent ?? 0,
     message: job.message || null,
     worker_type: job.workerType || null,
     launch_mode: job.launchMode || null,
@@ -7467,8 +7942,8 @@ async function upsertJob(job) {
     last_progress_payload: job.lastProgressPayload ? JSON.stringify(job.lastProgressPayload) : null,
     final_payload: job.finalPayload ? JSON.stringify(job.finalPayload) : null,
     log_file: job.logFile || null,
-    log_chunk_count: job.logChunkCount || 0,
-    last_log_offset: job.lastLogOffset || 0,
+    log_chunk_count: job.logChunkCount ?? 0,
+    last_log_offset: job.lastLogOffset ?? 0,
     hf_repo_id_lora: job.hfRepoIdLora || null,
     hf_repo_id_merged: job.hfRepoIdMerged || null,
     hf_repo_id_metadata: job.hfRepoIdMetadata || null,
@@ -7498,6 +7973,7 @@ async function upsertJob(job) {
     dbJob.created_at = job.createdAt || nowIso();
     await db('jobs').insert(dbJob);
   }
+
   return getJobById(job.id);
 }
 
@@ -7562,6 +8038,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 
   await upsertJob(job);
   emitEvent('job_updated', job);
+
   logger.info(`Starting local fine-tune job: ${job.name}`, {
     jobId,
     datasetId,
@@ -7610,10 +8087,12 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
     pid: child.pid,
     configPath,
   });
+
   emitEvent('job_updated', runningJob);
 
   child.on('exit', async (code) => {
     await unregisterManagedProcess(child.pid);
+
     const current = await getJobById(jobId);
     if (!current) return;
 
@@ -7633,7 +8112,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
           logger.warn('Failed to read summary.json', { jobId, error: err.message });
         }
       }
-      // Register artifacts
+
       const artifacts = getArtifacts(current.outputDir);
       for (const art of artifacts) {
         await db('job_artifacts').insert({
@@ -7661,40 +8140,55 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 }
 
 async function createRemoteJob(payload) {
-  const { name, type, datasetId, modelId, baseModel, qlora, hfPublish, workerId } = payload;
-  const jobId = uid('job');
+  const { name, type, datasetId, baseModel, qlora, workerId } = payload;
+
+  if (!datasetId) {
+    throw new Error('datasetId is required');
+  }
+
+  if (qlora) {
+    validateQLoraParams(qlora);
+  }
 
   const settings = await getSettings();
+  const datasets = await getDatasets();
+  const ds = datasets.find((x) => x.id === datasetId);
 
-  // For remote jobs, we use the baked-in model path by default
+  if (!ds) {
+    throw new Error('dataset not found');
+  }
+
+  const jobId = uid('job');
+  const jobName = String(name || jobId).trim();
   const selectedBaseModel = baseModel || CONFIG.remoteBakedModelPath;
+  const effectiveQlorа = { ...settings.qlora, ...(qlora || {}) };
+  const jobConfigUrl = buildApiUrl(CONFIG.callbackBaseUrl, `/api/jobs/${jobId}/config`);
 
-  const job = {
+  const initialJob = {
     id: jobId,
-    name: name || jobId,
+    name: jobName,
     type: type || 'remote-train',
     mode: 'remote',
     status: 'queued',
+    currentStage: 'queued',
+    progressPercent: 0,
     datasetId,
-    modelId: modelId || null,
+    modelId: null,
     baseModel: selectedBaseModel,
     workerId: workerId || null,
     paramsSnapshot: {
-      baseModel: selectedBaseModel,
-      modelSource: 'local',
-      qlora: { ...settings.qlora, ...(qlora || {}) },
-      hfPublish: hfPublish || { enabled: false },
+      qlora: effectiveQlorа,
     },
     tags: payload.tags || [],
     notes: payload.notes || '',
-    jobConfigUrl: `${CONFIG.callbackBaseUrl}/api/jobs/${jobId}/config`,
+    jobConfigUrl,
   };
 
-  const dbJob = await upsertJob(job);
-  await generateCallbackToken(jobId);
+  const savedJob = await upsertJob(initialJob);
+  await getOrCreateActiveCallbackToken(jobId);
 
-  emitEvent('job_updated', dbJob);
-  return dbJob;
+  emitEvent('job_updated', savedJob);
+  return savedJob;
 }
 
 async function cloneJob(jobId) {
@@ -7708,7 +8202,6 @@ async function cloneJob(jobId) {
     modelId: source.modelId,
     baseModel: source.baseModel,
     qlora: source.paramsSnapshot?.qlora,
-    hfPublish: source.paramsSnapshot?.hfPublish,
     tags: source.tags,
     notes: source.notes,
   });
@@ -7717,39 +8210,50 @@ async function cloneJob(jobId) {
 async function retryJob(jobId) {
   const source = await getJobById(jobId);
   if (!source) throw new Error('Job not found');
+
   if (source.status !== 'failed' && source.status !== 'stopped') {
     throw new Error('Can only retry failed or stopped jobs');
   }
 
-  const job = {
-    ...source,
-    id: uid('job'),
-    name: `${source.name} (retry)`,
-    status: 'queued',
-    startedAt: null,
-    finishedAt: null,
-    error: null,
-    progressPercent: 0,
-    currentStage: 'queued',
-    createdAt: nowIso(),
-    jobConfigUrl: source.mode === 'remote' ? `${CONFIG.callbackBaseUrl}/api/jobs/${source.id}/config` : null,
-  };
-
-  const dbJob = await upsertJob(job);
   if (source.mode === 'remote') {
-    await generateCallbackToken(job.id);
-  } else if (source.type === 'fine-tune') {
+    return createRemoteJob({
+      name: `${source.name} (retry)`,
+      type: source.type,
+      datasetId: source.datasetId,
+      modelId: source.modelId,
+      baseModel: source.baseModel,
+      qlora: source.paramsSnapshot?.qlora,
+      tags: source.tags,
+      notes: source.notes,
+      workerId: source.workerId,
+    });
+  }
+
+  if (source.type === 'fine-tune') {
     return startFineTuneJob({
       datasetId: source.datasetId,
-      name: job.name,
+      name: `${source.name} (retry)`,
       modelId: source.modelId,
       baseModel: source.baseModel,
       qlora: source.paramsSnapshot?.qlora,
     });
   }
 
-  emitEvent('job_updated', dbJob);
-  return dbJob;
+  const retried = await upsertJob({
+    ...source,
+    id: uid('job'),
+    name: `${source.name} (retry)`,
+    status: 'queued',
+    currentStage: 'queued',
+    progressPercent: 0,
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+    createdAt: nowIso(),
+  });
+
+  emitEvent('job_updated', retried);
+  return retried;
 }
 
 async function cancelJob(jobId) {
@@ -7760,19 +8264,29 @@ async function handleWorkerStatus(jobId, payload) {
   const job = await getJobById(jobId);
   if (!job) throw new Error('Job not found');
 
+  let normalizedStatus = String(payload.status || '').trim().toLowerCase();
+  if (normalizedStatus === 'started') normalizedStatus = 'running';
+  if (normalizedStatus === 'finished') normalizedStatus = 'completed';
+
   const patch = {
-    status: payload.status,
-    currentStage: payload.stage,
-    message: payload.message,
+    status: normalizedStatus || job.status,
+    currentStage: payload.stage || job.currentStage,
+    message: payload.message || job.message,
+    progressPercent:
+      payload.progress !== undefined && payload.progress !== null
+        ? Number(payload.progress)
+        : job.progressPercent,
     lastStatusPayload: payload,
   };
 
-  if (payload.status === 'running' && !job.startedAt) {
+  if (normalizedStatus === 'running' && !job.startedAt) {
     patch.startedAt = nowIso();
   }
-  if (['completed', 'failed', 'stopped'].includes(payload.status)) {
+
+  if (['completed', 'failed', 'stopped'].includes(normalizedStatus)) {
     patch.finishedAt = nowIso();
   }
+
   if (payload.error) {
     patch.error = payload.error;
   }
@@ -7791,77 +8305,137 @@ async function handleWorkerStatus(jobId, payload) {
 
 async function handleWorkerProgress(jobId, payload) {
   const job = await getJobById(jobId);
+  if (!job) throw new Error('Job not found');
+
   const updated = await upsertJob({
     ...job,
-    progressPercent: payload.progress || 0,
+    status: job.status === 'queued' ? 'running' : job.status,
+    progressPercent:
+      payload.progress !== undefined && payload.progress !== null
+        ? Number(payload.progress)
+        : job.progressPercent,
     currentStage: payload.stage || job.currentStage,
+    message: payload.message || job.message,
     lastProgressPayload: payload,
+    startedAt: job.startedAt || nowIso(),
+  });
+
+  await db('job_events').insert({
+    job_id: jobId,
+    type: 'progress',
+    payload: JSON.stringify(payload),
   });
 
   emitEvent('job_progress', { jobId, ...payload });
+  emitEvent('job_updated', updated);
+
   return { ok: true };
 }
 
 async function handleWorkerLogs(jobId, payload) {
-  const { logs, offset } = payload;
+  const job = await getJobById(jobId);
+  if (!job) throw new Error('Job not found');
+
+  const content = String(payload.logs ?? payload.chunk ?? '');
+  const offset = Number(payload.offset || 0);
+
+  if (!content) {
+    return { ok: true };
+  }
 
   await db('job_logs').insert({
     job_id: jobId,
-    content: logs,
-    offset: offset,
+    content,
+    offset,
   });
 
-  emitEvent('job_log_chunk', { jobId, logs, offset });
+  await upsertJob({
+    ...job,
+    logChunkCount: Number(job.logChunkCount || 0) + 1,
+    lastLogOffset: offset,
+  });
+
+  emitEvent('job_log_chunk', { jobId, logs: content, offset });
   return { ok: true };
 }
 
 async function handleWorkerFinal(jobId, payload) {
   const job = await getJobById(jobId);
+  if (!job) throw new Error('Job not found');
+
+  const result = payload.result || {};
+  const failed =
+    String(payload.status || '').toLowerCase() === 'failed' ||
+    String(result.status || '').toLowerCase() === 'failed';
+
   const patch = {
-    status: 'completed',
+    status: failed ? 'failed' : 'completed',
+    currentStage: failed ? 'failed' : 'finished',
+    progressPercent: 100,
     finishedAt: nowIso(),
     finalPayload: payload,
-    summaryMetrics: payload.metrics || {},
-    hfRepoIdLora: payload.hf_repo_id_lora,
-    hfRepoIdMerged: payload.hf_repo_id_merged,
-    hfRepoIdMetadata: payload.hf_repo_id_metadata,
-    publishedAt: payload.published_at || nowIso(),
+    summaryMetrics: {
+      training: result.training?.summary || null,
+      evaluation: result.evaluation?.summary || null,
+    },
+    error: failed ? (result.error || payload.error || 'remote job failed') : null,
   };
 
   const updated = await upsertJob({ ...job, ...patch });
 
-  if (payload.artifacts) {
-    for (const art of payload.artifacts) {
-      await db('job_artifacts').insert({
-        job_id: jobId,
-        name: art.name,
-        type: art.type,
-        url: art.url,
-        size: art.size,
-      });
-    }
+  await db('job_events').insert({
+    job_id: jobId,
+    type: 'final',
+    payload: JSON.stringify(payload),
+  });
+
+  const uploads = result.uploads || {};
+  for (const [artifactType, artifact] of Object.entries(uploads)) {
+    await db('job_artifacts').insert({
+      job_id: jobId,
+      name:
+        artifact?.path ||
+        artifact?.archive_path ||
+        artifact?.repo_id ||
+        artifactType,
+      type: artifactType,
+      path: artifact?.path || artifact?.archive_path || null,
+      url: artifact?.url || artifact?.download_url || artifact?.repo_id || null,
+      size: artifact?.size || null,
+    });
   }
 
   emitEvent('job_finalized', updated);
+  emitEvent('job_updated', updated);
+
   return { ok: true };
 }
 
 async function updateJobMetadata(jobId, { tags, notes }) {
   const current = await getJobById(jobId);
+  if (!current) throw new Error('Job not found');
+
   const next = await upsertJob({
     ...current,
     tags: tags !== undefined ? tags : current.tags,
     notes: notes !== undefined ? notes : current.notes,
   });
+
   emitEvent('job_updated', next);
   return next;
 }
 
 async function stopJob(jobId) {
   const job = await getJobById(jobId);
+  if (!job) throw new Error('Job not found');
 
   if (job.mode === 'remote') {
-    const updated = await upsertJob({ ...job, status: 'stopped', finishedAt: nowIso() });
+    const updated = await upsertJob({
+      ...job,
+      status: 'stopped',
+      currentStage: 'stopped',
+      finishedAt: nowIso(),
+    });
     emitEvent('job_updated', updated);
     return { ok: true, message: 'Stop signal sent to remote worker' };
   }
@@ -7876,6 +8450,7 @@ async function stopJob(jobId) {
   const next = await upsertJob({
     ...job,
     status: 'stopped',
+    currentStage: 'stopped',
     finishedAt: nowIso(),
     pid: null,
   });
@@ -7894,14 +8469,17 @@ async function getJobEvents(id) {
   const events = await db('job_events')
     .where({ job_id: id })
     .orderBy('created_at', 'asc');
-  return events.map(e => ({
-    ...e,
-    payload: e.payload ? JSON.parse(e.payload) : null
+
+  return events.map((event) => ({
+    ...event,
+    payload: safeJsonParse(event.payload, null),
   }));
 }
 
 async function getJobLogs(id, tail = 200) {
   const job = await getJobById(id);
+  if (!job) throw new Error('Job not found');
+
   if (job.mode === 'local') {
     const text = await readText(job.logFile, '');
     const lines = text.split('\n');
@@ -7910,29 +8488,42 @@ async function getJobLogs(id, tail = 200) {
       logFile: job.logFile,
       content: lines.slice(-tail).join('\n'),
     };
-  } else {
-    const logs = await db('job_logs')
-      .where({ job_id: id })
-      .orderBy('created_at', 'desc')
-      .limit(tail);
-    return {
-      id: job.id,
-      content: logs.reverse().map(l => l.content).join('\n'),
-    };
   }
+
+  const logs = await db('job_logs')
+    .where({ job_id: id })
+    .orderBy('created_at', 'desc')
+    .limit(tail);
+
+  return {
+    id: job.id,
+    content: logs.reverse().map((entry) => entry.content).join('\n'),
+  };
 }
 
 async function getJobLaunchCommand(id) {
   const job = await getJobById(id);
   if (!job) throw new Error('Job not found');
 
-  const hfToken = '${HF_TOKEN}';
-  const configUrl = job.jobConfigUrl;
+  if (job.mode !== 'remote') {
+    return 'Local jobs are started by the backend directly';
+  }
 
-  return `docker run --runtime=nvidia --gpus all \\
-  -e JOB_CONFIG_URL=${configUrl} \\
-  -e HF_TOKEN=${hfToken} \\
-  trainer-container-image`;
+  const callbackToken = await getOrCreateActiveCallbackToken(job.id);
+  const jobConfigUrl = `${job.jobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
+  const image = job.containerImage || 'itk-ai-trainer-service:qwen-7b';
+  const hfToken = '${HF_TOKEN}';
+
+  const outputRoot = process.env.OUTPUT_ROOT || '/storage/data/llm-lab/.remote-output';
+
+  return [
+    'docker run --rm --gpus all \\',
+    '  --shm-size 16g \\',
+    `  -e JOB_CONFIG_URL="${jobConfigUrl}" \\`,
+    `  -e HF_TOKEN="${hfToken}" \\`,
+    `  -v ${outputRoot}:/output \\`,
+    `  ${image}`,
+  ].join('\n');
 }
 
 async function startSyntheticGenJob(cfg) {
@@ -10100,6 +10691,159 @@ module.exports = {
 };
 
 
+path: /services/remote-job-config.js
+----------------------------------------
+const { CONFIG } = require('../config');
+
+function toInt(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function toNum(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function joinUrl(base, path) {
+  return `${String(base || '').replace(/\/+$/, '')}${path}`;
+}
+
+function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken }) {
+  if (!job) {
+    throw new Error('job is required');
+  }
+
+  if (!dataset?.processedPath) {
+    throw new Error(`dataset for job ${job.id} is missing processedPath`);
+  }
+
+  if (!callbackAuthToken) {
+    throw new Error(`callbackAuthToken is required for job ${job.id}`);
+  }
+
+  const qlora = job.paramsSnapshot?.qlora || {};
+  const baseDir = `/output/${job.id}`;
+  const callbackBaseUrl = CONFIG.callbackBaseUrl;
+  const trainUrl = joinUrl(
+    callbackBaseUrl,
+    `/jobs/${job.id}/dataset/train?token=${encodeURIComponent(callbackAuthToken)}`
+  );
+
+  const reportingAuth = {
+    bearer_token: callbackAuthToken,
+  };
+
+  const loadIn4bit =
+    qlora.loadIn4bit !== undefined
+      ? !!qlora.loadIn4bit
+      : true;
+
+  const trainerMethod = loadIn4bit ? 'qlora' : 'lora';
+
+  return {
+    job_id: job.id,
+    job_name: job.name || job.id,
+    mode: 'remote',
+
+    model: {
+      source: 'local',
+      local_path: CONFIG.remoteBakedModelPath,
+      trust_remote_code: false,
+      load_in_4bit: loadIn4bit,
+      dtype: 'bfloat16',
+      max_seq_length: toInt(qlora.maxSeqLength, 4096),
+    },
+
+    dataset: {
+      source: 'url',
+      train_url: trainUrl,
+      format: 'messages',
+      messages_field: 'messages',
+    },
+
+    training: {
+      method: trainerMethod,
+      max_seq_length: toInt(qlora.maxSeqLength, 4096),
+      per_device_train_batch_size: toInt(qlora.perDeviceTrainBatchSize, 1),
+      gradient_accumulation_steps: toInt(qlora.gradientAccumulationSteps, 8),
+      num_train_epochs: toInt(qlora.numTrainEpochs, 1),
+      learning_rate: toNum(qlora.learningRate, 2e-4),
+      warmup_ratio: toNum(qlora.warmupRatio, 0.03),
+      logging_steps: 1,
+      save_steps: 50,
+      eval_steps: 50,
+      bf16: true,
+      packing: false,
+      save_total_limit: 2,
+      optim: 'adamw_8bit',
+    },
+
+    lora: {
+      r: toInt(qlora.loraR, 16),
+      lora_alpha: toInt(qlora.loraAlpha, 16),
+      lora_dropout: toNum(qlora.loraDropout, 0),
+      bias: 'none',
+      use_gradient_checkpointing: 'unsloth',
+      random_state: 3407,
+      target_modules: Array.isArray(qlora.targetModules) && qlora.targetModules.length
+        ? qlora.targetModules
+        : ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
+    },
+
+    outputs: {
+      base_dir: baseDir,
+    },
+
+    postprocess: {
+      merge_lora: true,
+      save_merged_16bit: true,
+      run_awq_quantization: false,
+    },
+
+    evaluation: {
+      enabled: false,
+    },
+
+    reporting: {
+      status: {
+        enabled: true,
+        url: joinUrl(callbackBaseUrl, '/jobs/status'),
+        timeout_sec: 15,
+        auth: reportingAuth,
+      },
+      progress: {
+        enabled: true,
+        url: joinUrl(callbackBaseUrl, '/jobs/progress'),
+        timeout_sec: 15,
+        auth: reportingAuth,
+      },
+      final: {
+        enabled: true,
+        url: joinUrl(callbackBaseUrl, '/jobs/final'),
+        timeout_sec: 15,
+        auth: reportingAuth,
+      },
+    },
+
+    upload: {
+      enabled: false,
+      target: 'local',
+    },
+
+    huggingface: {
+      enabled: false,
+      push_lora: false,
+      push_merged: false,
+    },
+  };
+}
+
+module.exports = {
+  buildRemoteTrainerConfig,
+};
+
+
 path: /services/runtime.js
 ----------------------------------------
 // services/runtime.js
@@ -11839,13 +12583,14 @@ module.exports = {
 
 path: /utils/auth-middleware.js
 ----------------------------------------
-const { verifyToken, verifyCallbackToken } = require('../services/auth');
+const { verifyToken } = require('../services/auth');
 
 function authMiddleware(req, res, next) {
-  // Check for standard JWT auth first
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.split(' ')[1];
+  const authHeader = req.headers.authorization || '';
+
+  // 1. Обычный JWT для UI / API пользователей
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice('Bearer '.length).trim();
     const decoded = verifyToken(token);
     if (decoded) {
       req.user = decoded;
@@ -11853,28 +12598,36 @@ function authMiddleware(req, res, next) {
     }
   }
 
-  // Fallback to Worker Callback Auth for certain endpoints
-  const isCallback = req.path.startsWith('/status') ||
-                     req.path.startsWith('/progress') ||
-                     req.path.startsWith('/final') ||
-                     req.path.startsWith('/logs');
+  // 2. Worker callbacks: пропускаем дальше, а реальную проверку делает route-level callbackAuth
+  const isCallback =
+    req.method === 'POST' &&
+    (
+      req.path === '/status' ||
+      req.path === '/progress' ||
+      req.path === '/final' ||
+      req.path === '/logs'
+    );
 
-  if (isCallback && req.method === 'POST') {
-    const { job_id, auth_token } = req.body;
-    if (job_id && auth_token) {
-       // We can't easily verify here without making it async,
-       // so we'll let the route handler deal with it if it's a callback.
-       // Or better, we make this middleware async.
-       return next();
+  if (isCallback) {
+    const hasBearer = authHeader.startsWith('Bearer ');
+    const hasBodyToken =
+      !!req.body?.auth_token ||
+      !!req.body?.callback_auth_token;
+
+    if (hasBearer || hasBodyToken) {
+      return next();
     }
   }
 
-  // Also allow GET /jobs/:id/config if token is in query
-  if (req.path.endsWith('/config') && req.query.token) {
+  // 3. Bootstrap config по одноразовому token в query
+  if (req.method === 'GET' && req.path.endsWith('/config') && req.query?.token) {
     return next();
   }
 
-  if (req.user) return next();
+  // 4. Датасет для remote trainer по token в query
+  if (req.method === 'GET' && req.path.includes('/dataset/') && req.query?.token) {
+    return next();
+  }
 
   return res.status(401).json({ error: 'Unauthorized: No valid token provided' });
 }
@@ -12676,8 +13429,8 @@ module.exports = roleMiddleware;
 
 
 === SUMMARY ===
-included: 57
+included: 58
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 353405
+totalBytes(approx): 371124

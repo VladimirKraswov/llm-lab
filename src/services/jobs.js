@@ -498,8 +498,19 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
   return { ok: true, jobId };
 }
 
-async function createRemoteJob(payload) {
-  const { name, type, datasetId, baseModel, qlora, workerId } = payload;
+async function createRemoteJob(payload, options = {}) {
+  const {
+    name,
+    type,
+    datasetId,
+    baseModel,
+    qlora,
+    workerId,
+    hfPublish,
+    trainerImage,
+    tags,
+    notes,
+  } = payload;
 
   if (!datasetId) {
     throw new Error('datasetId is required');
@@ -517,11 +528,18 @@ async function createRemoteJob(payload) {
     throw new Error('dataset not found');
   }
 
+  const callbackBase = String(options.publicBaseUrl || CONFIG.callbackBaseUrl || '').trim();
+  if (!callbackBase) {
+    throw new Error('Public callback base URL is empty');
+  }
+
   const jobId = uid('job');
   const jobName = String(name || jobId).trim();
-  const selectedBaseModel = baseModel || CONFIG.remoteBakedModelPath;
-  const effectiveQlorа = { ...settings.qlora, ...(qlora || {}) };
-  const jobConfigUrl = buildApiUrl(CONFIG.callbackBaseUrl, `/api/jobs/${jobId}/config`);
+  const selectedBaseModel = baseModel || CONFIG.remoteBakedModelPath || '/app';
+  const effectiveQlora = { ...settings.qlora, ...(qlora || {}) };
+  const effectiveHfPublish = hfPublish || {};
+  const effectiveTrainerImage = trainerImage || 'itk-ai-trainer-service:qwen-7b';
+  const baseJobConfigUrl = buildApiUrl(callbackBase, `/api/jobs/${jobId}/config`);
 
   const initialJob = {
     id: jobId,
@@ -531,23 +549,46 @@ async function createRemoteJob(payload) {
     status: 'queued',
     currentStage: 'queued',
     progressPercent: 0,
+    workerType: 'trainer-service',
+    launchMode: 'manual',
     datasetId,
     modelId: null,
     baseModel: selectedBaseModel,
     workerId: workerId || null,
+    containerImage: effectiveTrainerImage,
     paramsSnapshot: {
-      qlora: effectiveQlorа,
+      qlora: effectiveQlora,
+      hfPublish: effectiveHfPublish,
     },
-    tags: payload.tags || [],
-    notes: payload.notes || '',
-    jobConfigUrl,
+    tags: tags || [],
+    notes: notes || '',
+    jobConfigUrl: baseJobConfigUrl,
+    hfRepoIdLora: effectiveHfPublish.repo_id_lora || null,
+    hfRepoIdMerged: effectiveHfPublish.repo_id_merged || null,
+    hfRepoIdMetadata: effectiveHfPublish.repo_id_metadata || null,
   };
 
   const savedJob = await upsertJob(initialJob);
-  await getOrCreateActiveCallbackToken(jobId);
+  const callbackToken = await getOrCreateActiveCallbackToken(jobId);
+  const launchJobConfigUrl =
+    `${baseJobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
 
-  emitEvent('job_updated', savedJob);
-  return savedJob;
+  return {
+    ...savedJob,
+    launch: {
+      jobConfigUrl: launchJobConfigUrl,
+      env: {
+        JOB_CONFIG_URL: launchJobConfigUrl,
+      },
+      exampleDockerRun: [
+        'docker run --rm --gpus all \\',
+        '  --shm-size 16g \\',
+        `  -e JOB_CONFIG_URL="${launchJobConfigUrl}" \\`,
+        '  -e HF_TOKEN="$HF_TOKEN" \\',
+        `  ${effectiveTrainerImage}`,
+      ].join('\n'),
+    },
+  };
 }
 
 async function cloneJob(jobId) {
@@ -561,6 +602,8 @@ async function cloneJob(jobId) {
     modelId: source.modelId,
     baseModel: source.baseModel,
     qlora: source.paramsSnapshot?.qlora,
+    hfPublish: source.paramsSnapshot?.hfPublish,
+    trainerImage: source.containerImage,
     tags: source.tags,
     notes: source.notes,
   });
@@ -582,6 +625,8 @@ async function retryJob(jobId) {
       modelId: source.modelId,
       baseModel: source.baseModel,
       qlora: source.paramsSnapshot?.qlora,
+      hfPublish: source.paramsSnapshot?.hfPublish,
+      trainerImage: source.containerImage,
       tags: source.tags,
       notes: source.notes,
       workerId: source.workerId,
@@ -796,7 +841,7 @@ async function stopJob(jobId) {
       finishedAt: nowIso(),
     });
     emitEvent('job_updated', updated);
-    return { ok: true, message: 'Stop signal sent to remote worker' };
+    return { ok: true, message: 'Remote job marked as stopped' };
   }
 
   if (!job.pid || !isPidRunning(job.pid)) {
@@ -869,18 +914,19 @@ async function getJobLaunchCommand(id) {
   }
 
   const callbackToken = await getOrCreateActiveCallbackToken(job.id);
-  const jobConfigUrl = `${job.jobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
+  const baseUrl = String(job.jobConfigUrl || '').trim();
+  const jobConfigUrl = baseUrl.includes('?token=')
+    ? baseUrl
+    : `${baseUrl}?token=${encodeURIComponent(callbackToken)}`;
+
   const image = job.containerImage || 'itk-ai-trainer-service:qwen-7b';
   const hfToken = '${HF_TOKEN}';
-
-  const outputRoot = process.env.OUTPUT_ROOT || '/storage/data/llm-lab/.remote-output';
 
   return [
     'docker run --rm --gpus all \\',
     '  --shm-size 16g \\',
     `  -e JOB_CONFIG_URL="${jobConfigUrl}" \\`,
     `  -e HF_TOKEN="${hfToken}" \\`,
-    `  -v ${outputRoot}:/output \\`,
     `  ${image}`,
   ].join('\n');
 }

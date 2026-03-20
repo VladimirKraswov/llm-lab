@@ -10,11 +10,11 @@ function toNum(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function joinUrl(base, path) {
-  return `${String(base || '').replace(/\/+$/, '')}${path}`;
+function joinUrl(base, routePath) {
+  return `${String(base || '').replace(/\/+$/, '')}${routePath}`;
 }
 
-function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken }) {
+function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseUrl }) {
   if (!job) {
     throw new Error('job is required');
   }
@@ -28,11 +28,17 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken }) {
   }
 
   const qlora = job.paramsSnapshot?.qlora || {};
+  const hfPublish = job.paramsSnapshot?.hfPublish || {};
   const baseDir = `/output/${job.id}`;
-  const callbackBaseUrl = CONFIG.callbackBaseUrl;
+
+  const callbackBaseUrl = String(publicBaseUrl || CONFIG.callbackBaseUrl || '').replace(/\/+$/, '');
+  if (!callbackBaseUrl) {
+    throw new Error('callbackBaseUrl is empty');
+  }
+
   const trainUrl = joinUrl(
     callbackBaseUrl,
-    `/jobs/${job.id}/dataset/train?token=${encodeURIComponent(callbackAuthToken)}`
+    `/api/jobs/${job.id}/dataset/train?token=${encodeURIComponent(callbackAuthToken)}`
   );
 
   const reportingAuth = {
@@ -113,33 +119,42 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken }) {
     reporting: {
       status: {
         enabled: true,
-        url: joinUrl(callbackBaseUrl, '/jobs/status'),
+        url: joinUrl(callbackBaseUrl, '/api/jobs/status'),
         timeout_sec: 15,
         auth: reportingAuth,
       },
       progress: {
         enabled: true,
-        url: joinUrl(callbackBaseUrl, '/jobs/progress'),
+        url: joinUrl(callbackBaseUrl, '/api/jobs/progress'),
         timeout_sec: 15,
         auth: reportingAuth,
       },
       final: {
         enabled: true,
-        url: joinUrl(callbackBaseUrl, '/jobs/final'),
+        url: joinUrl(callbackBaseUrl, '/api/jobs/final'),
+        timeout_sec: 15,
+        auth: reportingAuth,
+      },
+      logs: {
+        enabled: true,
+        url: joinUrl(callbackBaseUrl, '/api/jobs/logs'),
         timeout_sec: 15,
         auth: reportingAuth,
       },
     },
 
     upload: {
-      enabled: false,
-      target: 'local',
+      enabled: !!hfPublish.enabled,
+      target: hfPublish.enabled ? 'huggingface' : 'local',
     },
 
     huggingface: {
-      enabled: false,
-      push_lora: false,
-      push_merged: false,
+      enabled: !!hfPublish.enabled,
+      push_lora: !!hfPublish.push_lora,
+      push_merged: !!hfPublish.push_merged,
+      repo_id_lora: hfPublish.repo_id_lora || '',
+      repo_id_merged: hfPublish.repo_id_merged || '',
+      repo_id_metadata: hfPublish.repo_id_metadata || '',
     },
   };
 }
