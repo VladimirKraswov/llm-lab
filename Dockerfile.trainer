@@ -1,0 +1,38 @@
+# Trainer image includes Python environment and ML libraries
+# Optimized for Unsloth training
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python3
+
+WORKDIR /app
+
+# Create venv and install python deps
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements/ /app/requirements/
+
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements/ml_env.txt && \
+    pip install -r requirements/quant_env.txt && \
+    pip install -r requirements/transformers_env.txt
+
+# Copy trainer code
+# Note: In a real system, we'd have a specific trainer-service.py
+# that handles JOB_CONFIG_URL + callbacks. For this PR,
+# assume src/python/train.py is already compatible or updated.
+COPY src/python/ /app/python/
+
+ENTRYPOINT ["python3", "/app/python/train.py"]

@@ -12,6 +12,7 @@ const authMiddleware = require('./utils/auth-middleware');
 const settingsRoute = require('./routes/settings');
 const datasetsRoute = require('./routes/datasets');
 const jobsRoute = require('./routes/jobs');
+const workersRoute = require('./routes/workers');
 const runtimeRoute = require('./routes/runtime');
 const dashboardRoute = require('./routes/dashboard');
 const eventsRoute = require('./routes/events');
@@ -61,6 +62,7 @@ async function main() {
   app.use('/settings', authMiddleware, settingsRoute);
   app.use('/datasets', authMiddleware, datasetsRoute);
   app.use('/jobs', authMiddleware, jobsRoute);
+  app.use('/workers', workersRoute);
   app.use('/runtime', authMiddleware, runtimeRoute);
   app.use('/dashboard', authMiddleware, dashboardRoute);
   app.use('/events', authMiddleware, eventsRoute);
@@ -84,6 +86,7 @@ async function main() {
         req.path.startsWith('/settings') ||
         req.path.startsWith('/datasets') ||
         req.path.startsWith('/jobs') ||
+        req.path.startsWith('/workers') ||
         req.path.startsWith('/runtime') ||
         req.path.startsWith('/dashboard') ||
         req.path.startsWith('/events') ||

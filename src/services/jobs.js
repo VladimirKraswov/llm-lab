@@ -123,17 +123,11 @@ function validateQLoraParams(params) {
   if (params.gradientAccumulationSteps !== undefined && (!Number.isInteger(params.gradientAccumulationSteps) || params.gradientAccumulationSteps < 1)) {
     throw new Error('gradientAccumulationSteps must be an integer >= 1');
   }
-  if (params.maxSeqLength !== undefined && (!Number.isInteger(params.maxSeqLength) || params.maxSeqLength < 1)) {
-    throw new Error('maxSeqLength must be an integer >= 1');
+  if (params.num_train_epochs !== undefined && (!Number.isInteger(params.num_train_epochs) || params.num_train_epochs < 1)) {
+    throw new Error('num_train_epochs must be an integer >= 1');
   }
-  if (params.useLora !== undefined && typeof params.useLora !== 'boolean') {
-    throw new Error('useLora must be a boolean');
-  }
-  if (params.loadIn4bit !== undefined && typeof params.loadIn4bit !== 'boolean') {
-    throw new Error('loadIn4bit must be a boolean');
-  }
-  if (params.targetModules !== undefined && !Array.isArray(params.targetModules)) {
-    throw new Error('targetModules must be an array of strings');
+  if (params.per_device_train_batch_size !== undefined && (!Number.isInteger(params.per_device_train_batch_size) || params.per_device_train_batch_size < 1)) {
+    throw new Error('per_device_train_batch_size must be an integer >= 1');
   }
 }
 
@@ -194,6 +188,7 @@ function parseJob(job) {
     workerType: job.worker_type,
     launchMode: job.launch_mode,
     workerHost: job.worker_host,
+    workerId: job.worker_id,
     containerImage: job.container_image,
     containerCommand: job.container_command,
     jobConfigUrl: job.job_config_url,
@@ -242,6 +237,7 @@ async function upsertJob(job) {
     worker_type: job.workerType || null,
     launch_mode: job.launchMode || null,
     worker_host: job.workerHost || null,
+    worker_id: job.workerId || null,
     container_image: job.containerImage || null,
     container_command: job.containerCommand || null,
     job_config_url: job.jobConfigUrl || null,
@@ -263,12 +259,12 @@ async function upsertJob(job) {
     model_snapshot: job.modelSnapshot ? JSON.stringify(job.modelSnapshot) : null,
     env_snapshot: job.envSnapshot ? JSON.stringify(job.envSnapshot) : null,
     summary_metrics: job.summaryMetrics ? JSON.stringify(job.summaryMetrics) : null,
-    dataset_id: job.datasetId || null,
-    model_id: job.modelId || null,
-    base_model: job.baseModel || null,
-    output_dir: job.outputDir || null,
+    dataset_id: job.dataset_id || null,
+    model_id: job.model_id || null,
+    base_model: job.base_model || null,
+    output_dir: job.output_dir || null,
     pid: job.pid || null,
-    config_path: job.configPath || null,
+    config_path: job.config_path || null,
     started_at: job.startedAt || null,
     finished_at: job.finishedAt || null,
     updated_at: nowIso(),
@@ -443,7 +439,7 @@ async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) 
 }
 
 async function createRemoteJob(payload) {
-  const { name, type, datasetId, modelId, baseModel, qlora, hfPublish } = payload;
+  const { name, type, datasetId, modelId, baseModel, qlora, hfPublish, workerId } = payload;
   const jobId = uid('job');
 
   const settings = await getSettings();
@@ -458,6 +454,7 @@ async function createRemoteJob(payload) {
     datasetId,
     modelId,
     baseModel: selectedBaseModel,
+    workerId: workerId || null,
     paramsSnapshot: {
       qlora: { ...settings.qlora, ...(qlora || {}) },
       hfPublish: hfPublish || { enabled: false },
@@ -516,7 +513,6 @@ async function retryJob(jobId) {
   if (source.mode === 'remote') {
     await generateCallbackToken(job.id);
   } else if (source.type === 'fine-tune') {
-    // Local fine-tune retry logic would go here, or just call startFineTuneJob with source params
     return startFineTuneJob({
       datasetId: source.datasetId,
       name: job.name,
@@ -641,7 +637,6 @@ async function stopJob(jobId) {
   if (job.mode === 'remote') {
     const updated = await upsertJob({ ...job, status: 'stopped', finishedAt: nowIso() });
     emitEvent('job_updated', updated);
-    // In a real system, we'd send a cancellation to the worker
     return { ok: true, message: 'Stop signal sent to remote worker' };
   }
 
@@ -797,4 +792,6 @@ module.exports = {
   getJobLogs,
   getJobLaunchCommand,
   getArtifacts,
+  parseJob,
+  upsertJob,
 };

@@ -1,0 +1,21 @@
+services:
+  trainer-agent:
+    image: ${DOCKER_USER:-llmlab}/trainer-agent:latest
+    container_name: trainer-agent
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./workspace:/workspace
+    environment:
+      - WORKER_NAME=${WORKER_NAME:-remote-gpu-worker}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://orchestrator-host:8787}
+      - TRAINER_IMAGE=${TRAINER_IMAGE:-llmlab/trainer:latest}
+      - HF_TOKEN=${HF_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
