@@ -13,6 +13,7 @@ import { JobDetailsEval } from '../../components/job-details-eval';
 import { PageHeader } from '../../components/page-header';
 import { cn } from '../../lib/utils';
 import { CopyButton } from '../../components/copy-button';
+import { Download, FileCode } from 'lucide-react';
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { size?: string }) {
   return (
@@ -209,6 +210,10 @@ export default function JobsPage() {
       setSelectedId(newJob.id);
     },
   });
+
+  const downloadBundle = (jobId: string) => {
+    window.open(`${apiBase}/jobs/${jobId}/launch/bundle`, '_blank');
+  };
 
   const useOutputMutation = useMutation({
     mutationFn: ({ jobId }: { jobId: string }) => api.useJobOutput(jobId),
@@ -684,31 +689,70 @@ export default function JobsPage() {
                         </a>
                       </div>
 
-                      {selectedJob.mode === 'remote' && (selectedJob.hfRepoIdLora || selectedJob.hfRepoIdMerged) && (
-                        <div className="rounded-xl border border-blue-900/30 bg-blue-950/20 p-3 space-y-2">
-                           <div className="text-[10px] font-bold text-blue-400 uppercase">HF Repositories</div>
-                           <div className="grid gap-2">
-                             {selectedJob.hfRepoIdLora && (
-                               <a
-                                 href={`https://huggingface.co/${selectedJob.hfRepoIdLora}`}
-                                 target="_blank"
-                                 className="flex items-center justify-between group"
+                      {selectedJob.mode === 'remote' && (
+                        <div className="rounded-xl border border-blue-900/30 bg-blue-950/20 p-3 space-y-3">
+                           <div className="flex items-center justify-between">
+                             <div className="text-[10px] font-bold text-blue-400 uppercase tracking-wider">Remote Launch</div>
+                             <div className="flex gap-2">
+                               <Button
+                                 size="sm"
+                                 className="h-6 bg-slate-800 hover:bg-slate-700 text-[9px]"
+                                 onClick={() => window.open(`${apiBase}/jobs/${selectedJob.id}/launch/compose`, '_blank')}
                                >
-                                 <span className="text-xs text-slate-300 group-hover:text-white transition-colors truncate">LoRA: {selectedJob.hfRepoIdLora}</span>
-                                 <span className="text-[10px] text-slate-500">↗</span>
-                               </a>
-                             )}
-                             {selectedJob.hfRepoIdMerged && (
-                               <a
-                                 href={`https://huggingface.co/${selectedJob.hfRepoIdMerged}`}
-                                 target="_blank"
-                                 className="flex items-center justify-between group"
+                                 <FileCode size={10} className="mr-1" /> Compose
+                               </Button>
+                               <Button
+                                 size="sm"
+                                 className="h-6 bg-blue-600 hover:bg-blue-500 text-[9px]"
+                                 onClick={() => downloadBundle(selectedJob.id)}
                                >
-                                 <span className="text-xs text-slate-300 group-hover:text-white transition-colors truncate">Merged: {selectedJob.hfRepoIdMerged}</span>
-                                 <span className="text-[10px] text-slate-500">↗</span>
-                               </a>
-                             )}
+                                 <Download size={10} className="mr-1" /> Bundle
+                               </Button>
+                             </div>
                            </div>
+
+                           <div className="grid gap-2">
+                             {selectedJob.runtimePresetId && (
+                               <div className="flex justify-between text-[10px]">
+                                 <span className="text-slate-500">Preset</span>
+                                 <span className="text-blue-300 font-mono">{selectedJob.runtimePresetId}</span>
+                               </div>
+                             )}
+                             <div className="flex justify-between text-[10px]">
+                               <span className="text-slate-500">Image</span>
+                               <span className="text-slate-300 font-mono truncate max-w-[160px]" title={selectedJob.containerImage || ''}>
+                                 {selectedJob.containerImage || '—'}
+                               </span>
+                             </div>
+                           </div>
+
+                           {(selectedJob.hfRepoIdLora || selectedJob.hfRepoIdMerged) && (
+                             <div className="pt-2 border-t border-blue-900/30 space-y-2">
+                               <div className="text-[9px] font-bold text-slate-500 uppercase">HF Repositories</div>
+                               <div className="grid gap-2">
+                                 {selectedJob.hfRepoIdLora && (
+                                   <a
+                                     href={`https://huggingface.co/${selectedJob.hfRepoIdLora}`}
+                                     target="_blank"
+                                     className="flex items-center justify-between group"
+                                   >
+                                     <span className="text-xs text-slate-300 group-hover:text-white transition-colors truncate">LoRA: {selectedJob.hfRepoIdLora}</span>
+                                     <span className="text-[10px] text-slate-500">↗</span>
+                                   </a>
+                                 )}
+                                 {selectedJob.hfRepoIdMerged && (
+                                   <a
+                                     href={`https://huggingface.co/${selectedJob.hfRepoIdMerged}`}
+                                     target="_blank"
+                                     className="flex items-center justify-between group"
+                                   >
+                                     <span className="text-xs text-slate-300 group-hover:text-white transition-colors truncate">Merged: {selectedJob.hfRepoIdMerged}</span>
+                                     <span className="text-[10px] text-slate-500">↗</span>
+                                   </a>
+                                 )}
+                               </div>
+                             </div>
+                           )}
                         </div>
                       )}
 

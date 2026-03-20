@@ -73,7 +73,7 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
       source: 'local',
 
       // Фактическая baked model внутри trainer container
-      local_path: CONFIG.remoteBakedModelPath,
+      local_path: job.modelLocalPath || CONFIG.remoteBakedModelPath,
 
       // Логическая базовая модель для metadata / README / HF upload
       base_model: logicalBaseModelId,

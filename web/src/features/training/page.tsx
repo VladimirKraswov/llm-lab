@@ -38,6 +38,19 @@ export default function TrainingPage() {
   const [hfPushEnabled, setHfPushEnabled] = useState(true);
   const [hfRepoLora, setHfRepoLora] = useState('');
   const [hfRepoMerged, setHfRepoMerged] = useState('');
+  const [runtimePresetId, setRuntimePresetId] = useState('');
+
+  const presetsQuery = useQuery({
+    queryKey: ['runtime-presets'],
+    queryFn: api.getRuntimePresets,
+    enabled: isRemote,
+  });
+
+  useEffect(() => {
+    if (presetsQuery.data?.length && !runtimePresetId) {
+      setRuntimePresetId(presetsQuery.data[0].id);
+    }
+  }, [presetsQuery.data, runtimePresetId]);
 
   useEffect(() => {
     if (settingsQuery.data?.qlora) {
@@ -112,6 +125,7 @@ export default function TrainingPage() {
       startMutation.mutate({
         datasetId,
         name,
+        runtimePresetId,
         qlora: qloraParams,
         workerId: workerId === 'any' ? undefined : workerId,
         hfPublish: {
@@ -166,10 +180,16 @@ export default function TrainingPage() {
                   </Select>
                 </div>
               ) : (
-                <div className="rounded-xl bg-slate-900/50 border border-slate-800 p-3 flex flex-col justify-center">
-                   <div className="text-xs text-slate-500 uppercase font-bold mb-1">Base Model</div>
-                   <div className="text-sm text-blue-400 font-medium">Baked into remote image</div>
-                   <div className="text-[10px] text-slate-600 mt-1 italic">Selecting a model is not required for remote mode.</div>
+                <div>
+                  <label className="mb-2 block text-sm text-slate-400">Runtime Preset</label>
+                  <Select value={runtimePresetId} onChange={(e) => setRuntimePresetId(e.target.value)}>
+                    <option value="">Select preset</option>
+                    {Array.isArray(presetsQuery.data) && presetsQuery.data.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.title} ({p.family})
+                      </option>
+                    ))}
+                  </Select>
                 </div>
               )}
 
@@ -350,9 +370,29 @@ export default function TrainingPage() {
             </div>
 
             {isRemote && (
-              <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 p-3 text-xs text-blue-200/70">
-                <div className="font-bold mb-1">Remote Training Mode</div>
-                В удаленном режиме используется модель, встроенная в Docker-образ трейнера. Выбор модели не требуется.
+              <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 p-3 text-xs text-blue-200/70 space-y-2">
+                <div className="font-bold">Remote Training Mode</div>
+                {presetsQuery.data?.find(p => p.id === runtimePresetId) && (
+                  <div className="space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Logical Base Model:</span>
+                      <span className="text-white font-mono">{presetsQuery.data.find(p => p.id === runtimePresetId)?.logicalBaseModelId}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Container Image:</span>
+                      <span className="text-white font-mono truncate max-w-[180px]" title={presetsQuery.data.find(p => p.id === runtimePresetId)?.trainerImage}>
+                        {presetsQuery.data.find(p => p.id === runtimePresetId)?.trainerImage}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">SHM Size:</span>
+                      <span className="text-white">{presetsQuery.data.find(p => p.id === runtimePresetId)?.defaultShmSize}</span>
+                    </div>
+                  </div>
+                )}
+                <div className="pt-1 text-[10px] italic">
+                  В удаленном режиме используется модель, встроенная в Docker-образ трейнера.
+                </div>
               </div>
             )}
 

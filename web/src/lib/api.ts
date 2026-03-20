@@ -364,6 +364,9 @@ export type Job = {
 
   mode?: 'local' | 'remote';
   progressPercent?: number;
+  runtimePresetId?: string | null;
+  modelLocalPath?: string | null;
+  containerImage?: string | null;
 
   launch?: {
     jobConfigUrl: string;
@@ -888,6 +891,7 @@ export const api = {
     request<Job>(`/jobs/${id}/retry`, {
       method: 'POST',
     }),
+  getRuntimePresets: () => request<RuntimePreset[]>('/jobs/runtime-presets'),
 
   getSyntheticJobPreview: (jobId: string, limit = 20) =>
     request<SyntheticJobPreviewResponse>(`/synthetic/jobs/${jobId}/preview?limit=${limit}`),
@@ -1044,6 +1048,23 @@ export type User = {
 export type AuthResponse = {
   user: User;
   token: string;
+};
+
+export type RuntimePreset = {
+  id: string;
+  title: string;
+  family: string;
+  logicalBaseModelId: string;
+  localModelPath: string;
+  trainerImage: string;
+  defaultShmSize: string;
+  gpuCount: number;
+  supports: {
+    qlora: boolean;
+    lora: boolean;
+    merge: boolean;
+  };
+  enabled: boolean;
 };
 
 export type Api = typeof api;

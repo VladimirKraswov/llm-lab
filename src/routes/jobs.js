@@ -27,7 +27,9 @@ const {
 } = require('../services/auth');
 const roleMiddleware = require('../utils/role-middleware');
 const { getDatasets } = require('../services/state');
+const archiver = require('archiver');
 const { buildRemoteTrainerConfig } = require('../services/remote-job-config');
+const { getRuntimePresets, getRuntimePresetById } = require('../services/runtime-presets');
 const { CONFIG } = require('../config');
 const { buildPublicBaseUrl } = require('../utils/public-base-url');
 
@@ -134,6 +136,14 @@ router.get('/', async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 50;
     const offset = parseInt(req.query.offset, 10) || 0;
     res.json(await getAllJobs(limit, offset));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/runtime-presets', async (req, res) => {
+  try {
+    res.json(getRuntimePresets());
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -322,6 +332,121 @@ router.post('/:id/stop', async (req, res) => {
     res.json(await stopJob(req.params.id));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/launch/compose', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job || job.mode !== 'remote') return res.status(404).json({ error: 'Job not found or not remote' });
+
+    const preset = job.runtimePresetId ? getRuntimePresetById(job.runtimePresetId) : null;
+    const shmSize = preset?.defaultShmSize || '16g';
+
+    const yaml = [
+      'services:',
+      '  trainer:',
+      `    image: ${job.containerImage || 'itk-ai-trainer-service:qwen-7b'}`,
+      '    container_name: itk-trainer',
+      `    shm_size: ${shmSize}`,
+      '    environment:',
+      '      - JOB_CONFIG_URL=${JOB_CONFIG_URL}',
+      '      - HF_TOKEN=${HF_TOKEN}',
+      '    volumes:',
+      '      - ./output:/output',
+      '      - hf_cache:/root/.cache/huggingface',
+      '    deploy:',
+      '      resources:',
+      '        reservations:',
+      '          devices:',
+      '            - driver: nvidia',
+      '              count: all',
+      '              capabilities: [gpu]',
+      '    restart: "no"',
+      '',
+      'volumes:',
+      '  hf_cache:',
+    ].join('\n');
+
+    res.setHeader('Content-Type', 'text/yaml');
+    res.setHeader('Content-Disposition', `attachment; filename="compose.${job.id}.yaml"`);
+    res.send(yaml);
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/launch/bundle', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job || job.mode !== 'remote') return res.status(404).json({ error: 'Job not found or not remote' });
+
+    const callbackToken = await getOrCreateJobCallbackToken(job.id);
+    const jobConfigUrl = job.jobConfigUrl.includes('?token=')
+      ? job.jobConfigUrl
+      : `${job.jobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
+
+    const preset = job.runtimePresetId ? getRuntimePresetById(job.runtimePresetId) : null;
+    const shmSize = preset?.defaultShmSize || '16g';
+
+    const composeYaml = [
+      'services:',
+      '  trainer:',
+      `    image: ${job.containerImage || 'itk-ai-trainer-service:qwen-7b'}`,
+      '    container_name: itk-trainer',
+      `    shm_size: ${shmSize}`,
+      '    environment:',
+      '      - JOB_CONFIG_URL=${JOB_CONFIG_URL}',
+      '      - HF_TOKEN=${HF_TOKEN}',
+      '    volumes:',
+      '      - ./output:/output',
+      '      - hf_cache:/root/.cache/huggingface',
+      '    deploy:',
+      '      resources:',
+      '        reservations:',
+      '          devices:',
+      '            - driver: nvidia',
+      '              count: all',
+      '              capabilities: [gpu]',
+      '    restart: "no"',
+      '',
+      'volumes:',
+      '  hf_cache:',
+    ].join('\n');
+
+    const envContent = [
+      '# ITK AI Trainer Launch Env',
+      `JOB_CONFIG_URL=${jobConfigUrl}`,
+      'HF_TOKEN=your_huggingface_token_here',
+    ].join('\n');
+
+    const readme = [
+      'ITK AI Trainer Launch Bundle',
+      '============================',
+      '',
+      `Job: ${job.name} (${job.id})`,
+      `Image: ${job.containerImage}`,
+      '',
+      'Quick Start:',
+      '1. Extract this bundle to a GPU server.',
+      '2. Edit .env and set your HF_TOKEN.',
+      '3. Run: docker compose up',
+      '',
+      'Manual Run (Alternative):',
+      await getJobLaunchCommand(job.id),
+    ].join('\n');
+
+    const archive = archiver('tar', { gzip: true });
+    res.setHeader('Content-Type', 'application/x-gzip');
+    res.setHeader('Content-Disposition', `attachment; filename="launch-${job.id}.tar.gz"`);
+
+    archive.pipe(res);
+    archive.append(composeYaml, { name: 'compose.yaml' });
+    archive.append(envContent, { name: '.env.example' });
+    archive.append(readme, { name: 'README.txt' });
+    archive.finalize();
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
   }
 });
 

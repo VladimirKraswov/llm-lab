@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { exec } = require('child_process');
 
 const { CONFIG } = require('../config');
+const { getRuntimePresetById } = require('./runtime-presets');
 const { nowIso, uid } = require('../utils/ids');
 const { isPidRunning, killProcessGroup } = require('../utils/proc');
 const { getSettings, getDatasets, getModelById } = require('./state');
@@ -282,6 +283,8 @@ function parseJob(job) {
     modelSnapshot: safeJsonParse(job.model_snapshot, null),
     envSnapshot: safeJsonParse(job.env_snapshot, null),
     summaryMetrics: safeJsonParse(job.summary_metrics, {}),
+    runtimePresetId: job.runtime_preset_id,
+    modelLocalPath: job.model_local_path,
     datasetId: job.dataset_id,
     modelId: job.model_id,
     baseModel: job.base_model,
@@ -332,6 +335,8 @@ async function upsertJob(job) {
     model_snapshot: job.modelSnapshot ? JSON.stringify(job.modelSnapshot) : null,
     env_snapshot: job.envSnapshot ? JSON.stringify(job.envSnapshot) : null,
     summary_metrics: job.summaryMetrics ? JSON.stringify(job.summaryMetrics) : null,
+    runtime_preset_id: job.runtimePresetId || null,
+    model_local_path: job.modelLocalPath || null,
     dataset_id: job.datasetId || job.dataset_id || null,
     model_id: job.modelId || job.model_id || null,
     base_model: job.baseModel || job.base_model || null,
@@ -525,6 +530,7 @@ async function createRemoteJob(payload, options = {}) {
     workerId,
     hfPublish,
     trainerImage,
+    runtimePresetId,
     tags,
     notes,
   } = payload;
@@ -565,7 +571,19 @@ async function createRemoteJob(payload, options = {}) {
 
   const effectiveQlora = { ...settings.qlora, ...(qlora || {}) };
   const effectiveHfPublish = hfPublish || {};
-  const effectiveTrainerImage = trainerImage || 'itk-ai-trainer-service:qwen-7b';
+  let effectiveTrainerImage = trainerImage || 'itk-ai-trainer-service:qwen-7b';
+  let effectiveBaseModel = selectedBaseModel;
+  let effectiveModelLocalPath = '/app';
+
+  if (runtimePresetId) {
+    const preset = getRuntimePresetById(runtimePresetId);
+    if (preset) {
+      effectiveTrainerImage = preset.trainerImage;
+      effectiveBaseModel = preset.logicalBaseModelId;
+      effectiveModelLocalPath = preset.localModelPath;
+    }
+  }
+
   const baseJobConfigUrl = buildApiUrl(callbackBase, `/api/jobs/${jobId}/config`);
 
   const initialJob = {
@@ -580,7 +598,9 @@ async function createRemoteJob(payload, options = {}) {
     launchMode: 'manual',
     datasetId,
     modelId: null,
-    baseModel: selectedBaseModel,
+    baseModel: effectiveBaseModel,
+    modelLocalPath: effectiveModelLocalPath,
+    runtimePresetId: runtimePresetId || null,
     workerId: workerId || null,
     containerImage: effectiveTrainerImage,
     paramsSnapshot: {
@@ -630,6 +650,7 @@ async function cloneJob(jobId) {
     qlora: source.paramsSnapshot?.qlora,
     hfPublish: source.paramsSnapshot?.hfPublish,
     trainerImage: source.containerImage,
+    runtimePresetId: source.runtimePresetId,
     tags: source.tags,
     notes: source.notes,
   });
