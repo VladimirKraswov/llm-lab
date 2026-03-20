@@ -315,53 +315,37 @@ export type JobProgress = {
   updatedAt?: string;
 };
 
-export type Job = {
+export interface Job {
   id: string;
-  type: string;
   name: string;
-  status: JobStatus;
+  type: string;
+  status: string;
   createdAt: string;
-  startedAt: string | null;
-  finishedAt: string | null;
-  datasetId?: string;
-  datasetPath?: string;
-  modelId?: string | null;
+  startedAt?: string;
+  finishedAt?: string;
+  outputDir?: string;
+  logFile?: string;
   baseModel?: string;
-  qlora?: Partial<Settings['qlora']>;
-  outputDir: string;
-  logFile: string;
-  pid: number | null;
-  error: string | null;
+  datasetId?: string;
+  modelId?: string;
   paramsSnapshot?: any;
-  modelPath?: string;
-  datasetSnapshot?: {
-    path: string;
-    size: number;
-    mtime: string | null;
-    hash?: string | null;
-  };
-  modelSnapshot?: any;
-  envSnapshot?: {
-    python: string;
-    torch: string;
-    transformers: string;
-    unsloth: string;
-  };
+  summaryMetrics?: any;
+  error?: string;
+  artifacts?: any[];
   tags?: string[];
   notes?: string;
-  artifacts?: Array<{ name: string; size: number; path: string }>;
-  progressStep?: string;
-  progress?: JobProgress;
-  runner?: string;
-  summaryMetrics?: SummaryMetrics;
-  resultDatasetId?: string | null;
-  syntheticMeta?: SyntheticMeta;
-  workerId?: string | null;
-  jobConfigUrl?: string | null;
-  hfRepoIdLora?: string | null;
-  hfRepoIdMerged?: string | null;
-  hfRepoIdMetadata?: string | null;
-};
+
+  // Добавляем недостающие поля
+  mode?: 'local' | 'remote';           // строка 114, 130, 659
+  progressPercent?: number;            // строка 130, 131
+  hfRepoIdLora?: string;               // строка 659
+  hfRepoIdMerged?: string;             // строка 659
+  workerId?: string;                   // используется в JobListCard
+  runner?: string;                     // используется в JobListCard
+  syntheticMeta?: any;                 // используется в JobListCard
+  progressStep?: string;               // используется в JobListCard
+  qlora?: any;                         // используется в сравнении
+}
 
 export type WorkerItem = {
   id: string;

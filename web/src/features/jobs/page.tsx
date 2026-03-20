@@ -127,7 +127,7 @@ function JobListCard({
 
           <div className="flex flex-col items-end gap-1">
             <StatusBadge value={job.status} />
-            {job.mode === 'remote' && job.progressPercent > 0 && job.status === 'running' && (
+            {job.mode === 'remote' && typeof job.progressPercent === 'number' && job.progressPercent > 0 && job.status === 'running' && (
               <div className="text-[10px] text-blue-400 font-bold">{job.progressPercent}%</div>
             )}
           </div>
