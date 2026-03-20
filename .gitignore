@@ -7,13 +7,11 @@
 /web/node_modules
 /artifacts
 
-artifacts/
 .cache/
 **/__pycache__/
 **/.DS_Store
 
 services/trainer-service/wheels/
-artifacts/
 .cache/
 **/__pycache__/
 
