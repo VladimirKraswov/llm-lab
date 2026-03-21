@@ -7,6 +7,7 @@ import DatasetsPage from './features/datasets/page';
 import TrainingPage from './features/training/page';
 import JobsPage from './features/jobs/page';
 import RuntimePage from './features/runtime/page';
+import InfrastructurePage from './features/infrastructure/page';
 import PlaygroundPage from './features/playground/page';
 import SettingsPage from './features/settings/page';
 import ModelsPage from './features/models/page';
@@ -32,11 +33,12 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-export default function App() {
-  useEvents();
+function AppRoutes() {
+  const { token } = useAuth();
+
+  useEvents(token);
 
   return (
-    <AuthProvider>
     <Routes>
       <Route path="/login" element={<LoginPage />} />
 
@@ -50,6 +52,7 @@ export default function App() {
         <Route path="evaluations" element={<EvaluationsPage />} />
         <Route path="workers" element={<WorkersPage />} />
         <Route path="jobs" element={<JobsPage />} />
+        <Route path="infrastructure" element={<InfrastructurePage />} />
         <Route path="runtime" element={<RuntimePage />} />
         <Route path="playground" element={<PlaygroundPage />} />
         <Route path="logs" element={<LogsPage />} />
@@ -60,6 +63,13 @@ export default function App() {
       <Route path="/" element={<Navigate to="/app" replace />} />
       <Route path="*" element={<Navigate to="/app" replace />} />
     </Routes>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppRoutes />
     </AuthProvider>
   );
 }

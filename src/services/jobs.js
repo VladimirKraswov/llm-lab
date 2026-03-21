@@ -40,6 +40,22 @@ function safeJsonParse(value, fallback = null) {
   }
 }
 
+function normalizeJobStatus(value, fallback = 'running') {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return fallback;
+
+  if (raw === 'success') return 'finished';
+  if (raw === 'completed') return 'finished';
+  if (raw === 'error') return 'failed';
+
+  return raw;
+}
+
+function isTerminalJobStatus(value) {
+  const normalized = normalizeJobStatus(value, '');
+  return ['finished', 'completed', 'failed', 'stopped'].includes(normalized);
+}
+
 function buildApiUrl(base, apiPath) {
   const root = String(base || '').replace(/\/+$/, '');
   if (!root) {
@@ -408,8 +424,6 @@ async function createRemoteJob(payload, options = {}) {
 
   const preset = runtimePresetId ? await getRuntimePresetById(runtimePresetId) : null;
 
-  // ЛОГИЧЕСКАЯ базовая модель для metadata / HF publish.
-  // Не должна быть /app.
   const selectedBaseModel = String(
     baseModel || (preset ? preset.logicalBaseModelId : settings.baseModel) || CONFIG.defaultBaseModel
   ).trim();
@@ -420,7 +434,8 @@ async function createRemoteJob(payload, options = {}) {
 
   const effectiveQlora = { ...settings.qlora, ...(qlora || {}) };
   const effectiveHfPublish = hfPublish || {};
-  const effectiveTrainerImage = trainerImage || (preset ? preset.trainerImage : 'itk-ai-trainer-service:qwen-7b');
+  const effectiveTrainerImage =
+    trainerImage || (preset ? preset.trainerImage : 'itk-ai-trainer-service:qwen-7b');
   const effectiveModelLocalPath = preset ? preset.localModelPath : '/app';
 
   const baseJobConfigUrl = buildApiUrl(callbackBase, `/api/jobs/${jobId}/config`);
@@ -523,7 +538,6 @@ async function retryJob(jobId) {
     });
   }
 
-
   const retried = await upsertJob({
     ...source,
     id: uid('job'),
@@ -549,9 +563,7 @@ async function handleWorkerStatus(jobId, payload) {
   const job = await getJobById(jobId);
   if (!job) throw new Error('Job not found');
 
-  let normalizedStatus = String(payload.status || '').trim().toLowerCase();
-  if (normalizedStatus === 'started') normalizedStatus = 'running';
-  if (normalizedStatus === 'finished') normalizedStatus = 'completed';
+  const normalizedStatus = normalizeJobStatus(payload.status, job.status || 'running');
 
   const patch = {
     status: normalizedStatus || job.status,
@@ -564,11 +576,11 @@ async function handleWorkerStatus(jobId, payload) {
     lastStatusPayload: payload,
   };
 
-  if (normalizedStatus === 'running' && !job.startedAt) {
+  if ((normalizedStatus === 'started' || normalizedStatus === 'running') && !job.startedAt) {
     patch.startedAt = nowIso();
   }
 
-  if (['completed', 'failed', 'stopped'].includes(normalizedStatus)) {
+  if (isTerminalJobStatus(normalizedStatus)) {
     patch.finishedAt = nowIso();
   }
 
@@ -581,7 +593,7 @@ async function handleWorkerStatus(jobId, payload) {
 
   await db('job_events').insert({
     job_id: jobId,
-    type: 'status_change',
+    type: 'status',
     payload: JSON.stringify(payload),
   });
 
@@ -592,9 +604,16 @@ async function handleWorkerProgress(jobId, payload) {
   const job = await getJobById(jobId);
   if (!job) throw new Error('Job not found');
 
+  const fallbackStatus =
+    ['queued', 'assigned'].includes(String(job.status || '').toLowerCase())
+      ? 'running'
+      : job.status;
+
+  const normalizedStatus = normalizeJobStatus(payload.status, fallbackStatus);
+
   const updated = await upsertJob({
     ...job,
-    status: job.status === 'queued' ? 'running' : job.status,
+    status: normalizedStatus,
     progressPercent:
       payload.progress !== undefined && payload.progress !== null
         ? Number(payload.progress)
@@ -634,10 +653,12 @@ async function handleWorkerLogs(jobId, payload) {
     offset,
   });
 
+  const nextOffset = offset + Buffer.byteLength(content, 'utf8');
+
   await upsertJob({
     ...job,
     logChunkCount: Number(job.logChunkCount || 0) + 1,
-    lastLogOffset: offset,
+    lastLogOffset: nextOffset,
   });
 
   emitEvent('job_log_chunk', { jobId, logs: content, offset });
@@ -650,12 +671,16 @@ async function handleWorkerFinal(jobId, payload) {
 
   const result = payload.result || {};
   const failed =
-    String(payload.status || '').toLowerCase() === 'failed' ||
-    String(result.status || '').toLowerCase() === 'failed';
+    normalizeJobStatus(payload.status, '') === 'failed' ||
+    normalizeJobStatus(result.status, '') === 'failed';
+
+  const finalStatus = failed
+    ? 'failed'
+    : normalizeJobStatus(payload.status || result.status || 'finished', 'finished');
 
   const patch = {
-    status: failed ? 'failed' : 'completed',
-    currentStage: failed ? 'failed' : 'finished',
+    status: finalStatus,
+    currentStage: failed ? 'failed' : (payload.stage || 'finished'),
     progressPercent: 100,
     finishedAt: nowIso(),
     finalPayload: payload,
@@ -663,6 +688,9 @@ async function handleWorkerFinal(jobId, payload) {
       training: result.training?.summary || null,
       evaluation: result.evaluation?.summary || null,
     },
+    hfRepoIdLora: result?.uploads?.hf_lora?.repo_id || job.hfRepoIdLora || null,
+    hfRepoIdMerged: result?.uploads?.hf_merged?.repo_id || job.hfRepoIdMerged || null,
+    hfRepoIdMetadata: result?.uploads?.hf_metadata?.repo_id || job.hfRepoIdMetadata || null,
     error: failed ? (result.error || payload.error || 'remote job failed') : null,
   };
 
@@ -673,22 +701,6 @@ async function handleWorkerFinal(jobId, payload) {
     type: 'final',
     payload: JSON.stringify(payload),
   });
-
-  const uploads = result.uploads || {};
-  for (const [artifactType, artifact] of Object.entries(uploads)) {
-    await db('job_artifacts').insert({
-      job_id: jobId,
-      name:
-        artifact?.path ||
-        artifact?.archive_path ||
-        artifact?.repo_id ||
-        artifactType,
-      type: artifactType,
-      path: artifact?.path || artifact?.archive_path || null,
-      url: artifact?.url || artifact?.download_url || artifact?.repo_id || null,
-      size: artifact?.size || null,
-    });
-  }
 
   emitEvent('job_finalized', updated);
   emitEvent('job_updated', updated);

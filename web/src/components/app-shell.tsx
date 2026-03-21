@@ -20,6 +20,7 @@ import {
   ChevronRight,
   LogOut,
   User as UserIcon,
+  Server,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAuth } from '../hooks/use-auth';
@@ -34,6 +35,7 @@ const items = [
   { to: '/app/evaluations', label: 'Evaluations', icon: CheckCircle },
   { to: '/app/workers', label: 'Workers', icon: Cpu },
   { to: '/app/jobs', label: 'Jobs', icon: TerminalSquare },
+  { to: '/app/infrastructure', label: 'Infrastructure', icon: Server },
   { to: '/app/runtime', label: 'Runtime', icon: PlayCircle },
   { to: '/app/playground', label: 'Playground', icon: Bot },
   { to: '/app/logs', label: 'Logs', icon: ScrollText },
@@ -48,7 +50,6 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen w-full bg-slate-950 text-slate-50 overflow-hidden">
-      {/* Sidebar for Desktop */}
       <aside
         className={cn(
           'hidden md:flex flex-col border-r border-slate-800 bg-slate-950/90 transition-all duration-300 ease-in-out relative',
@@ -65,7 +66,7 @@ export function AppShell() {
           <button
             onClick={() => setCollapsed(!collapsed)}
             className="p-1 hover:bg-slate-900 rounded-md text-slate-400 hover:text-white transition-colors"
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
           </button>
@@ -73,7 +74,7 @@ export function AppShell() {
 
         <nav className="flex-1 space-y-1 px-2 overflow-y-auto scrollbar-thin">
           {user && (
-            <div className={cn("px-2 py-3 mb-2 border-b border-slate-800 flex items-center gap-3 text-slate-400", collapsed && "justify-center")}>
+            <div className={cn('px-2 py-3 mb-2 border-b border-slate-800 flex items-center gap-3 text-slate-400', collapsed && 'justify-center')}>
               <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white shrink-0">
                 <UserIcon size={16} />
               </div>
@@ -107,7 +108,7 @@ export function AppShell() {
                     {!collapsed && <span className="truncate">{item.label}</span>}
                     {collapsed && (
                       <div className="absolute left-full ml-2 px-2 py-1 bg-slate-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none z-50 whitespace-nowrap border border-slate-700">
-                          {item.label}
+                        {item.label}
                       </div>
                     )}
                   </>
@@ -122,7 +123,7 @@ export function AppShell() {
                 'w-full flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-red-400 transition-all hover:bg-red-950/30 hover:text-red-300 group relative',
                 collapsed && 'justify-center px-0'
               )}
-              title={collapsed ? "Logout" : undefined}
+              title={collapsed ? 'Logout' : undefined}
             >
               <LogOut size={18} className="shrink-0" />
               {!collapsed && <span>Logout</span>}
@@ -131,7 +132,6 @@ export function AppShell() {
         </nav>
       </aside>
 
-      {/* Mobile Header */}
       <div className="md:hidden fixed top-0 left-0 right-0 h-14 border-b border-slate-800 bg-slate-950/95 flex items-center px-4 z-40">
         <button
           onClick={() => setMobileOpen(true)}
@@ -142,7 +142,6 @@ export function AppShell() {
         <div className="ml-3 font-bold text-white">LLM Lab</div>
       </div>
 
-      {/* Mobile Sidebar Overlay */}
       {mobileOpen && (
         <div
           className="md:hidden fixed inset-0 bg-black/60 z-50 backdrop-blur-sm"
@@ -204,7 +203,6 @@ export function AppShell() {
         </div>
       )}
 
-      {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0 h-screen relative pt-14 md:pt-0 overflow-hidden">
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
           <div className="max-w-[1600px] mx-auto p-4 md:p-6 lg:p-8">

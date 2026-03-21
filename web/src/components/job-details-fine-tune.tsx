@@ -1,10 +1,11 @@
+import { useMemo } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Job, api, PipelineConfig } from '../lib/api';
 import { formatSize } from '../utils';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { CopyButton } from './copy-button';
-import { Terminal, Download, Archive, RefreshCw, ExternalLink, CheckCircle2, Circle, Clock } from 'lucide-react';
+import { Download, ExternalLink, RefreshCw, Terminal, CheckCircle2, Clock3, Circle, Archive } from 'lucide-react';
 import { Button } from './ui/button';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
 function fmtDate(value?: string | null) {
@@ -16,58 +17,101 @@ function fmtDate(value?: string | null) {
   }
 }
 
-function PipelineVisualizer({ pipeline, currentStage, status }: { pipeline?: PipelineConfig, currentStage?: string, status: string }) {
+function stageConfig(pipeline: PipelineConfig | undefined, key: 'publish' | 'upload' | 'prepare_assets' | 'training' | 'merge' | 'evaluation') {
+  if (!pipeline) return undefined;
+  if (key in pipeline) return (pipeline as any)[key];
+  if (key === 'publish') return (pipeline as any).publish_artifacts;
+  if (key === 'upload') return (pipeline as any).upload_artifacts;
+  return undefined;
+}
+
+function parseContainerImage(command?: string | null) {
+  if (!command) return null;
+  const clean = String(command).replace(/\s+/g, ' ').trim();
+  const match = clean.match(/docker run(?: [^-][^ ]*| --[^\s]+(?: [^\s]+)?)* ([\w./:@-]+)(?:\s|$)/);
+  return match?.[1] || null;
+}
+
+function maskJobConfigUrl(url?: string | null) {
+  if (!url) return '—';
+  try {
+    const value = new URL(url);
+    if (value.searchParams.has('token')) {
+      value.searchParams.set('token', '***');
+    }
+    return value.toString();
+  } catch {
+    return String(url).replace(/token=[^&]+/i, 'token=***');
+  }
+}
+
+function PipelineVisualizer({
+  pipeline,
+  currentStage,
+  status,
+}: {
+  pipeline?: PipelineConfig;
+  currentStage?: string | null;
+  status: string;
+}) {
   if (!pipeline) return null;
 
   const stages = [
-    { id: 'prepare_assets', label: 'Prepare' },
-    { id: 'training', label: 'Training' },
-    { id: 'merge', label: 'Merge' },
-    { id: 'evaluation', label: 'Eval' },
-    { id: 'publish_artifacts', label: 'Publish', stageKey: 'publish' },
-    { id: 'upload_artifacts', label: 'Upload', stageKey: 'upload' },
+    { id: 'prepare_assets', title: 'Prepare / Assets' },
+    { id: 'training', title: 'Training' },
+    { id: 'merge', title: 'Merge' },
+    { id: 'evaluation', title: 'Evaluation' },
+    { id: 'publish', title: 'Publish' },
+    { id: 'upload', title: 'Upload / Reporting' },
   ];
 
+  const currentIndex = stages.findIndex((stage) => stage.id === currentStage);
+
   return (
-    <Card className="border-slate-800 bg-slate-900/50">
+    <Card className="border-slate-800 bg-slate-900/60">
       <CardHeader className="py-3">
-        <CardTitle className="text-xs uppercase tracking-wider text-slate-500">Pipeline Execution</CardTitle>
+        <CardTitle className="text-xs uppercase tracking-wider text-slate-500">Pipeline execution</CardTitle>
       </CardHeader>
-      <CardContent className="py-4">
-        <div className="flex items-center justify-between gap-2 overflow-x-auto pb-2 scrollbar-thin">
-          {stages.map((s, idx) => {
-            const stageConfig = (pipeline as any)[s.stageKey || s.id];
-            const isEnabled = stageConfig?.enabled !== false;
-            const isCurrent = currentStage === s.id;
-            const isFinished = status === 'completed'; // Simplified
+      <CardContent className="space-y-3">
+        {stages.map((stage, index) => {
+          const cfg = stageConfig(pipeline, stage.id as any);
+          const enabled = cfg?.enabled !== false;
+          const isCurrent = currentStage === stage.id;
+          const isPast =
+            status === 'completed'
+              ? enabled
+              : currentIndex >= 0 && currentIndex > index && enabled;
 
-            // Real logic for "finished" would need stage-specific history,
-            // but for now we can use a heuristic.
-            const stageIdx = idx;
-            const currentStageIdx = stages.findIndex(st => st.id === currentStage);
-            const isPast = currentStageIdx > stageIdx || (status === 'completed' && isEnabled);
-
-            return (
-              <div key={s.id} className="flex items-center flex-1 min-w-[80px] last:flex-none">
-                <div className={`flex flex-col items-center gap-1.5 flex-1 ${!isEnabled ? 'opacity-30' : ''}`}>
-                  <div className={`rounded-full p-1 ${
-                    isCurrent ? 'bg-blue-500/20 text-blue-400 ring-2 ring-blue-500/50' :
-                    isPast ? 'bg-emerald-500/20 text-emerald-400' :
-                    'bg-slate-800 text-slate-600'
-                  }`}>
-                    {isPast ? <CheckCircle2 size={16} /> : isCurrent ? <Clock size={16} className="animate-pulse" /> : <Circle size={16} />}
-                  </div>
-                  <span className={`text-[10px] font-bold whitespace-nowrap ${isCurrent ? 'text-blue-400' : isPast ? 'text-emerald-400' : 'text-slate-500'}`}>
-                    {s.label}
+          return (
+            <div key={stage.id} className={`flex gap-3 ${!enabled ? 'opacity-40' : ''}`}>
+              <div className="flex w-5 flex-col items-center">
+                <div
+                  className={`rounded-full p-1 ${
+                    isCurrent
+                      ? 'bg-blue-500/20 text-blue-300'
+                      : isPast
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : 'bg-slate-800 text-slate-500'
+                  }`}
+                >
+                  {isPast ? <CheckCircle2 size={14} /> : isCurrent ? <Clock3 size={14} className="animate-pulse" /> : <Circle size={14} />}
+                </div>
+                {index < stages.length - 1 ? <div className={`mt-1 w-px flex-1 ${isPast ? 'bg-emerald-500/30' : 'bg-slate-800'}`} /> : null}
+              </div>
+              <div className="min-w-0 flex-1 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-medium text-white">{stage.title}</div>
+                  <span className="rounded bg-slate-950/70 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+                    {enabled ? 'enabled' : 'disabled'}
                   </span>
                 </div>
-                {idx < stages.length - 1 && (
-                  <div className={`h-[1px] w-full mx-2 ${isPast ? 'bg-emerald-500/30' : 'bg-slate-800'}`} />
-                )}
+                <div className="mt-1 text-xs text-slate-500">
+                  {index === 0 ? 'Pipeline start' : `Depends on: ${stages[index - 1].title}`}
+                </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
       </CardContent>
     </Card>
   );
@@ -75,6 +119,9 @@ function PipelineVisualizer({ pipeline, currentStage, status }: { pipeline?: Pip
 
 export function JobDetailsFineTune({ job }: { job: Job }) {
   const queryClient = useQueryClient();
+  const pipeline = (job.paramsSnapshot?.pipeline || undefined) as PipelineConfig | undefined;
+  const trainingSnapshot = job.paramsSnapshot?.qlora || job.qlora || {};
+  const launchImage = parseContainerImage(job.launch?.exampleDockerRun);
 
   const syncMutation = useMutation({
     mutationFn: () => api.syncJobFromHF(job.id),
@@ -83,7 +130,6 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
         toast.success('Synced from Hugging Face');
         queryClient.invalidateQueries({ queryKey: ['job', job.id] });
         queryClient.invalidateQueries({ queryKey: ['jobs'] });
-        queryClient.invalidateQueries({ queryKey: ['job-logs', job.id] });
       } else {
         toast.error(res.message || 'No artifacts found');
       }
@@ -93,38 +139,73 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
     },
   });
 
+  const launchEnvQuery = useQuery({
+    queryKey: ['job-launch-env', job.id],
+    queryFn: () => api.getJobLaunchEnv(job.id),
+    enabled: job.mode === 'remote' && !!job.launch,
+    staleTime: 60_000,
+  });
+
+  const launchComposeQuery = useQuery({
+    queryKey: ['job-launch-compose', job.id],
+    queryFn: () => api.getJobLaunchCompose(job.id),
+    enabled: job.mode === 'remote' && !!job.launch,
+    staleTime: 60_000,
+  });
+
   const handleDownloadBundle = () => {
     api.downloadJobLaunchBundle(job.id);
   };
 
-  const handleCopyCompose = async () => {
-    const text = await api.getJobLaunchCompose(job.id);
-    navigator.clipboard.writeText(text);
+  const handleCopyAsync = async (label: string, loader: () => Promise<string>) => {
+    try {
+      const text = await loader();
+      await navigator.clipboard.writeText(text);
+      toast.success(`${label} copied`);
+    } catch (err: any) {
+      toast.error(err.message || `Failed to copy ${label}`);
+    }
   };
 
-  const handleCopyEnv = async () => {
-    const text = await api.getJobLaunchEnv(job.id);
-    navigator.clipboard.writeText(text);
-  };
-
-  const pipeline = job.paramsSnapshot?.pipeline;
+  const effectiveTrainingSummary = useMemo(() => {
+    return [
+      { label: 'Method', value: trainingSnapshot.method || (trainingSnapshot.useLora ? 'lora/qlora' : 'full') || '—' },
+      { label: 'Max seq', value: trainingSnapshot.maxSeqLength || trainingSnapshot.max_seq_length || '—' },
+      {
+        label: 'Batch / grad accum',
+        value: `${trainingSnapshot.perDeviceTrainBatchSize ?? trainingSnapshot.per_device_train_batch_size ?? '—'} / ${
+          trainingSnapshot.gradientAccumulationSteps ?? trainingSnapshot.gradient_accumulation_steps ?? '—'
+        }`,
+      },
+      { label: 'Epochs', value: trainingSnapshot.numTrainEpochs ?? trainingSnapshot.num_train_epochs ?? '—' },
+      { label: 'Learning rate', value: trainingSnapshot.learningRate ?? trainingSnapshot.learning_rate ?? '—' },
+      {
+        label: 'LoRA',
+        value: `${trainingSnapshot.loraR ?? trainingSnapshot.lora_r ?? '—'} / ${
+          trainingSnapshot.loraAlpha ?? trainingSnapshot.lora_alpha ?? '—'
+        } / ${trainingSnapshot.loraDropout ?? trainingSnapshot.lora_dropout ?? '—'}`,
+      },
+    ];
+  }, [trainingSnapshot]);
 
   return (
     <div className="space-y-4">
-      {job.mode === 'remote' && pipeline && (
-        <PipelineVisualizer pipeline={pipeline} currentStage={job.currentStage || 'None stage'} status={job.status} />
-      )}
+      {job.mode === 'remote' && pipeline ? (
+        <PipelineVisualizer pipeline={pipeline} currentStage={job.currentStage} status={job.status} />
+      ) : null}
 
       <Card className="border-purple-500/20 bg-purple-500/5">
         <CardHeader>
-          <CardTitle>Fine-tune Job</CardTitle>
+          <CardTitle>Fine-tune job</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2 text-sm">
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Job ID</div>
             <div className="mt-1 flex items-center gap-2">
-               <span className="text-white font-mono">{job.id}</span>
-               <CopyButton text={job.id} className="h-5 w-5 px-1 py-0.5" />
+              <span className="font-mono text-white">{job.id}</span>
+              <CopyButton text={job.id} className="h-6" showLabel>
+                Copy ID
+              </CopyButton>
             </div>
           </div>
 
@@ -134,16 +215,14 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
           </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-500">Base model</div>
-            <div className="mt-1 break-all text-white">{job.baseModel || '—'}</div>
+            <div className="text-xs text-slate-500">Runtime preset</div>
+            <div className="mt-1 text-white">{job.runtimePresetId || 'Legacy / none'}</div>
           </div>
 
-          {job.runtimePresetId && (
-            <div className="rounded-xl bg-slate-950/40 p-3">
-              <div className="text-xs text-slate-500">Runtime Preset</div>
-              <div className="mt-1 text-blue-400 font-medium">{job.runtimePresetId}</div>
-            </div>
-          )}
+          <div className="rounded-xl bg-slate-950/40 p-3">
+            <div className="text-xs text-slate-500">Base model</div>
+            <div className="mt-1 break-all text-white">{job.baseModel || job.paramsSnapshot?.pipeline?.training?.logical_base_model || '—'}</div>
+          </div>
 
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Created</div>
@@ -155,113 +234,147 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
             <div className="mt-1 text-white">{fmtDate(job.finishedAt)}</div>
           </div>
 
-          {(job.hfRepoIdLora || job.hfRepoIdMerged || job.hfRepoIdMetadata) && (
+          {(job.hfRepoIdLora || job.hfRepoIdMerged || job.hfRepoIdMetadata) ? (
             <div className="rounded-xl bg-slate-950/40 p-3 md:col-span-2">
-              <div className="text-xs text-slate-500 mb-2">Hugging Face Repositories</div>
-              <div className="flex flex-wrap gap-3">
-                {job.hfRepoIdLora && (
+              <div className="mb-2 text-xs text-slate-500">Hugging Face repositories</div>
+              <div className="flex flex-wrap gap-2">
+                {job.hfRepoIdLora ? (
                   <a
                     href={`https://huggingface.co/${job.hfRepoIdLora}`}
                     target="_blank"
-                    className="flex items-center gap-1.5 rounded-lg bg-blue-500/10 px-2 py-1 text-xs text-blue-400 hover:bg-blue-500/20 hover:text-blue-300 transition-colors"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-500/10 px-2 py-1 text-xs text-blue-400 hover:bg-blue-500/20"
                   >
                     <ExternalLink size={12} />
                     LoRA: {job.hfRepoIdLora}
                   </a>
-                )}
-                {job.hfRepoIdMerged && (
+                ) : null}
+                {job.hfRepoIdMerged ? (
                   <a
                     href={`https://huggingface.co/${job.hfRepoIdMerged}`}
                     target="_blank"
-                    className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2 py-1 text-xs text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300 transition-colors"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2 py-1 text-xs text-emerald-400 hover:bg-emerald-500/20"
                   >
                     <ExternalLink size={12} />
                     Merged: {job.hfRepoIdMerged}
                   </a>
-                )}
-                {job.hfRepoIdMetadata && (
+                ) : null}
+                {job.hfRepoIdMetadata ? (
                   <a
                     href={`https://huggingface.co/${job.hfRepoIdMetadata}`}
                     target="_blank"
-                    className="flex items-center gap-1.5 rounded-lg bg-purple-500/10 px-2 py-1 text-xs text-purple-400 hover:bg-purple-500/20 hover:text-purple-300 transition-colors"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-purple-500/10 px-2 py-1 text-xs text-purple-400 hover:bg-purple-500/20"
                   >
                     <ExternalLink size={12} />
                     Metadata: {job.hfRepoIdMetadata}
                   </a>
-                )}
+                ) : null}
               </div>
             </div>
-          )}
+          ) : null}
         </CardContent>
       </Card>
 
-      {job.mode === 'remote' && job.launch && (
+      {job.mode === 'remote' && job.launch ? (
         <Card className="border-blue-500/20 bg-blue-500/5">
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Terminal size={18} className="text-blue-400" />
-              <CardTitle>Launch Trainer</CardTitle>
+              <CardTitle>Launch data</CardTitle>
             </div>
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                onClick={handleDownloadBundle}
-                className="bg-blue-600 text-white border-blue-500 hover:bg-blue-500 hover:text-white h-8"
-              >
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={handleDownloadBundle} className="bg-blue-600 text-white hover:bg-blue-500 h-8">
                 <Download size={14} className="mr-2" />
-                Download Bundle
+                Download bundle
               </Button>
               <CopyButton
                 text={job.launch.exampleDockerRun}
                 showLabel
                 size="md"
-                className="bg-slate-800 text-white border-slate-700 hover:bg-slate-700 h-8"
+                className="h-8 bg-slate-800 text-white border-slate-700 hover:bg-slate-700"
               >
-                Copy docker run
+                Docker run
               </CopyButton>
+              <Button
+                size="sm"
+                onClick={() => handleCopyAsync('docker-compose', () => api.getJobLaunchCompose(job.id))}
+                className="h-8 bg-slate-800 text-white hover:bg-slate-700"
+              >
+                <Archive size={14} className="mr-2" />
+                Copy compose
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => handleCopyAsync('launch.env', () => api.getJobLaunchEnv(job.id))}
+                className="h-8 bg-slate-800 text-white hover:bg-slate-700"
+              >
+                <Archive size={14} className="mr-2" />
+                Copy env
+              </Button>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-xl bg-slate-950/40 p-3">
-                <div className="text-xs text-slate-500 flex items-center justify-between">
-                  <span>jobConfigUrl</span>
+                <div className="text-xs text-slate-500">Runtime preset</div>
+                <div className="mt-1 text-white">{job.runtimePresetId || 'Legacy / none'}</div>
+              </div>
+              <div className="rounded-xl bg-slate-950/40 p-3">
+                <div className="text-xs text-slate-500">Container image</div>
+                <div className="mt-1 break-all font-mono text-xs text-slate-300">{launchImage || 'Parsed at runtime'}</div>
+              </div>
+              <div className="rounded-xl bg-slate-950/40 p-3">
+                <div className="text-xs text-slate-500">Logical base model</div>
+                <div className="mt-1 break-all text-white">{job.baseModel || job.paramsSnapshot?.pipeline?.training?.logical_base_model || '—'}</div>
+              </div>
+              <div className="rounded-xl bg-slate-950/40 p-3">
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span>JOB_CONFIG_URL</span>
                   <CopyButton text={job.launch.jobConfigUrl} />
                 </div>
-                <div className="mt-1 text-[10px] font-mono text-blue-300 truncate" title={job.launch.jobConfigUrl}>
-                  {job.launch.jobConfigUrl}
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-slate-950/40 p-3">
-                <div className="text-xs text-slate-500 flex items-center justify-between">
-                   <span>Launch Files</span>
-                </div>
-                <div className="mt-2 flex gap-2">
-                   <Button size="xs" onClick={handleCopyCompose} className="bg-transparent hover:bg-slate-800/30 text-[10px] text-blue-400 hover:text-blue-300 p-1 h-auto">
-                     <Archive size={10} className="mr-1" /> Copy Compose
-                   </Button>
-                   <Button size="xs" onClick={handleCopyEnv} className="bg-transparent hover:bg-slate-800/30 text-[10px] text-blue-400 hover:text-blue-300 p-1 h-auto">
-                     <Archive size={10} className="mr-1" /> Copy .env
-                   </Button>
-                </div>
+                <div className="mt-1 break-all font-mono text-[10px] text-blue-300">{maskJobConfigUrl(job.launch.jobConfigUrl)}</div>
               </div>
             </div>
 
-            <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3">
-              <div className="text-xs text-slate-500 mb-2">Docker command (Quick run)</div>
-              <pre className="text-[10px] font-mono text-slate-300 whitespace-pre-wrap leading-relaxed">
-                {job.launch.exampleDockerRun}
-              </pre>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs text-slate-500">launch.env preview</div>
+                  {launchEnvQuery.data ? <CopyButton text={launchEnvQuery.data} /> : null}
+                </div>
+                <pre className="max-h-[180px] overflow-auto whitespace-pre-wrap text-[10px] text-slate-300">
+                  {(launchEnvQuery.data || 'Loading launch.env…').replace(/token=[^&\n]+/gi, 'token=***')}
+                </pre>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs text-slate-500">docker-compose preview</div>
+                  {launchComposeQuery.data ? <CopyButton text={launchComposeQuery.data} /> : null}
+                </div>
+                <pre className="max-h-[180px] overflow-auto whitespace-pre-wrap text-[10px] text-slate-300">
+                  {launchComposeQuery.data || 'Loading docker-compose…'}
+                </pre>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-xs text-slate-500">docker run preview</div>
+                <CopyButton text={job.launch.exampleDockerRun} />
+              </div>
+              <pre className="whitespace-pre-wrap text-[10px] text-slate-300">{job.launch.exampleDockerRun}</pre>
             </div>
           </CardContent>
         </Card>
-      )}
+      ) : null}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle>Training summary</CardTitle>
-          {job.mode === 'remote' && (job.hfRepoIdLora || job.hfRepoIdMerged || job.hfRepoIdMetadata) && (
+          {job.mode === 'remote' && (job.hfRepoIdLora || job.hfRepoIdMerged || job.hfRepoIdMetadata) ? (
             <Button
               size="sm"
               onClick={() => syncMutation.mutate()}
@@ -271,7 +384,7 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
               <RefreshCw size={12} className={`mr-1.5 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
               {syncMutation.isPending ? 'Syncing...' : 'Sync from HF'}
             </Button>
-          )}
+          ) : null}
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 text-sm">
           <div className="rounded-xl bg-slate-950/40 p-3">
@@ -281,16 +394,12 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Final loss</div>
             <div className="mt-1 text-lg font-semibold text-white">
-              {typeof job.summaryMetrics?.final_loss === 'number'
-                ? job.summaryMetrics.final_loss.toFixed(4)
-                : '—'}
+              {typeof job.summaryMetrics?.final_loss === 'number' ? job.summaryMetrics.final_loss.toFixed(4) : '—'}
             </div>
           </div>
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Duration</div>
-            <div className="mt-1 text-lg font-semibold text-white">
-              {job.summaryMetrics?.duration_human || '—'}
-            </div>
+            <div className="mt-1 text-lg font-semibold text-white">{job.summaryMetrics?.duration_human || '—'}</div>
           </div>
           <div className="rounded-xl bg-slate-950/40 p-3">
             <div className="text-xs text-slate-500">Precision</div>
@@ -304,6 +413,20 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
+            <CardTitle>Effective training config</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {effectiveTrainingSummary.map((item) => (
+              <div key={item.label} className="rounded-xl bg-slate-950/40 p-3">
+                <div className="text-xs text-slate-500">{item.label}</div>
+                <div className="mt-1 break-all text-white">{item.value}</div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle>Environment snapshot</CardTitle>
           </CardHeader>
           <CardContent>
@@ -312,7 +435,9 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
             </pre>
           </CardContent>
         </Card>
+      </div>
 
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Dataset / model snapshot</CardTitle>
@@ -334,18 +459,18 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
             </div>
           </CardContent>
         </Card>
-      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{pipeline ? 'Pipeline & Parameters' : 'QLoRA params'}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <pre className="max-h-[400px] overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-300">
-            {JSON.stringify(job.paramsSnapshot || job.qlora || {}, null, 2)}
-          </pre>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Effective config / pipeline snapshot</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <pre className="max-h-[400px] overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-300">
+              {JSON.stringify(job.paramsSnapshot || job.qlora || {}, null, 2)}
+            </pre>
+          </CardContent>
+        </Card>
+      </div>
 
       {job.error ? (
         <Card className="border-rose-500/20 bg-rose-500/5">

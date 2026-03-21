@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
 ignore: .codebun)dleignore
-generated: 2026-03-20T13:09:35.906Z
+generated: 2026-03-21T19:09:06.433Z
 
 
 
@@ -3943,6 +3943,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../db');
+const archiver = require('archiver');
 const {
   startFineTuneJob,
   createRemoteJob,
@@ -3962,10 +3963,18 @@ const {
   getJobLaunchCommand,
   getAllJobs,
 } = require('../services/jobs');
-const { verifyCallbackToken } = require('../services/auth');
+const { syncJobFromHF } = require('../services/hf-sync');
+const {
+  verifyCallbackToken,
+  generateCallbackToken,
+} = require('../services/auth');
 const roleMiddleware = require('../utils/role-middleware');
 const { getDatasets } = require('../services/state');
 const { buildRemoteTrainerConfig } = require('../services/remote-job-config');
+const { CONFIG } = require('../config');
+const { buildPublicBaseUrl } = require('../utils/public-base-url');
+const { getRuntimePresets, getRuntimePresetById } = require('../services/runtime-presets');
+const { generateDockerCompose, generateEnvFile, generateReadme } = require('../services/launch-bundle');
 
 const router = express.Router();
 
@@ -4018,6 +4027,61 @@ async function callbackAuth(req, res, next) {
   }
 }
 
+async function getOrCreateJobCallbackToken(jobId) {
+  let tokenRecord = await db('job_callback_tokens')
+    .where({ job_id: jobId, is_active: true })
+    .orderBy('created_at', 'desc')
+    .first();
+
+  if (!tokenRecord) {
+    const token = await generateCallbackToken(jobId);
+    tokenRecord = { id: token };
+  }
+
+  return tokenRecord.id;
+}
+
+async function buildLaunchInfo(job, req) {
+  if (!job || job.mode !== 'remote') {
+    return null;
+  }
+
+  const callbackToken = await getOrCreateJobCallbackToken(job.id);
+
+  const baseJobConfigUrl =
+    String(job.jobConfigUrl || '').trim() ||
+    `${buildPublicBaseUrl(req, CONFIG.callbackBaseUrl)}/api/jobs/${job.id}/config`;
+
+  const launchJobConfigUrl =
+    baseJobConfigUrl.includes('?token=')
+      ? baseJobConfigUrl
+      : `${baseJobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
+
+  const image = job.containerImage || 'itk-ai-trainer-service:qwen-7b';
+
+  return {
+    jobConfigUrl: launchJobConfigUrl,
+    env: {
+      JOB_CONFIG_URL: launchJobConfigUrl,
+    },
+    exampleDockerRun: [
+      'docker run --rm --gpus all \\',
+      '  --shm-size 16g \\',
+      `  -e JOB_CONFIG_URL="${launchJobConfigUrl}" \\`,
+      '  -e HF_TOKEN="$HF_TOKEN" \\',
+      `  ${image}`,
+    ].join('\n'),
+  };
+}
+
+router.get('/runtime-presets', async (req, res) => {
+  try {
+    res.json(await getRuntimePresets());
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 router.get('/', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit, 10) || 50;
@@ -4034,7 +4098,9 @@ router.get('/:id', async (req, res) => {
     if (!job) return res.status(404).json({ error: 'Job not found' });
 
     const artifacts = await db('job_artifacts').where({ job_id: req.params.id });
-    res.json({ ...job, artifacts });
+    const launch = await buildLaunchInfo(job, req);
+
+    res.json({ ...job, artifacts, launch });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -4062,13 +4128,15 @@ router.post('/remote-train', roleMiddleware(['admin', 'member']), async (req, re
     if (!datasetId) {
       return res.status(400).json({ error: 'datasetId is required' });
     }
-    res.json(await createRemoteJob(req.body || {}));
+
+    const publicBaseUrl = buildPublicBaseUrl(req, CONFIG.callbackBaseUrl);
+    res.json(await createRemoteJob(req.body || {}, { publicBaseUrl }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
 });
 
-router.post('/:id/retry', async (req, res) => {
+router.post('/:id/retry', roleMiddleware(['admin', 'member']), async (req, res) => {
   try {
     res.json(await retryJob(req.params.id));
   } catch (err) {
@@ -4126,10 +4194,13 @@ router.get('/:id/config', async (req, res) => {
       return res.status(404).json({ error: 'Dataset not found for job' });
     }
 
+    const publicBaseUrl = buildPublicBaseUrl(req, CONFIG.callbackBaseUrl);
+
     const trainerConfig = buildRemoteTrainerConfig({
       job,
       dataset,
       callbackAuthToken: tokenRecord.id,
+      publicBaseUrl,
     });
 
     res.json({
@@ -4177,7 +4248,11 @@ router.get('/:id/logs', async (req, res) => {
 
 router.post('/fine-tune', roleMiddleware(['admin', 'member']), async (req, res) => {
   try {
-    res.json(await startFineTuneJob(req.body || {}));
+    // Mapping fine-tune to unified remote flow
+    res.json(await createRemoteJob({
+      ...(req.body || {}),
+      type: 'fine-tune'
+    }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
@@ -4202,6 +4277,18 @@ router.patch('/:id/metadata', async (req, res) => {
 router.post('/:id/stop', async (req, res) => {
   try {
     res.json(await stopJob(req.params.id));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/:id/hf-sync', roleMiddleware(['admin', 'member']), async (req, res) => {
+  try {
+    const result = await syncJobFromHF(req.params.id);
+    if (!result.ok) {
+      return res.status(404).json(result);
+    }
+    res.json(result);
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
@@ -4262,6 +4349,62 @@ router.post('/logs', callbackAuth, async (req, res) => {
     };
 
     res.json(await handleWorkerLogs(normalized.job_id, normalized));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/launch/compose', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    const preset = job.runtimePresetId ? await getRuntimePresetById(job.runtimePresetId) : null;
+    res.setHeader('Content-Type', 'text/yaml');
+    res.send(generateDockerCompose(job, preset));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/launch/env', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    const launch = await buildLaunchInfo(job, req);
+    res.setHeader('Content-Type', 'text/plain');
+    res.send(generateEnvFile(job, launch.jobConfigUrl));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/launch/bundle', async (req, res) => {
+  try {
+    const job = await getJobById(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    // Validate token if provided in query
+    const token = req.query.token;
+    if (token) {
+      const { verifyToken } = require('../services/auth');
+      const user = await verifyToken(token);
+      if (!user) return res.status(401).json({ error: 'Invalid download token' });
+    } else if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const launch = await buildLaunchInfo(job, req);
+    const preset = job.runtimePresetId ? await getRuntimePresetById(job.runtimePresetId) : null;
+
+    const archive = archiver('tar', { gzip: true });
+    res.attachment(`job_bundle_${job.id}.tar.gz`);
+    archive.pipe(res);
+
+    archive.append(generateDockerCompose(job, preset), { name: 'compose.yaml' });
+    archive.append(generateEnvFile(job, launch.jobConfigUrl), { name: '.env.example' });
+    archive.append(generateReadme(job), { name: 'README.txt' });
+
+    archive.finalize();
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -5427,6 +5570,8 @@ async function main() {
 
   const app = express();
 
+  app.set('trust proxy', true);
+
   app.use(cors({
     origin: buildCorsOrigin(),
     credentials: false,
@@ -5522,6 +5667,162 @@ main().catch((err) => {
 });
 
 
+path: /services/agent-builds.js
+----------------------------------------
+const { db } = require('../db');
+const { uid } = require('../utils/ids');
+const { getBaseModelById } = require('./base-models');
+
+// Recipes
+async function getRecipes() {
+  return db('agent_build_recipes').orderBy('created_at', 'desc');
+}
+
+async function getRecipeById(id) {
+  const recipe = await db('agent_build_recipes').where({ id }).first();
+  if (recipe) {
+    recipe.build_args = recipe.build_args ? JSON.parse(recipe.build_args) : {};
+    recipe.capabilities = recipe.capabilities ? JSON.parse(recipe.capabilities) : {};
+  }
+  return recipe;
+}
+
+async function createRecipe(data) {
+  const id = uid('recipe');
+  const recipe = {
+    ...data,
+    id,
+    build_args: data.build_args ? JSON.stringify(data.build_args) : null,
+    capabilities: data.capabilities ? JSON.stringify(data.capabilities) : null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  await db('agent_build_recipes').insert(recipe);
+  return getRecipeById(id);
+}
+
+async function updateRecipe(id, data) {
+  const update = {
+    ...data,
+    updated_at: new Date().toISOString(),
+  };
+  if (data.build_args) update.build_args = JSON.stringify(data.build_args);
+  if (data.capabilities) update.capabilities = JSON.stringify(data.capabilities);
+
+  await db('agent_build_recipes').where({ id }).update(update);
+  return getRecipeById(id);
+}
+
+async function deleteRecipe(id) {
+  return db('agent_build_recipes').where({ id }).del();
+}
+
+// Builds
+async function getBuilds(recipeId = null) {
+  const query = db('agent_builds').orderBy('created_at', 'desc');
+  if (recipeId) query.where({ recipe_id: recipeId });
+  return query;
+}
+
+async function getBuildById(id) {
+  return db('agent_builds').where({ id }).first();
+}
+
+async function startBuild(recipeId) {
+  const recipe = await getRecipeById(recipeId);
+  if (!recipe) throw new Error('Recipe not found');
+
+  const bmi = await getBaseModelById(recipe.base_model_image_id);
+
+  const buildId = uid('build');
+  const build = {
+    id: buildId,
+    recipe_id: recipeId,
+    base_model_image_id: recipe.base_model_image_id,
+    status: 'running',
+    resolved_base_image: recipe.base_image_override || (bmi ? bmi.docker_image : null),
+    started_at: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  await db('agent_builds').insert(build);
+
+  // Mock build process
+  setTimeout(async () => {
+    try {
+      const logs = "Starting build process...\nStep 1/5: Pulling base image...\nStep 2/5: Installing trainer environment...\nStep 3/5: Copying trainer code...\nStep 4/5: Tagging image...\nStep 5/5: Pushing to registry...\nBuild successful!";
+      const resultImage = `${recipe.target_repository}:${recipe.stable_tag || 'latest'}`;
+
+      await db('agent_builds').where({ id: buildId }).update({
+        status: 'completed',
+        logs,
+        result_image: resultImage,
+        pushed_image: recipe.push_enabled ? resultImage : null,
+        finished_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      await db('agent_builds').where({ id: buildId }).update({
+        status: 'failed',
+        error: String(err.message || err),
+        finished_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    }
+  }, 2000);
+
+  return getBuildById(buildId);
+}
+
+async function publishRuntimePreset(buildId) {
+  const build = await getBuildById(buildId);
+  if (!build || build.status !== 'completed') throw new Error('Build not found or not completed');
+
+  const recipe = await getRecipeById(build.recipe_id);
+  const bmi = await getBaseModelById(build.base_model_image_id);
+
+  const presetId = uid('preset');
+  const preset = {
+    id: presetId,
+    title: recipe.default_runtime_preset_title || `Preset for ${recipe.name}`,
+    description: recipe.default_runtime_preset_description,
+    family: bmi ? bmi.family : null,
+    logical_base_model_id: bmi ? bmi.logical_base_model_id : (recipe.logical_base_model_id || 'unknown'),
+    base_model_image_id: build.base_model_image_id,
+    source_build_id: buildId,
+    trainer_image: build.result_image,
+    model_local_path: bmi ? bmi.model_local_path : '/app',
+    default_shm_size: recipe.default_shm_size || (bmi ? bmi.default_shm_size : '16g'),
+    default_gpu_count: recipe.default_gpu_count || (bmi ? bmi.default_gpu_count : 1),
+    supports_qlora: bmi ? bmi.supports_qlora : true,
+    supports_lora: bmi ? bmi.supports_lora : true,
+    supports_merge: bmi ? bmi.supports_merge : true,
+    supports_evaluation: bmi ? bmi.supports_evaluation : true,
+    enabled: recipe.default_runtime_preset_enabled,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  await db('runtime_presets').insert(preset);
+  await db('agent_builds').where({ id: buildId }).update({ published_runtime_preset_id: presetId });
+
+  return preset;
+}
+
+module.exports = {
+  getRecipes,
+  getRecipeById,
+  createRecipe,
+  updateRecipe,
+  deleteRecipe,
+  getBuilds,
+  getBuildById,
+  startBuild,
+  publishRuntimePreset,
+};
+
+
 path: /services/auth.js
 ----------------------------------------
 const bcrypt = require('bcryptjs');
@@ -5596,6 +5897,53 @@ module.exports = {
   verifyToken,
   generateCallbackToken,
   verifyCallbackToken,
+};
+
+
+path: /services/base-models.js
+----------------------------------------
+const { db } = require('../db');
+const { uid } = require('../utils/ids');
+
+async function getBaseModels() {
+  return db('base_model_images').orderBy('sort_order', 'asc');
+}
+
+async function getBaseModelById(id) {
+  return db('base_model_images').where({ id }).first();
+}
+
+async function createBaseModel(data) {
+  const id = uid('bmi');
+  const model = {
+    ...data,
+    id,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  await db('base_model_images').insert(model);
+  return getBaseModelById(id);
+}
+
+async function updateBaseModel(id, data) {
+  const update = {
+    ...data,
+    updated_at: new Date().toISOString(),
+  };
+  await db('base_model_images').where({ id }).update(update);
+  return getBaseModelById(id);
+}
+
+async function deleteBaseModel(id) {
+  return db('base_model_images').where({ id }).del();
+}
+
+module.exports = {
+  getBaseModels,
+  getBaseModelById,
+  createBaseModel,
+  updateBaseModel,
+  deleteBaseModel,
 };
 
 
@@ -7637,6 +7985,122 @@ module.exports = {
 };
 
 
+path: /services/hf-sync.js
+----------------------------------------
+const axios = require('axios');
+const { getJobById, upsertJob } = require('./jobs');
+const { db } = require('../db');
+const logger = require('../utils/logger');
+
+async function fetchHuggingFaceContent(repoId, path, responseType = 'json') {
+  const url = `https://huggingface.co/${repoId}/resolve/main/${path}`;
+  const token = process.env.HF_TOKEN;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+  try {
+    const response = await axios.get(url, { headers, timeout: 15000, responseType });
+    return response.data;
+  } catch (err) {
+    if (err.response?.status === 404) {
+      return null;
+    }
+    logger.warn(`Failed to fetch ${path} from HF repo ${repoId}`, {
+      status: err.response?.status,
+      message: err.message,
+    });
+    return null;
+  }
+}
+
+async function syncJobFromHF(jobId) {
+  const job = await getJobById(jobId);
+  if (!job) {
+    throw new Error(`Job ${jobId} not found`);
+  }
+
+  const repoId = job.hfRepoIdMetadata || job.hfRepoIdLora || job.hfRepoIdMerged;
+  if (!repoId) {
+    throw new Error(`No Hugging Face repository associated with job ${jobId}`);
+  }
+
+  logger.info(`Syncing job ${jobId} from HF repo ${repoId}`);
+
+  const [resultData, configData, summaryData, logsText] = await Promise.all([
+    fetchHuggingFaceContent(repoId, 'artifacts/result/job-result.json'),
+    fetchHuggingFaceContent(repoId, 'artifacts/config/effective-job.json'),
+    fetchHuggingFaceContent(repoId, 'artifacts/train/train_summary.json'),
+    fetchHuggingFaceContent(repoId, 'artifacts/logs/trainer.log', 'text'),
+  ]);
+
+  const patch = {};
+
+  if (resultData) {
+    patch.finalPayload = resultData;
+    if (resultData.training?.summary) {
+      patch.summaryMetrics = {
+        ...patch.summaryMetrics,
+        ...resultData.training.summary,
+      };
+    }
+    if (resultData.evaluation?.summary) {
+       patch.summaryMetrics = {
+         ...patch.summaryMetrics,
+         evaluation: resultData.evaluation.summary
+       };
+    }
+  }
+
+  if (summaryData) {
+    patch.summaryMetrics = {
+      ...(patch.summaryMetrics || job.summaryMetrics || {}),
+      ...summaryData,
+    };
+  }
+
+  if (configData) {
+    patch.paramsSnapshot = configData;
+  }
+
+  if (logsText) {
+    // Clear existing remote logs to avoid duplication if we re-sync
+    await db('job_logs').where({ job_id: jobId }).delete();
+
+    // Chunk logs and insert
+    const chunkSize = 16 * 1024;
+    for (let i = 0; i < logsText.length; i += chunkSize) {
+      const chunk = logsText.slice(i, i + chunkSize);
+      await db('job_logs').insert({
+        job_id: jobId,
+        content: chunk,
+        offset: i,
+      });
+    }
+
+    patch.logChunkCount = Math.ceil(logsText.length / chunkSize);
+    patch.lastLogOffset = logsText.length;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    logger.warn(`No syncable artifacts found for job ${jobId} in HF repo ${repoId}`);
+    return { ok: false, message: 'No artifacts found on Hugging Face' };
+  }
+
+  const updatedJob = {
+    ...job,
+    ...patch,
+  };
+
+  await upsertJob(updatedJob);
+  logger.info(`Successfully synced job ${jobId} from Hugging Face`);
+
+  return { ok: true };
+}
+
+module.exports = {
+  syncJobFromHF,
+};
+
+
 path: /services/jobs.js
 ----------------------------------------
 const fs = require('fs');
@@ -7665,7 +8129,7 @@ const {
 } = require('../utils/managed-processes');
 const { db } = require('../db');
 const { generateCallbackToken } = require('./auth');
-const { buildRemoteTrainerConfig } = require('./remote-job-config');
+const { getRuntimePresetById } = require('./runtime-presets');
 
 function safeJsonParse(value, fallback = null) {
   if (value === null || value === undefined || value === '') {
@@ -7805,22 +8269,40 @@ function getArtifacts(outputDir) {
 }
 
 function validateQLoraParams(params) {
-  if (params.learningRate !== undefined && (typeof params.learningRate !== 'number' || params.learningRate <= 0)) {
+  if (
+    params.learningRate !== undefined &&
+    (typeof params.learningRate !== 'number' || params.learningRate <= 0)
+  ) {
     throw new Error('learningRate must be a positive number');
   }
-  if (params.numTrainEpochs !== undefined && (!Number.isInteger(params.numTrainEpochs) || params.numTrainEpochs < 1)) {
+  if (
+    params.numTrainEpochs !== undefined &&
+    (!Number.isInteger(params.numTrainEpochs) || params.numTrainEpochs < 1)
+  ) {
     throw new Error('numTrainEpochs must be an integer >= 1');
   }
-  if (params.perDeviceTrainBatchSize !== undefined && (!Number.isInteger(params.perDeviceTrainBatchSize) || params.perDeviceTrainBatchSize < 1)) {
+  if (
+    params.perDeviceTrainBatchSize !== undefined &&
+    (!Number.isInteger(params.perDeviceTrainBatchSize) || params.perDeviceTrainBatchSize < 1)
+  ) {
     throw new Error('perDeviceTrainBatchSize must be an integer >= 1');
   }
-  if (params.gradientAccumulationSteps !== undefined && (!Number.isInteger(params.gradientAccumulationSteps) || params.gradientAccumulationSteps < 1)) {
+  if (
+    params.gradientAccumulationSteps !== undefined &&
+    (!Number.isInteger(params.gradientAccumulationSteps) || params.gradientAccumulationSteps < 1)
+  ) {
     throw new Error('gradientAccumulationSteps must be an integer >= 1');
   }
-  if (params.num_train_epochs !== undefined && (!Number.isInteger(params.num_train_epochs) || params.num_train_epochs < 1)) {
+  if (
+    params.num_train_epochs !== undefined &&
+    (!Number.isInteger(params.num_train_epochs) || params.num_train_epochs < 1)
+  ) {
     throw new Error('num_train_epochs must be an integer >= 1');
   }
-  if (params.per_device_train_batch_size !== undefined && (!Number.isInteger(params.per_device_train_batch_size) || params.per_device_train_batch_size < 1)) {
+  if (
+    params.per_device_train_batch_size !== undefined &&
+    (!Number.isInteger(params.per_device_train_batch_size) || params.per_device_train_batch_size < 1)
+  ) {
     throw new Error('per_device_train_batch_size must be an integer >= 1');
   }
 }
@@ -7885,6 +8367,8 @@ function parseJob(job) {
     launchMode: job.launch_mode,
     workerHost: job.worker_host,
     workerId: job.worker_id,
+    runtimePresetId: job.runtime_preset_id,
+    modelLocalPath: job.model_local_path,
     containerImage: job.container_image,
     containerCommand: job.container_command,
     jobConfigUrl: job.job_config_url,
@@ -7935,6 +8419,8 @@ async function upsertJob(job) {
     launch_mode: job.launchMode || null,
     worker_host: job.workerHost || null,
     worker_id: job.workerId || null,
+    runtime_preset_id: job.runtimePresetId || null,
+    model_local_path: job.modelLocalPath || null,
     container_image: job.containerImage || null,
     container_command: job.containerCommand || null,
     job_config_url: job.jobConfigUrl || null,
@@ -7977,170 +8463,29 @@ async function upsertJob(job) {
   return getJobById(job.id);
 }
 
-async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
-  if (qlora) validateQLoraParams(qlora);
-
-  await clearGpuMemory({ types: ['runtime', 'fine-tune'] });
-
-  const settings = await getSettings();
-  const datasets = await getDatasets();
-  const ds = datasets.find((x) => x.id === datasetId);
-  if (!ds) throw new Error('dataset not found');
-
-  let selectedBaseModel = baseModel || settings.baseModel;
-  let selectedModelId = modelId || null;
-
-  if (modelId) {
-    const model = await getModelById(modelId);
-    if (!model) throw new Error('model not found');
-    if (model.status !== 'ready') throw new Error('model is not ready');
-    selectedBaseModel = model.path;
-  }
-
-  const jobId = uid('job');
-  const outputDir = path.join(CONFIG.trainingOutputsDir, jobId);
-  const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
-
-  const trainConfig = {
-    baseModel: selectedBaseModel,
-    datasetPath: ds.processedPath,
-    outputDir,
-    qlora: { ...settings.qlora, ...(qlora || {}) },
-    wandb: settings.wandb || {},
-  };
-
-  const [envSnapshot, datasetSnapshot] = await Promise.all([
-    getEnvSnapshot(),
-    getDatasetSnapshot(ds.processedPath),
-  ]);
-
-  const job = {
-    id: jobId,
+/** @deprecated Direct backend execution is no longer recommended. Use agent-based flow. */
+async function startFineTuneJob(payload) {
+  return createRemoteJob({
+    ...payload,
     type: 'fine-tune',
-    mode: 'local',
-    name: name || jobId,
-    status: 'queued',
-    datasetId,
-    modelId: selectedModelId,
-    baseModel: selectedBaseModel,
-    outputDir,
-    logFile,
-    paramsSnapshot: trainConfig,
-    datasetSnapshot,
-    modelSnapshot: {
-      path: selectedBaseModel,
-      ...getModelMetadata(selectedBaseModel),
-    },
-    envSnapshot,
-    tags: [],
-    notes: '',
-  };
-
-  await upsertJob(job);
-  emitEvent('job_updated', job);
-
-  logger.info(`Starting local fine-tune job: ${job.name}`, {
-    jobId,
-    datasetId,
-    baseModel: selectedBaseModel,
   });
-
-  fs.mkdirSync(outputDir, { recursive: true });
-  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
-  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
-
-  const outFd = fs.openSync(logFile, 'a');
-  const scriptPath = path.join(__dirname, '..', 'python', 'train.py');
-
-  const { child, configPath } = await spawnPythonJsonScript({
-    pythonBin: CONFIG.pythonBin,
-    scriptPath,
-    payload: trainConfig,
-    cwd: CONFIG.workspace,
-    detached: true,
-    stdio: ['ignore', outFd, outFd],
-    env: buildTrainingEnv(settings),
-    configDir: CONFIG.trainingConfigsDir,
-    configPrefix: jobId,
-    logLabel: `fine-tune:${jobId}`,
-  });
-
-  child.unref();
-
-  await registerManagedProcess({
-    pid: child.pid,
-    type: 'fine-tune',
-    label: `fine-tune:${jobId}`,
-    meta: {
-      jobId,
-      datasetId,
-      outputDir,
-      logFile,
-      baseModel: selectedBaseModel,
-    },
-  });
-
-  const runningJob = await upsertJob({
-    ...job,
-    status: 'running',
-    startedAt: nowIso(),
-    pid: child.pid,
-    configPath,
-  });
-
-  emitEvent('job_updated', runningJob);
-
-  child.on('exit', async (code) => {
-    await unregisterManagedProcess(child.pid);
-
-    const current = await getJobById(jobId);
-    if (!current) return;
-
-    const patch = {
-      status: code === 0 ? 'completed' : 'failed',
-      finishedAt: nowIso(),
-      error: code === 0 ? null : `trainer exited with code ${code}`,
-      pid: null,
-    };
-
-    if (code === 0) {
-      const summaryFile = path.join(current.outputDir, 'summary.json');
-      if (fs.existsSync(summaryFile)) {
-        try {
-          patch.summaryMetrics = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
-        } catch (err) {
-          logger.warn('Failed to read summary.json', { jobId, error: err.message });
-        }
-      }
-
-      const artifacts = getArtifacts(current.outputDir);
-      for (const art of artifacts) {
-        await db('job_artifacts').insert({
-          job_id: jobId,
-          name: art.name,
-          path: art.path,
-          size: art.size,
-        });
-      }
-    }
-
-    const next = await upsertJob({ ...current, ...patch });
-    emitEvent('job_updated', next);
-
-    if (code === 0 && current.paramsSnapshot?.qlora?.useLora !== false) {
-      try {
-        await registerLoraFromJob(jobId);
-      } catch (err) {
-        logger.error('LoRA auto-registration failed', { jobId, error: err.message });
-      }
-    }
-  });
-
-  return { ok: true, jobId };
 }
 
-async function createRemoteJob(payload) {
-  const { name, type, datasetId, baseModel, qlora, workerId } = payload;
+async function createRemoteJob(payload, options = {}) {
+  const {
+    name,
+    type,
+    datasetId,
+    baseModel,
+    qlora,
+    workerId,
+    runtimePresetId,
+    hfPublish,
+    pipeline,
+    trainerImage,
+    tags,
+    notes,
+  } = payload;
 
   if (!datasetId) {
     throw new Error('datasetId is required');
@@ -8158,11 +8503,32 @@ async function createRemoteJob(payload) {
     throw new Error('dataset not found');
   }
 
+  const callbackBase = String(options.publicBaseUrl || CONFIG.callbackBaseUrl || '').trim();
+  if (!callbackBase) {
+    throw new Error('Public callback base URL is empty');
+  }
+
   const jobId = uid('job');
   const jobName = String(name || jobId).trim();
-  const selectedBaseModel = baseModel || CONFIG.remoteBakedModelPath;
-  const effectiveQlorа = { ...settings.qlora, ...(qlora || {}) };
-  const jobConfigUrl = buildApiUrl(CONFIG.callbackBaseUrl, `/api/jobs/${jobId}/config`);
+
+  const preset = runtimePresetId ? await getRuntimePresetById(runtimePresetId) : null;
+
+  // ЛОГИЧЕСКАЯ базовая модель для metadata / HF publish.
+  // Не должна быть /app.
+  const selectedBaseModel = String(
+    baseModel || (preset ? preset.logicalBaseModelId : settings.baseModel) || CONFIG.defaultBaseModel
+  ).trim();
+
+  if (!selectedBaseModel) {
+    throw new Error('baseModel is required');
+  }
+
+  const effectiveQlora = { ...settings.qlora, ...(qlora || {}) };
+  const effectiveHfPublish = hfPublish || {};
+  const effectiveTrainerImage = trainerImage || (preset ? preset.trainerImage : 'itk-ai-trainer-service:qwen-7b');
+  const effectiveModelLocalPath = preset ? preset.localModelPath : '/app';
+
+  const baseJobConfigUrl = buildApiUrl(callbackBase, `/api/jobs/${jobId}/config`);
 
   const initialJob = {
     id: jobId,
@@ -8172,23 +8538,48 @@ async function createRemoteJob(payload) {
     status: 'queued',
     currentStage: 'queued',
     progressPercent: 0,
+    workerType: 'trainer-service',
+    launchMode: 'manual',
     datasetId,
     modelId: null,
     baseModel: selectedBaseModel,
     workerId: workerId || null,
+    runtimePresetId: runtimePresetId || null,
+    modelLocalPath: effectiveModelLocalPath,
+    containerImage: effectiveTrainerImage,
     paramsSnapshot: {
-      qlora: effectiveQlorа,
+      qlora: effectiveQlora,
+      hfPublish: effectiveHfPublish,
+      pipeline: pipeline || null,
     },
-    tags: payload.tags || [],
-    notes: payload.notes || '',
-    jobConfigUrl,
+    tags: tags || [],
+    notes: notes || '',
+    jobConfigUrl: baseJobConfigUrl,
+    hfRepoIdLora: effectiveHfPublish.repo_id_lora || null,
+    hfRepoIdMerged: effectiveHfPublish.repo_id_merged || null,
+    hfRepoIdMetadata: effectiveHfPublish.repo_id_metadata || null,
   };
 
   const savedJob = await upsertJob(initialJob);
-  await getOrCreateActiveCallbackToken(jobId);
+  const callbackToken = await getOrCreateActiveCallbackToken(jobId);
+  const launchJobConfigUrl = `${baseJobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
 
-  emitEvent('job_updated', savedJob);
-  return savedJob;
+  return {
+    ...savedJob,
+    launch: {
+      jobConfigUrl: launchJobConfigUrl,
+      env: {
+        JOB_CONFIG_URL: launchJobConfigUrl,
+      },
+      exampleDockerRun: [
+        'docker run --rm --gpus all \\',
+        '  --shm-size 16g \\',
+        `  -e JOB_CONFIG_URL="${launchJobConfigUrl}" \\`,
+        '  -e HF_TOKEN="$HF_TOKEN" \\',
+        `  ${effectiveTrainerImage}`,
+      ].join('\n'),
+    },
+  };
 }
 
 async function cloneJob(jobId) {
@@ -8202,6 +8593,10 @@ async function cloneJob(jobId) {
     modelId: source.modelId,
     baseModel: source.baseModel,
     qlora: source.paramsSnapshot?.qlora,
+    hfPublish: source.paramsSnapshot?.hfPublish,
+    pipeline: source.paramsSnapshot?.pipeline,
+    runtimePresetId: source.runtimePresetId,
+    trainerImage: source.containerImage,
     tags: source.tags,
     notes: source.notes,
   });
@@ -8223,21 +8618,16 @@ async function retryJob(jobId) {
       modelId: source.modelId,
       baseModel: source.baseModel,
       qlora: source.paramsSnapshot?.qlora,
+      hfPublish: source.paramsSnapshot?.hfPublish,
+      pipeline: source.paramsSnapshot?.pipeline,
+      runtimePresetId: source.runtimePresetId,
+      trainerImage: source.containerImage,
       tags: source.tags,
       notes: source.notes,
       workerId: source.workerId,
     });
   }
 
-  if (source.type === 'fine-tune') {
-    return startFineTuneJob({
-      datasetId: source.datasetId,
-      name: `${source.name} (retry)`,
-      modelId: source.modelId,
-      baseModel: source.baseModel,
-      qlora: source.paramsSnapshot?.qlora,
-    });
-  }
 
   const retried = await upsertJob({
     ...source,
@@ -8437,7 +8827,7 @@ async function stopJob(jobId) {
       finishedAt: nowIso(),
     });
     emitEvent('job_updated', updated);
-    return { ok: true, message: 'Stop signal sent to remote worker' };
+    return { ok: true, message: 'Remote job marked as stopped' };
   }
 
   if (!job.pid || !isPidRunning(job.pid)) {
@@ -8492,12 +8882,30 @@ async function getJobLogs(id, tail = 200) {
 
   const logs = await db('job_logs')
     .where({ job_id: id })
-    .orderBy('created_at', 'desc')
+    .orderBy('offset', 'desc')
     .limit(tail);
+
+  const dbContent = logs.reverse().map((entry) => entry.content).join('');
+
+  if (dbContent) {
+    return {
+      id: job.id,
+      content: dbContent,
+    };
+  }
+
+  const fallback = [
+    job.lastStatusPayload?.logs || '',
+    job.lastProgressPayload?.logs || '',
+    job.finalPayload?.result?.logs || '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
 
   return {
     id: job.id,
-    content: logs.reverse().map((entry) => entry.content).join('\n'),
+    content: fallback,
   };
 }
 
@@ -8510,18 +8918,19 @@ async function getJobLaunchCommand(id) {
   }
 
   const callbackToken = await getOrCreateActiveCallbackToken(job.id);
-  const jobConfigUrl = `${job.jobConfigUrl}?token=${encodeURIComponent(callbackToken)}`;
+  const baseUrl = String(job.jobConfigUrl || '').trim();
+  const jobConfigUrl = baseUrl.includes('?token=')
+    ? baseUrl
+    : `${baseUrl}?token=${encodeURIComponent(callbackToken)}`;
+
   const image = job.containerImage || 'itk-ai-trainer-service:qwen-7b';
   const hfToken = '${HF_TOKEN}';
-
-  const outputRoot = process.env.OUTPUT_ROOT || '/storage/data/llm-lab/.remote-output';
 
   return [
     'docker run --rm --gpus all \\',
     '  --shm-size 16g \\',
     `  -e JOB_CONFIG_URL="${jobConfigUrl}" \\`,
     `  -e HF_TOKEN="${hfToken}" \\`,
-    `  -v ${outputRoot}:/output \\`,
     `  ${image}`,
   ].join('\n');
 }
@@ -8611,6 +9020,99 @@ module.exports = {
   getArtifacts,
   parseJob,
   upsertJob,
+};
+
+
+path: /services/launch-bundle.js
+----------------------------------------
+const { getJobById } = require('./jobs');
+const { getRuntimePresetById } = require('./runtime-presets');
+
+/**
+ * Generates a docker-compose.yaml file for a remote job
+ */
+function generateDockerCompose(job, preset = null) {
+  const image = job.containerImage || (preset ? preset.trainerImage : 'igortet/itk-ai-trainer-service:qwen-7b');
+  const shmSize = preset ? preset.defaultShmSize : '16g';
+
+  return `version: '3.8'
+
+services:
+  trainer:
+    image: ${image}
+    container_name: trainer-${job.id}
+    restart: "no"
+    shm_size: ${shmSize}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    env_file:
+      - .env
+    volumes:
+      - ./output:/output
+      - ./cache/huggingface:/cache/huggingface
+    environment:
+      - JOB_CONFIG_URL=\${JOB_CONFIG_URL}
+      - HF_TOKEN=\${HF_TOKEN}
+`;
+}
+
+/**
+ * Generates a .env file template for a remote job
+ */
+function generateEnvFile(job, launchUrl) {
+  return `# Remote Training Job Environment Configuration
+# Job ID: ${job.id}
+# Job Name: ${job.name}
+
+# The URL to download the training configuration
+JOB_CONFIG_URL=${launchUrl}
+
+# Hugging Face token for publishing (required if hfPublish is enabled)
+HF_TOKEN=
+`;
+}
+
+/**
+ * Generates a README.txt file for a remote job bundle
+ */
+function generateReadme(job) {
+  return `Remote Training Launch Bundle
+============================
+
+Job ID: ${job.id}
+Job Name: ${job.name}
+Created: ${new Date().toISOString()}
+
+Quick Start:
+-----------
+1. Ensure you have Docker and NVIDIA Container Toolkit installed.
+2. Edit '.env' file and add your HF_TOKEN if needed.
+3. Run the trainer:
+   docker compose up -d
+
+Notes:
+-----
+- The trainer will automatically download the configuration from the orchestrator.
+- Output artifacts will be saved in the './output' directory.
+- Hugging Face cache will be stored in './cache/huggingface'.
+- The container will stop automatically after training is complete.
+
+Log Monitoring:
+--------------
+To see the logs, run:
+docker compose logs -f
+`;
+}
+
+module.exports = {
+  generateDockerCompose,
+  generateEnvFile,
+  generateReadme,
 };
 
 
@@ -10705,11 +11207,11 @@ function toNum(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function joinUrl(base, path) {
-  return `${String(base || '').replace(/\/+$/, '')}${path}`;
+function joinUrl(base, routePath) {
+  return `${String(base || '').replace(/\/+$/, '')}${routePath}`;
 }
 
-function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken }) {
+function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseUrl }) {
   if (!job) {
     throw new Error('job is required');
   }
@@ -10723,11 +11225,29 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken }) {
   }
 
   const qlora = job.paramsSnapshot?.qlora || {};
+  const hfPublish = job.paramsSnapshot?.hfPublish || {};
   const baseDir = `/output/${job.id}`;
-  const callbackBaseUrl = CONFIG.callbackBaseUrl;
+
+  const callbackBaseUrl = String(publicBaseUrl || CONFIG.callbackBaseUrl || '').replace(/\/+$/, '');
+  if (!callbackBaseUrl) {
+    throw new Error('callbackBaseUrl is empty');
+  }
+
+  const logicalBaseModelId = String(job.baseModel || '').trim();
+
+  if (
+    hfPublish.enabled &&
+    (!logicalBaseModelId || logicalBaseModelId.startsWith('/'))
+  ) {
+    throw new Error(
+      `Remote job ${job.id} has invalid baseModel for Hugging Face publish: "${logicalBaseModelId}". ` +
+      `Expected HF model id like "Qwen/Qwen2.5-7B-Instruct".`
+    );
+  }
+
   const trainUrl = joinUrl(
     callbackBaseUrl,
-    `/jobs/${job.id}/dataset/train?token=${encodeURIComponent(callbackAuthToken)}`
+    `/api/jobs/${job.id}/dataset/train?token=${encodeURIComponent(callbackAuthToken)}`
   );
 
   const reportingAuth = {
@@ -10741,6 +11261,16 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken }) {
 
   const trainerMethod = loadIn4bit ? 'qlora' : 'lora';
 
+  // Pipeline mapping
+  const pipeline = job.paramsSnapshot?.pipeline || {
+    prepare_assets: { enabled: true },
+    training: { enabled: true },
+    merge: { enabled: !!job.paramsSnapshot?.qlora?.useLora },
+    evaluation: { enabled: false },
+    publish: { enabled: !!hfPublish.enabled },
+    upload: { enabled: !!hfPublish.enabled },
+  };
+
   return {
     job_id: job.id,
     job_name: job.name || job.id,
@@ -10748,7 +11278,15 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken }) {
 
     model: {
       source: 'local',
-      local_path: CONFIG.remoteBakedModelPath,
+
+      // Фактическая baked model внутри trainer container
+      local_path: job.modelLocalPath || CONFIG.remoteBakedModelPath || '/app',
+
+      // Логическая базовая модель для metadata / README / HF upload
+      base_model: logicalBaseModelId,
+      base_model_name_or_path: logicalBaseModelId,
+      repo_id: logicalBaseModelId,
+
       trust_remote_code: false,
       load_in_4bit: loadIn4bit,
       dtype: 'bfloat16',
@@ -10802,45 +11340,159 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken }) {
     },
 
     evaluation: {
-      enabled: false,
+      enabled: !!pipeline.evaluation?.enabled,
+      target: pipeline.evaluation?.target || 'auto',
+      max_samples: toInt(pipeline.evaluation?.max_samples, null),
+      max_new_tokens: toInt(pipeline.evaluation?.max_new_tokens, 128),
+      temperature: toNum(pipeline.evaluation?.temperature, 0.0),
+      do_sample: !!pipeline.evaluation?.do_sample,
+      system_prompt: pipeline.evaluation?.system_prompt || null,
+      prompt_template: pipeline.evaluation?.prompt_template || undefined,
+      parsing_regex: pipeline.evaluation?.parsing_regex || null,
+      score_min: toNum(pipeline.evaluation?.score_min, 0.0),
+      score_max: toNum(pipeline.evaluation?.score_max, 5.0),
+      dataset: pipeline.evaluation?.dataset || undefined,
     },
 
     reporting: {
       status: {
         enabled: true,
-        url: joinUrl(callbackBaseUrl, '/jobs/status'),
+        url: joinUrl(callbackBaseUrl, '/api/jobs/status'),
         timeout_sec: 15,
         auth: reportingAuth,
       },
       progress: {
         enabled: true,
-        url: joinUrl(callbackBaseUrl, '/jobs/progress'),
+        url: joinUrl(callbackBaseUrl, '/api/jobs/progress'),
         timeout_sec: 15,
         auth: reportingAuth,
       },
       final: {
         enabled: true,
-        url: joinUrl(callbackBaseUrl, '/jobs/final'),
+        url: joinUrl(callbackBaseUrl, '/api/jobs/final'),
+        timeout_sec: 15,
+        auth: reportingAuth,
+      },
+      logs: {
+        enabled: true,
+        url: joinUrl(callbackBaseUrl, '/api/jobs/logs'),
         timeout_sec: 15,
         auth: reportingAuth,
       },
     },
 
     upload: {
-      enabled: false,
-      target: 'local',
+      enabled: !!pipeline.upload?.enabled,
+      target: pipeline.upload?.enabled ? 'url' : (pipeline.publish?.enabled ? 'huggingface' : 'local'),
     },
 
     huggingface: {
-      enabled: false,
-      push_lora: false,
-      push_merged: false,
+      enabled: !!pipeline.publish?.enabled,
+      push_lora: pipeline.publish?.push_lora !== undefined ? !!pipeline.publish.push_lora : !!hfPublish.push_lora,
+      push_merged: pipeline.publish?.push_merged !== undefined ? !!pipeline.publish.push_merged : !!hfPublish.push_merged,
+      repo_id_lora: hfPublish.repo_id_lora || '',
+      repo_id_merged: hfPublish.repo_id_merged || '',
+      repo_id_metadata: hfPublish.repo_id_metadata || '',
     },
+
+    pipeline,
   };
 }
 
 module.exports = {
   buildRemoteTrainerConfig,
+};
+
+
+path: /services/runtime-presets.js
+----------------------------------------
+const { db } = require('../db');
+
+async function getRuntimePresets() {
+  const presets = await db('runtime_presets').where({ enabled: true }).orderBy('created_at', 'desc');
+  return presets.map(p => ({
+    ...p,
+    logicalBaseModelId: p.logical_base_model_id,
+    localModelPath: p.model_local_path,
+    trainerImage: p.trainer_image,
+    defaultShmSize: p.default_shm_size,
+    gpuCount: p.default_gpu_count,
+    supports: {
+      qlora: !!p.supports_qlora,
+      lora: !!p.supports_lora,
+      merge: !!p.supports_merge,
+      evaluation: !!p.supports_evaluation,
+    }
+  }));
+}
+
+async function getRuntimePresetById(id) {
+  const p = await db('runtime_presets').where({ id }).first();
+  if (!p) return null;
+  return {
+    ...p,
+    logicalBaseModelId: p.logical_base_model_id,
+    localModelPath: p.model_local_path,
+    trainerImage: p.trainer_image,
+    defaultShmSize: p.default_shm_size,
+    gpuCount: p.default_gpu_count,
+    supports: {
+      qlora: !!p.supports_qlora,
+      lora: !!p.supports_lora,
+      merge: !!p.supports_merge,
+      evaluation: !!p.supports_evaluation,
+    }
+  };
+}
+
+// Initial seeding if empty
+async function seedPresets() {
+  const count = await db('runtime_presets').count('id as count').first();
+  if (parseInt(count.count) === 0) {
+    const now = new Date().toISOString();
+    await db('runtime_presets').insert([
+      {
+        id: 'preset_qwen25_7b',
+        title: 'Qwen 2.5 7B (Standard)',
+        family: 'qwen',
+        logical_base_model_id: 'Qwen/Qwen2.5-7B-Instruct',
+        model_local_path: '/app',
+        trainer_image: 'igortet/itk-ai-trainer-service:qwen-7b',
+        default_shm_size: '16g',
+        default_gpu_count: 1,
+        supports_qlora: true,
+        supports_lora: true,
+        supports_merge: true,
+        supports_evaluation: true,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: 'preset_llama3_8b',
+        title: 'Llama 3 8B (Standard)',
+        family: 'llama',
+        logical_base_model_id: 'meta-llama/Meta-Llama-3-8B-Instruct',
+        model_local_path: '/app',
+        trainer_image: 'igortet/itk-ai-trainer-service:llama-8b',
+        default_shm_size: '16g',
+        default_gpu_count: 1,
+        supports_qlora: true,
+        supports_lora: true,
+        supports_merge: true,
+        supports_evaluation: true,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+      }
+    ]);
+  }
+}
+
+module.exports = {
+  getRuntimePresets,
+  getRuntimePresetById,
+  seedPresets,
 };
 
 
@@ -12629,6 +13281,15 @@ function authMiddleware(req, res, next) {
     return next();
   }
 
+  // 5. SSE events: пропускаем дальше, если есть token в query
+  if (req.method === 'GET' && req.path === '/events' && req.query?.token) {
+    const decoded = verifyToken(req.query.token);
+    if (decoded) {
+      req.user = decoded;
+      return next();
+    }
+  }
+
   return res.status(401).json({ error: 'Unauthorized: No valid token provided' });
 }
 
@@ -13287,6 +13948,33 @@ module.exports = {
 };
 
 
+path: /utils/public-base-url.js
+----------------------------------------
+function buildPublicBaseUrl(req, fallback = '') {
+  const proto = String(
+    req?.headers?.['x-forwarded-proto'] || req?.protocol || 'http'
+  )
+    .split(',')[0]
+    .trim();
+
+  const host = String(
+    req?.headers?.['x-forwarded-host'] || req?.get?.('host') || ''
+  )
+    .split(',')[0]
+    .trim();
+
+  if (!host) {
+    return String(fallback || '').replace(/\/+$/, '');
+  }
+
+  return `${proto}://${host}`.replace(/\/+$/, '');
+}
+
+module.exports = {
+  buildPublicBaseUrl,
+};
+
+
 path: /utils/python-runner.js
 ----------------------------------------
 const path = require('path');
@@ -13429,8 +14117,8 @@ module.exports = roleMiddleware;
 
 
 === SUMMARY ===
-included: 58
+included: 64
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 371124
+totalBytes(approx): 391617

@@ -37,8 +37,8 @@ const CONFIG = {
   maxJsonMb: toNumber(process.env.MAX_JSON_MB, 25),
   webUiOrigin: normalizeOrigin(process.env.WEB_UI_ORIGIN || '*'),
 
-  // Orchestration
-  callbackBaseUrl: process.env.CALLBACK_BASE_URL || `http://localhost:${process.env.SVC_PORT || 8787}`,
+  callbackBaseUrl:
+    process.env.CALLBACK_BASE_URL || `http://localhost:${process.env.SVC_PORT || 8787}`,
   requireJwtSecret: process.env.REQUIRE_JWT_SECRET === 'true',
   remoteBakedModelPath: process.env.REMOTE_BAKED_MODEL_PATH || '/app',
 };
@@ -49,6 +49,7 @@ CONFIG.datasetsDir = path.join(CONFIG.workspace, 'data', 'processed');
 CONFIG.rawDatasetsDir = path.join(CONFIG.workspace, 'data', 'raw');
 CONFIG.trainingConfigsDir = path.join(CONFIG.workspace, 'training', 'configs');
 CONFIG.trainingOutputsDir = path.join(CONFIG.workspace, 'training', 'outputs');
+CONFIG.jobArtifactsDir = path.join(CONFIG.workspace, 'artifacts', 'jobs');
 CONFIG.mergedModelsDir = path.join(CONFIG.modelsDir, 'merged');
 CONFIG.packagesDir = path.join(CONFIG.workspace, 'exports', 'packages');
 CONFIG.logsDir = path.join(CONFIG.workspace, 'logs');
@@ -62,7 +63,7 @@ CONFIG.syntheticFinalDir = path.join(CONFIG.syntheticDir, 'final');
 
 CONFIG.evalDatasetsDir = path.join(CONFIG.workspace, 'evaluations', 'datasets');
 
-CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json'); // Legacy
+CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json');
 CONFIG.settingsFile = path.join(CONFIG.stateDir, 'settings.json');
 CONFIG.datasetsFile = path.join(CONFIG.stateDir, 'datasets.json');
 CONFIG.evalDatasetsFile = path.join(CONFIG.stateDir, 'eval-datasets.json');
@@ -78,6 +79,7 @@ CONFIG.pythonBin = path.join(CONFIG.mlEnv, 'bin', 'python');
 CONFIG.quantizePythonBin = path.join(CONFIG.quantizeEnv, 'bin', 'python');
 CONFIG.transformersPythonBin = path.join(CONFIG.transformersEnv, 'bin', 'python');
 CONFIG.vllmBin = path.join(CONFIG.mlEnv, 'bin', 'vllm');
-CONFIG.syntheticDataKitBin = process.env.SYNTHETIC_DATA_KIT_BIN || path.join(CONFIG.mlEnv, 'bin', 'synthetic-data-kit');
+CONFIG.syntheticDataKitBin =
+  process.env.SYNTHETIC_DATA_KIT_BIN || path.join(CONFIG.mlEnv, 'bin', 'synthetic-data-kit');
 
 module.exports = { CONFIG };

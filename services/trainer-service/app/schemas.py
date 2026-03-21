@@ -40,9 +40,6 @@ class ModelConfig(AppBaseModel):
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     max_seq_length: int = 4096
 
-    # Дополнительные поля из remote-config оркестратора.
-    # Они нужны именно как логическая модель для HF metadata,
-    # даже если физически внутри контейнера модель лежит в /app.
     base_model: Optional[str] = None
     base_model_name_or_path: Optional[str] = None
 
@@ -176,39 +173,6 @@ class PostprocessConfig(AppBaseModel):
     run_awq_quantization: bool = False
 
 
-class PipelineStage(AppBaseModel):
-    enabled: bool = True
-
-
-class TrainingStage(PipelineStage, TrainingConfig):
-    pass
-
-
-class MergeStage(PipelineStage, PostprocessConfig):
-    pass
-
-
-class EvaluationStage(PipelineStage, EvaluationConfig):
-    pass
-
-
-class PublishStage(PipelineStage, HuggingFacePublishConfig):
-    pass
-
-
-class UploadStage(PipelineStage, UploadConfig):
-    pass
-
-
-class PipelineConfig(AppBaseModel):
-    prepare_assets: PipelineStage = Field(default_factory=PipelineStage)
-    training: TrainingStage = Field(default_factory=TrainingStage)
-    merge: MergeStage = Field(default_factory=MergeStage)
-    evaluation: EvaluationStage = Field(default_factory=EvaluationStage)
-    publish: PublishStage = Field(default_factory=PublishStage)
-    upload: UploadStage = Field(default_factory=UploadStage)
-
-
 class AuthConfig(AppBaseModel):
     bearer_token: Optional[str] = None
     headers: Dict[str, str] = Field(default_factory=dict)
@@ -229,6 +193,7 @@ class ReportingConfig(AppBaseModel):
     status: CallbackConfig = Field(default_factory=CallbackConfig)
     progress: CallbackConfig = Field(default_factory=CallbackConfig)
     final: CallbackConfig = Field(default_factory=CallbackConfig)
+    logs: CallbackConfig = Field(default_factory=CallbackConfig)
 
 
 class EvaluationDatasetConfig(AppBaseModel):
@@ -310,6 +275,39 @@ class HuggingFacePublishConfig(AppBaseModel):
     private: bool = True
     commit_message: str = "trainer-service upload"
     revision: Optional[str] = None
+
+
+class PipelineStage(AppBaseModel):
+    enabled: bool = True
+
+
+class TrainingStage(PipelineStage, TrainingConfig):
+    pass
+
+
+class MergeStage(PipelineStage, PostprocessConfig):
+    pass
+
+
+class EvaluationStage(PipelineStage, EvaluationConfig):
+    pass
+
+
+class PublishStage(PipelineStage, HuggingFacePublishConfig):
+    pass
+
+
+class UploadStage(PipelineStage, UploadConfig):
+    pass
+
+
+class PipelineConfig(AppBaseModel):
+    prepare_assets: PipelineStage = Field(default_factory=PipelineStage)
+    training: TrainingStage = Field(default_factory=TrainingStage)
+    merge: MergeStage = Field(default_factory=MergeStage)
+    evaluation: EvaluationStage = Field(default_factory=EvaluationStage)
+    publish: PublishStage = Field(default_factory=PublishStage)
+    upload: UploadStage = Field(default_factory=UploadStage)
 
 
 class JobConfig(AppBaseModel):

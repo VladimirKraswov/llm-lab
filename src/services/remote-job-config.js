@@ -1,11 +1,19 @@
 const { CONFIG } = require('../config');
 
 function toInt(value, fallback) {
+  if (fallback === null && (value === null || value === undefined || value === '')) {
+    return null;
+  }
+
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
 function toNum(value, fallback) {
+  if (fallback === null && (value === null || value === undefined || value === '')) {
+    return null;
+  }
+
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -48,6 +56,53 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
     );
   }
 
+  const rawPipeline = job.paramsSnapshot?.pipeline || {};
+
+  const uploadEnabled =
+    rawPipeline.upload?.enabled !== undefined
+      ? !!rawPipeline.upload.enabled
+      : true;
+
+  const publishEnabled =
+    rawPipeline.publish?.enabled !== undefined
+      ? !!rawPipeline.publish.enabled
+      : !!hfPublish.enabled;
+
+  const pipeline = {
+    prepare_assets: {
+      ...(rawPipeline.prepare_assets || {}),
+      enabled: rawPipeline.prepare_assets?.enabled !== false,
+    },
+    training: {
+      ...(rawPipeline.training || {}),
+      enabled: rawPipeline.training?.enabled !== false,
+    },
+    merge: {
+      ...(rawPipeline.merge || {}),
+      enabled: rawPipeline.merge?.enabled !== false,
+    },
+    evaluation: {
+      ...(rawPipeline.evaluation || {}),
+      enabled: !!rawPipeline.evaluation?.enabled,
+    },
+    publish: {
+      ...(rawPipeline.publish || {}),
+      enabled: publishEnabled,
+      push_lora:
+        rawPipeline.publish?.push_lora !== undefined
+          ? !!rawPipeline.publish.push_lora
+          : !!hfPublish.push_lora,
+      push_merged:
+        rawPipeline.publish?.push_merged !== undefined
+          ? !!rawPipeline.publish.push_merged
+          : !!hfPublish.push_merged,
+    },
+    upload: {
+      ...(rawPipeline.upload || {}),
+      enabled: uploadEnabled,
+    },
+  };
+
   const trainUrl = joinUrl(
     callbackBaseUrl,
     `/api/jobs/${job.id}/dataset/train?token=${encodeURIComponent(callbackAuthToken)}`
@@ -64,15 +119,20 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
 
   const trainerMethod = loadIn4bit ? 'qlora' : 'lora';
 
-  // Pipeline mapping
-  const pipeline = job.paramsSnapshot?.pipeline || {
-    prepare_assets: { enabled: true },
-    training: { enabled: true },
-    merge: { enabled: !!job.paramsSnapshot?.qlora?.useLora },
-    evaluation: { enabled: false },
-    publish: { enabled: !!hfPublish.enabled },
-    upload: { enabled: !!hfPublish.enabled },
-  };
+  const urlTargets = uploadEnabled
+    ? {
+        logs_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/logs'),
+        effective_config_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/config'),
+        summary_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/summary'),
+        train_metrics_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/train-metrics'),
+        train_history_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/train-history'),
+        eval_summary_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/eval-summary'),
+        eval_details_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/eval-details'),
+        lora_archive_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/lora'),
+        merged_archive_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/merged'),
+        full_archive_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/full-archive'),
+      }
+    : {};
 
   return {
     job_id: job.id,
@@ -81,15 +141,10 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
 
     model: {
       source: 'local',
-
-      // Фактическая baked model внутри trainer container
       local_path: job.modelLocalPath || CONFIG.remoteBakedModelPath || '/app',
-
-      // Логическая базовая модель для metadata / README / HF upload
       base_model: logicalBaseModelId,
       base_model_name_or_path: logicalBaseModelId,
       repo_id: logicalBaseModelId,
-
       trust_remote_code: false,
       load_in_4bit: loadIn4bit,
       dtype: 'bfloat16',
@@ -127,9 +182,10 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
       bias: 'none',
       use_gradient_checkpointing: 'unsloth',
       random_state: 3407,
-      target_modules: Array.isArray(qlora.targetModules) && qlora.targetModules.length
-        ? qlora.targetModules
-        : ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
+      target_modules:
+        Array.isArray(qlora.targetModules) && qlora.targetModules.length
+          ? qlora.targetModules
+          : ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
     },
 
     outputs: {
@@ -137,24 +193,30 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
     },
 
     postprocess: {
-      merge_lora: true,
-      save_merged_16bit: true,
-      run_awq_quantization: false,
+      merge_lora: pipeline.merge.merge_lora !== undefined ? !!pipeline.merge.merge_lora : true,
+      save_merged_16bit:
+        pipeline.merge.save_merged_16bit !== undefined
+          ? !!pipeline.merge.save_merged_16bit
+          : true,
+      run_awq_quantization:
+        pipeline.merge.run_awq_quantization !== undefined
+          ? !!pipeline.merge.run_awq_quantization
+          : false,
     },
 
     evaluation: {
-      enabled: !!pipeline.evaluation?.enabled,
-      target: pipeline.evaluation?.target || 'auto',
-      max_samples: toInt(pipeline.evaluation?.max_samples, null),
-      max_new_tokens: toInt(pipeline.evaluation?.max_new_tokens, 128),
-      temperature: toNum(pipeline.evaluation?.temperature, 0.0),
-      do_sample: !!pipeline.evaluation?.do_sample,
-      system_prompt: pipeline.evaluation?.system_prompt || null,
-      prompt_template: pipeline.evaluation?.prompt_template || undefined,
-      parsing_regex: pipeline.evaluation?.parsing_regex || null,
-      score_min: toNum(pipeline.evaluation?.score_min, 0.0),
-      score_max: toNum(pipeline.evaluation?.score_max, 5.0),
-      dataset: pipeline.evaluation?.dataset || undefined,
+      enabled: !!pipeline.evaluation.enabled,
+      target: pipeline.evaluation.target || 'auto',
+      max_samples: toInt(pipeline.evaluation.max_samples, null),
+      max_new_tokens: toInt(pipeline.evaluation.max_new_tokens, 128),
+      temperature: toNum(pipeline.evaluation.temperature, 0.0),
+      do_sample: !!pipeline.evaluation.do_sample,
+      system_prompt: pipeline.evaluation.system_prompt || null,
+      prompt_template: pipeline.evaluation.prompt_template,
+      parsing_regex: pipeline.evaluation.parsing_regex || null,
+      score_min: toNum(pipeline.evaluation.score_min, 0.0),
+      score_max: toNum(pipeline.evaluation.score_max, 5.0),
+      dataset: pipeline.evaluation.dataset || undefined,
     },
 
     reporting: {
@@ -185,17 +247,25 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
     },
 
     upload: {
-      enabled: !!pipeline.upload?.enabled,
-      target: pipeline.upload?.enabled ? 'url' : (pipeline.publish?.enabled ? 'huggingface' : 'local'),
+      enabled: !!uploadEnabled,
+      target: uploadEnabled ? 'url' : 'local',
+      timeout_sec: 300,
+      auth: {
+        bearer_token: callbackAuthToken,
+      },
+      url_targets: urlTargets,
     },
 
     huggingface: {
-      enabled: !!pipeline.publish?.enabled,
-      push_lora: pipeline.publish?.push_lora !== undefined ? !!pipeline.publish.push_lora : !!hfPublish.push_lora,
-      push_merged: pipeline.publish?.push_merged !== undefined ? !!pipeline.publish.push_merged : !!hfPublish.push_merged,
+      enabled: !!publishEnabled,
+      push_lora: !!pipeline.publish.push_lora,
+      push_merged: !!pipeline.publish.push_merged,
       repo_id_lora: hfPublish.repo_id_lora || '',
       repo_id_merged: hfPublish.repo_id_merged || '',
       repo_id_metadata: hfPublish.repo_id_metadata || '',
+      private: hfPublish.private !== undefined ? !!hfPublish.private : true,
+      commit_message: hfPublish.commit_message || 'trainer-service upload',
+      revision: hfPublish.revision || null,
     },
 
     pipeline,

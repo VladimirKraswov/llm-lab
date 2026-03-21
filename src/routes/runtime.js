@@ -113,7 +113,11 @@ router.post('/use-job-output', async (req, res) => {
     const jobs = await getJobs();
     const job = jobs.find((x) => x.id === jobId);
     if (!job) return res.status(404).json({ error: 'job not found' });
-    if (job.status !== 'completed') return res.status(400).json({ error: 'job is not completed' });
+
+    const normalizedStatus = String(job.status || '').toLowerCase();
+    if (!['completed', 'finished'].includes(normalizedStatus)) {
+      return res.status(400).json({ error: 'job is not completed' });
+    }
 
     const settings = await getSettings();
     const inf = settings.inference || {};
@@ -198,10 +202,6 @@ router.post('/chat', async (req, res) => {
     const requestedStream = !!req.body?.stream;
     const stream = supportsStreaming ? requestedStream : false;
 
-    // ВАЖНО:
-    // Для vLLM LoRA, загруженной через --lora-modules, нужно выбирать адаптер
-    // через поле "model", передавая имя адаптера.
-    // Нельзя слать lora_name в /v1/chat/completions — vLLM его игнорирует.
     const requestedModel = req.body?.model;
     const effectiveModel =
       typeof requestedModel === 'string' && requestedModel.trim()

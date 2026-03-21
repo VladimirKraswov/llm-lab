@@ -45,7 +45,6 @@ def load_remote_job_config(
         raise ValueError("Remote job config response must be a JSON object")
 
     callback_auth_token = payload.get("callback_auth_token")
-    logs_url = payload.get("logs_url") or _resolve_callback_url(payload, "logs")
 
     if "config" in payload:
         raw_config = copy.deepcopy(payload.get("config") or {})
@@ -62,7 +61,7 @@ def load_remote_job_config(
     raw_config["mode"] = "remote"
 
     reporting = raw_config.setdefault("reporting", {})
-    for key in ("status", "progress", "final"):
+    for key in ("status", "progress", "final", "logs"):
         callback_cfg = copy.deepcopy(reporting.get(key) or {})
         explicit_url = _resolve_callback_url(payload, key)
 
@@ -84,6 +83,12 @@ def load_remote_job_config(
     raw_config["reporting"] = reporting
 
     cfg = JobConfig.model_validate(raw_config)
+
+    logs_url = (
+        _resolve_callback_url(payload, "logs")
+        or _resolve_callback_url(raw_config, "logs")
+    )
+
     meta = {
         "job_config_url": resolved_url,
         "logs_url": logs_url,

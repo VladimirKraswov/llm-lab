@@ -110,9 +110,10 @@ def main():
         cfg.outputs.logs_dir,
         job_id=cfg.job_id or cfg.job_name,
         job_name=cfg.job_name,
-        logs_url=bootstrap_meta.get("logs_url"),
+        logs_url=bootstrap_meta.get("logs_url") or cfg.reporting.logs.url,
         logs_bearer_token=(
             bootstrap_meta.get("callback_auth_token")
+            or cfg.reporting.logs.auth.bearer_token
             or cfg.reporting.status.auth.bearer_token
             or cfg.reporting.progress.auth.bearer_token
             or cfg.reporting.final.auth.bearer_token
@@ -154,7 +155,6 @@ def main():
 
         pipeline = cfg.pipeline
 
-        # Stage: prepare_assets
         if not pipeline or pipeline.prepare_assets.enabled:
             logger.info("==> preparing assets")
             reporter.report_status(
@@ -168,7 +168,6 @@ def main():
         else:
             logger.info("==> skipping assets preparation")
 
-        # Stage: training
         training_result = {}
         if not pipeline or pipeline.training.enabled:
             logger.info("==> starting training")
@@ -194,7 +193,6 @@ def main():
         if cfg.postprocess.run_awq_quantization:
             raise NotImplementedError("AWQ quantization stage is not implemented in this service yet")
 
-        # Stage: evaluation
         evaluation_result = None
         should_eval = False
         if pipeline:
@@ -227,7 +225,6 @@ def main():
             "upload_errors": {},
         }
 
-        # Stage: upload (legacy / URL)
         should_upload = False
         if pipeline:
             should_upload = pipeline.upload.enabled
@@ -281,7 +278,6 @@ def main():
 
         write_json(result_path, result)
 
-        # Stage: publish (Hugging Face)
         should_publish = False
         if pipeline:
             should_publish = pipeline.publish.enabled

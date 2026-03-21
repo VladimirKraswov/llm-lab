@@ -13,7 +13,11 @@ router.get('/summary', async (_req, res) => {
     getDatasets(),
   ]);
 
-  const recentJobs = [...jobs].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 5);
+  const recentJobs = [...jobs]
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 5);
+
+  const isFinished = (status) => ['completed', 'finished'].includes(String(status || '').toLowerCase());
 
   res.json({
     health: {
@@ -33,7 +37,7 @@ router.get('/summary', async (_req, res) => {
       datasets: datasets.length,
       jobs: jobs.length,
       runningJobs: jobs.filter((x) => x.status === 'running').length,
-      completedJobs: jobs.filter((x) => x.status === 'completed').length,
+      completedJobs: jobs.filter((x) => isFinished(x.status)).length,
       failedJobs: jobs.filter((x) => x.status === 'failed').length,
     },
     recentJobs,

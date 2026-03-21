@@ -1,10 +1,10 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
 const { db } = require('../db');
 const archiver = require('archiver');
 const {
-  startFineTuneJob,
   createRemoteJob,
   cloneJob,
   retryJob,
@@ -34,16 +34,28 @@ const { CONFIG } = require('../config');
 const { buildPublicBaseUrl } = require('../utils/public-base-url');
 const { getRuntimePresets, getRuntimePresetById } = require('../services/runtime-presets');
 const { generateDockerCompose, generateEnvFile, generateReadme } = require('../services/launch-bundle');
+const {
+  normalizeArtifactType,
+  registerUploadedArtifact,
+  syncFinalArtifactsToJob,
+  getJobArtifact,
+} = require('../services/job-artifacts');
 
 const router = express.Router();
+
+const uploadTempDir = path.join(CONFIG.jobArtifactsDir, '_incoming');
+fs.mkdirSync(uploadTempDir, { recursive: true });
+
+const upload = multer({
+  dest: uploadTempDir,
+});
 
 function mapIncomingStatus(status) {
   const value = String(status || '').trim().toLowerCase();
 
   if (!value) return 'running';
-  if (value === 'started') return 'running';
-  if (value === 'finished') return 'completed';
-  if (value === 'success') return 'completed';
+  if (value === 'success') return 'finished';
+  if (value === 'completed') return 'finished';
   if (value === 'error') return 'failed';
 
   return value;
@@ -146,6 +158,27 @@ router.get('/', async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 50;
     const offset = parseInt(req.query.offset, 10) || 0;
     res.json(await getAllJobs(limit, offset));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/artifacts/:artifactType/download', async (req, res) => {
+  try {
+    const record = await getJobArtifact(req.params.id, req.params.artifactType);
+    if (!record) {
+      return res.status(404).json({ error: 'artifact not found' });
+    }
+
+    if (record.path && fs.existsSync(record.path)) {
+      return res.download(record.path, path.basename(record.path));
+    }
+
+    if (record.url) {
+      return res.redirect(record.url);
+    }
+
+    return res.status(404).json({ error: 'artifact is not downloadable' });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -262,10 +295,14 @@ router.get('/:id/config', async (req, res) => {
       publicBaseUrl,
     });
 
+    const reporting = trainerConfig.reporting || {};
+
     res.json({
       job_id: job.id,
       job_name: job.name,
       callback_auth_token: tokenRecord.id,
+      logs_url: reporting.logs?.url || null,
+      reporting,
       config: trainerConfig,
     });
   } catch (err) {
@@ -305,12 +342,63 @@ router.get('/:id/logs', async (req, res) => {
   }
 });
 
+router.post('/upload/:artifactType', upload.single('file'), callbackAuth, async (req, res) => {
+  try {
+    const jobId = String(req.body?.job_id || '').trim();
+    if (!jobId) {
+      return res.status(400).json({ error: 'job_id is required' });
+    }
+
+    const job = await getJobById(jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'file is required' });
+    }
+
+    const publicBaseUrl = buildPublicBaseUrl(req, CONFIG.callbackBaseUrl);
+    const artifactType = normalizeArtifactType(req.params.artifactType || req.body?.artifact_type);
+
+    const { record, downloadUrl } = await registerUploadedArtifact({
+      jobId,
+      artifactType,
+      file: req.file,
+      publicBaseUrl,
+    });
+
+    await db('job_events').insert({
+      job_id: jobId,
+      type: 'artifact_upload',
+      payload: JSON.stringify({
+        artifactType,
+        filename: record?.name || req.file.originalname,
+        downloadUrl,
+      }),
+    });
+
+    return res.status(201).json({
+      ok: true,
+      artifact_id: `${jobId}:${artifactType}`,
+      job_id: jobId,
+      artifact_type: artifactType,
+      storage_key: record?.path || null,
+      download_url: downloadUrl || record?.url || null,
+    });
+  } catch (err) {
+    if (req.file?.path) {
+      fs.rm(req.file.path, { force: true }, () => {});
+    }
+    return res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 router.post('/fine-tune', roleMiddleware(['admin', 'member']), async (req, res) => {
   try {
-    // Mapping fine-tune to unified remote flow
     res.json(await createRemoteJob({
       ...(req.body || {}),
-      type: 'fine-tune'
+      type: 'fine-tune',
     }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
@@ -382,7 +470,7 @@ router.post('/final', callbackAuth, async (req, res) => {
     const result = req.body?.result || {};
     const normalized = {
       ...req.body,
-      status: mapIncomingStatus(req.body.status || result.status),
+      status: mapIncomingStatus(req.body.status || result.status || 'finished'),
       metrics: {
         training: result?.training?.summary || null,
         evaluation: result?.evaluation?.summary || null,
@@ -390,7 +478,15 @@ router.post('/final', callbackAuth, async (req, res) => {
       artifacts: result?.uploads || {},
     };
 
-    res.json(await handleWorkerFinal(normalized.job_id, normalized));
+    const response = await handleWorkerFinal(normalized.job_id, normalized);
+
+    await syncFinalArtifactsToJob({
+      jobId: normalized.job_id,
+      uploads: result?.uploads || {},
+      publicBaseUrl: buildPublicBaseUrl(req, CONFIG.callbackBaseUrl),
+    });
+
+    res.json(response);
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -442,7 +538,6 @@ router.get('/:id/launch/bundle', async (req, res) => {
     const job = await getJobById(req.params.id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
 
-    // Validate token if provided in query
     const token = req.query.token;
     if (token) {
       const { verifyToken } = require('../services/auth');

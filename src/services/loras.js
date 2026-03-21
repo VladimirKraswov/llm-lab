@@ -32,7 +32,11 @@ async function registerLoraFromJob(jobId, customName = null) {
   const jobs = await getJobs();
   const job = jobs.find((x) => x.id === jobId);
   if (!job) throw new Error('job not found');
-  if (job.status !== 'completed') throw new Error('job is not completed');
+
+  const normalizedStatus = String(job.status || '').toLowerCase();
+  if (!['completed', 'finished'].includes(normalizedStatus)) {
+    throw new Error('job is not completed');
+  }
 
   let baseModelName = job.baseModel;
   let baseModelId = job.modelId || null;

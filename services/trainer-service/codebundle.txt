@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/services/trainer-service
 ignore: .codebun)dleignore
-generated: 2026-03-20T15:21:29.052Z
+generated: 2026-03-21T19:06:58.174Z
 
 
 
@@ -112,6 +112,7 @@ path: /app/artifact_uploader.py
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -137,6 +138,151 @@ class ArtifactUploader:
         if self.cfg.upload.auth.bearer_token:
             headers["Authorization"] = f"Bearer {self.cfg.upload.auth.bearer_token}"
         return headers
+
+    @staticmethod
+    def _is_probably_local_model_ref(value: str) -> bool:
+        value = str(value or "").strip()
+        if not value:
+            return False
+        if value.startswith("/"):
+            return True
+        if value.startswith("./") or value.startswith("../"):
+            return True
+        if value.startswith("\\") or "\\" in value:
+            return True
+        if len(value) > 1 and value[1] == ":":
+            return True
+        return False
+
+    def _resolve_hf_base_model_id(
+        self,
+        training_result: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        candidates = []
+
+        if training_result:
+            candidates.extend(
+                [
+                    training_result.get("base_model_id"),
+                    training_result.get("base_model_name_or_path"),
+                    training_result.get("base_model"),
+                ]
+            )
+            summary = training_result.get("summary") or {}
+            if isinstance(summary, dict):
+                candidates.extend(
+                    [
+                        summary.get("base_model_id"),
+                        summary.get("base_model_name_or_path"),
+                        summary.get("base_model"),
+                    ]
+                )
+
+        candidates.extend(
+            [
+                self.cfg.model.logical_base_model_id,
+                self.cfg.model.repo_id,
+                self.cfg.model.base_model_name_or_path,
+                self.cfg.model.base_model,
+            ]
+        )
+
+        for candidate in candidates:
+            if not isinstance(candidate, str):
+                continue
+            value = candidate.strip()
+            if not value:
+                continue
+            if self._is_probably_local_model_ref(value):
+                continue
+            return value
+
+        return None
+
+    def _rewrite_readme_frontmatter_base_model(
+        self,
+        readme_path: Path,
+        base_model_id: Optional[str],
+    ) -> bool:
+        if not readme_path.exists():
+            return False
+
+        original = readme_path.read_text(encoding="utf-8")
+        newline = "\r\n" if "\r\n" in original else "\n"
+        had_trailing_newline = original.endswith("\n") or original.endswith("\r")
+
+        def finalize(parts: list[str]) -> str:
+            text = newline.join(parts)
+            if had_trailing_newline and not text.endswith(newline):
+                text += newline
+            return text
+
+        lines = original.splitlines()
+
+        if lines and lines[0].strip() == "---":
+            frontmatter_end = None
+            for idx in range(1, len(lines)):
+                if lines[idx].strip() == "---":
+                    frontmatter_end = idx
+                    break
+
+            if frontmatter_end is not None:
+                header_lines = lines[1:frontmatter_end]
+                body_lines = lines[frontmatter_end + 1 :]
+
+                updated_header: list[str] = []
+                found_base_model = False
+                changed = False
+
+                for line in header_lines:
+                    if re.match(r"^\s*base_model\s*:", line):
+                        found_base_model = True
+                        if base_model_id:
+                            replacement = f"base_model: {base_model_id}"
+                            updated_header.append(replacement)
+                            if line != replacement:
+                                changed = True
+                        else:
+                            changed = True
+                        continue
+                    updated_header.append(line)
+
+                if base_model_id and not found_base_model:
+                    updated_header.append(f"base_model: {base_model_id}")
+                    changed = True
+
+                if not changed:
+                    return False
+
+                updated = finalize(["---", *updated_header, "---", *body_lines])
+                readme_path.write_text(updated, encoding="utf-8")
+                return True
+
+        if not base_model_id:
+            return False
+
+        updated = f"---{newline}base_model: {base_model_id}{newline}---{newline}{newline}{original}"
+        readme_path.write_text(updated, encoding="utf-8")
+        return True
+
+    def _normalize_model_card_metadata(
+        self,
+        folder_path: str,
+        training_result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        repo_dir = Path(folder_path)
+        readme_path = repo_dir / "README.md"
+        if not readme_path.exists():
+            return
+
+        base_model_id = self._resolve_hf_base_model_id(training_result)
+        changed = self._rewrite_readme_frontmatter_base_model(readme_path, base_model_id)
+        if changed:
+            logger.info(
+                "==> normalized README.md metadata in %s (base_model=%s)",
+                readme_path,
+                base_model_id or "<removed>",
+            )
 
     def _upload_file(self, file_path: str, upload_url: str, artifact_type: str) -> Dict[str, str]:
         path = Path(file_path)
@@ -439,6 +585,8 @@ class ArtifactUploader:
             if not lora_dir or not Path(lora_dir).exists():
                 raise RuntimeError("LoRA upload requested but lora_dir is missing")
 
+            self._normalize_model_card_metadata(lora_dir, training_result)
+
             api.create_repo(
                 repo_id=plan["lora_repo"],
                 repo_type="model",
@@ -459,6 +607,8 @@ class ArtifactUploader:
             merged_dir = training_result.get("merged_dir")
             if not merged_dir or not Path(merged_dir).exists():
                 raise RuntimeError("Merged upload requested but merged_dir is missing")
+
+            self._normalize_model_card_metadata(merged_dir, training_result)
 
             api.create_repo(
                 repo_id=plan["merged_repo"],
@@ -913,7 +1063,12 @@ def extract_generated_text(tokenizer, prompt_text: str, output_ids, input_len: i
     return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
 
-def parse_model_score(text: str) -> Dict[str, Any]:
+def parse_model_score(
+    text: str,
+    parsing_regex: Optional[str] = None,
+    score_min: float = 0.0,
+    score_max: float = 5.0,
+) -> Dict[str, Any]:
     if not text or not str(text).strip():
         return {"score": None, "feedback": None, "parseError": True}
 
@@ -927,7 +1082,7 @@ def parse_model_score(text: str) -> Dict[str, Any]:
             if isinstance(raw_score, str):
                 raw_score = float(raw_score)
             if isinstance(raw_score, (int, float)) and math.isfinite(raw_score):
-                if 0 <= raw_score <= 5:
+                if score_min <= raw_score <= score_max:
                     return {
                         "score": float(raw_score),
                         "feedback": data.get("feedback") or data.get("reasoning"),
@@ -936,26 +1091,34 @@ def parse_model_score(text: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    patterns = [
-        r"score:\s*(\d+(?:\.\d+)?)\s*/\s*5",
-        r"оценка:\s*(\d+(?:\.\d+)?)\s*/\s*5",
+    patterns = []
+    if parsing_regex:
+        patterns.append(parsing_regex)
+
+    # Defaults
+    patterns.extend([
+        fr"score:\s*(\d+(?:\.\d+)?)\s*/\s*{int(score_max)}",
+        fr"оценка:\s*(\d+(?:\.\d+)?)\s*/\s*{int(score_max)}",
         r"score:\s*(\d+(?:\.\d+)?)",
         r"оценка:\s*(\d+(?:\.\d+)?)",
-        r"(\d+(?:\.\d+)?)\s*/\s*5",
+        fr"(\d+(?:\.\d+)?)\s*/\s*{int(score_max)}",
         r"^(\d+(?:\.\d+)?)$",
-    ]
+    ])
 
     for pattern in patterns:
-        match = re.search(pattern, clean_text, re.IGNORECASE | re.MULTILINE)
-        if not match:
+        try:
+            match = re.search(pattern, clean_text, re.IGNORECASE | re.MULTILINE)
+            if not match:
+                continue
+            value = float(match.group(1))
+            if score_min <= value <= score_max:
+                return {
+                    "score": value,
+                    "feedback": clean_text,
+                    "parseError": False,
+                }
+        except Exception:
             continue
-        value = float(match.group(1))
-        if 0 <= value <= 5:
-            return {
-                "score": value,
-                "feedback": clean_text,
-                "parseError": False,
-            }
 
     return {
         "score": None,
@@ -1100,11 +1263,16 @@ def _normalize_eval_items(cfg: JobConfig) -> List[Dict[str, Any]]:
     return normalized
 
 
-def _build_prompt(tokenizer, template: str, sample: Dict[str, Any]) -> str:
+def _build_prompt(tokenizer, template: str, sample: Dict[str, Any], system_prompt: Optional[str] = None) -> str:
     rendered = render_prompt_template(template, sample)
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": rendered})
+
     try:
         return tokenizer.apply_chat_template(
-            [{"role": "user", "content": rendered}],
+            messages,
             tokenize=False,
             add_generation_prompt=True,
         )
@@ -1205,7 +1373,12 @@ def run_evaluation(
     model.eval()
 
     for index, sample in enumerate(samples, start=1):
-        prompt = _build_prompt(tokenizer, cfg.evaluation.prompt_template, sample)
+        prompt = _build_prompt(
+            tokenizer,
+            cfg.evaluation.prompt_template,
+            sample,
+            system_prompt=cfg.evaluation.system_prompt,
+        )
 
         row = {
             "sampleId": sample["id"],
@@ -1243,7 +1416,12 @@ def run_evaluation(
                 input_len=int(model_inputs["input_ids"].shape[1]),
             )
 
-            parsed = parse_model_score(raw_response)
+            parsed = parse_model_score(
+                raw_response,
+                parsing_regex=cfg.evaluation.parsing_regex,
+                score_min=cfg.evaluation.score_min,
+                score_max=cfg.evaluation.score_max,
+            )
 
             row["rawResponse"] = raw_response
             row["predictedScore"] = parsed["score"]
@@ -1799,28 +1977,62 @@ def main():
         try_hf_login()
         uploader.ensure_hf_ready()
 
-        logger.info("==> preparing assets")
-        reporter.report_status(
-            "running",
-            message="Preparing datasets and remote assets",
-            stage="prepare_assets",
-            progress=5,
-        )
-        asset_manager.prepare_dataset(cfg)
-        asset_manager.prepare_evaluation_dataset(cfg)
+        pipeline = cfg.pipeline
 
-        logger.info("==> starting training")
-        training_result = run_training(cfg, reporter=reporter)
-        logger.info("==> training finished")
+        # Stage: prepare_assets
+        if not pipeline or pipeline.prepare_assets.enabled:
+            logger.info("==> preparing assets")
+            reporter.report_status(
+                "running",
+                message="Preparing datasets and remote assets",
+                stage="prepare_assets",
+                progress=5,
+            )
+            asset_manager.prepare_dataset(cfg)
+            asset_manager.prepare_evaluation_dataset(cfg)
+        else:
+            logger.info("==> skipping assets preparation")
+
+        # Stage: training
+        training_result = {}
+        if not pipeline or pipeline.training.enabled:
+            logger.info("==> starting training")
+            training_result = run_training(cfg, reporter=reporter)
+
+            logical_base_model_id = cfg.model.logical_base_model_id
+            if logical_base_model_id and not training_result.get("base_model_id"):
+                training_result["base_model_id"] = logical_base_model_id
+                training_result["base_model_name_or_path"] = logical_base_model_id
+                summary = training_result.get("summary")
+                if isinstance(summary, dict):
+                    summary.setdefault("base_model_id", logical_base_model_id)
+                    summary.setdefault("base_model_name_or_path", logical_base_model_id)
+
+            logger.info("==> training finished")
+        else:
+            logger.info("==> skipping training stage")
+            training_result = {
+                "status": "skipped",
+                "message": "Training stage disabled in pipeline",
+            }
 
         if cfg.postprocess.run_awq_quantization:
             raise NotImplementedError("AWQ quantization stage is not implemented in this service yet")
 
+        # Stage: evaluation
         evaluation_result = None
-        if cfg.evaluation.enabled:
+        should_eval = False
+        if pipeline:
+            should_eval = pipeline.evaluation.enabled
+        else:
+            should_eval = cfg.evaluation.enabled
+
+        if should_eval:
             logger.info("==> starting evaluation")
             evaluation_result = run_evaluation(cfg, training_result, reporter=reporter)
             logger.info("==> evaluation finished")
+        else:
+            logger.info("==> skipping evaluation stage")
 
         result: Dict[str, Any] = {
             "status": "success",
@@ -1840,72 +2052,103 @@ def main():
             "upload_errors": {},
         }
 
-        if cfg.upload.enabled and cfg.upload.target == "url" and cfg.upload.upload_url:
-            logger.info("==> legacy full archive upload")
-            try:
-                archive_path = Path(cfg.outputs.base_dir) / f"{cfg.job_name}.tar.gz"
-                archiver.make_archive(cfg.outputs.base_dir, str(archive_path))
-                archiver.upload_archive(
-                    str(archive_path),
-                    cfg.upload.upload_url,
-                    headers=uploader._headers(),
-                    form_data={
-                        "job_id": cfg.job_id or cfg.job_name,
-                        "job_name": cfg.job_name,
-                        "artifact_type": "full_archive",
-                    },
-                    timeout_sec=cfg.upload.timeout_sec,
-                )
-                result["uploads"]["legacy_full_archive"] = {
-                    "url": cfg.upload.upload_url,
-                    "archive_path": str(archive_path),
-                }
-            except Exception as exc:
-                logger.exception("legacy full archive upload failed")
-                result["upload_errors"]["legacy_full_archive"] = str(exc)
+        # Stage: upload (legacy / URL)
+        should_upload = False
+        if pipeline:
+            should_upload = pipeline.upload.enabled
+        else:
+            should_upload = cfg.upload.enabled
 
-        if cfg.upload.enabled and cfg.upload.target == "url":
-            reporter.report_status(
-                "running",
-                message="Uploading URL artifacts",
-                stage="upload_artifacts",
-                progress=97,
-            )
-            extra_uploads, extra_upload_errors = uploader.upload_non_summary_artifacts(
-                log_file=str(log_file),
-                effective_config_path=str(effective_config_path),
-                training_result=training_result,
-                eval_result=evaluation_result,
-            )
-            if extra_uploads:
-                result["uploads"].update(extra_uploads)
-            if extra_upload_errors:
-                result["upload_errors"].update(extra_upload_errors)
+        if should_upload:
+            if cfg.upload.target == "url" and cfg.upload.upload_url:
+                logger.info("==> legacy full archive upload")
+                try:
+                    archive_path = Path(cfg.outputs.base_dir) / f"{cfg.job_name}.tar.gz"
+                    archiver.make_archive(cfg.outputs.base_dir, str(archive_path))
+                    archiver.upload_archive(
+                        str(archive_path),
+                        cfg.upload.upload_url,
+                        headers=uploader._headers(),
+                        form_data={
+                            "job_id": cfg.job_id or cfg.job_name,
+                            "job_name": cfg.job_name,
+                            "artifact_type": "full_archive",
+                        },
+                        timeout_sec=cfg.upload.timeout_sec,
+                    )
+                    result["uploads"]["legacy_full_archive"] = {
+                        "url": cfg.upload.upload_url,
+                        "archive_path": str(archive_path),
+                    }
+                except Exception as exc:
+                    logger.exception("legacy full archive upload failed")
+                    result["upload_errors"]["legacy_full_archive"] = str(exc)
+
+            if cfg.upload.target == "url":
+                reporter.report_status(
+                    "running",
+                    message="Uploading URL artifacts",
+                    stage="upload_artifacts",
+                    progress=97,
+                )
+                extra_uploads, extra_upload_errors = uploader.upload_non_summary_artifacts(
+                    log_file=str(log_file),
+                    effective_config_path=str(effective_config_path),
+                    training_result=training_result,
+                    eval_result=evaluation_result,
+                )
+                if extra_uploads:
+                    result["uploads"].update(extra_uploads)
+                if extra_upload_errors:
+                    result["upload_errors"].update(extra_upload_errors)
+        else:
+            logger.info("==> skipping upload stage")
 
         write_json(result_path, result)
 
-        reporter.report_status(
-            "running",
-            message="Publishing artifacts to Hugging Face",
-            stage="publish_artifacts",
-            progress=98,
-        )
+        # Stage: publish (Hugging Face)
+        should_publish = False
+        if pipeline:
+            should_publish = pipeline.publish.enabled
+        else:
+            should_publish = cfg.huggingface.enabled
 
-        hf_model_uploads = uploader.upload_to_huggingface(training_result)
-        if hf_model_uploads:
-            result["uploads"].update(hf_model_uploads)
-            write_json(result_path, result)
+        if should_publish:
+            reporter.report_status(
+                "running",
+                message="Publishing artifacts to Hugging Face",
+                stage="publish_artifacts",
+                progress=98,
+            )
 
-        hf_metadata_uploads = uploader.upload_hf_metadata(
-            log_file=str(log_file),
-            effective_config_path=str(effective_config_path),
-            result_path=str(result_path),
-            training_result=training_result,
-            eval_result=evaluation_result,
-        )
-        if hf_metadata_uploads:
-            result["uploads"].update(hf_metadata_uploads)
-            write_json(result_path, result)
+            hf_model_uploads = uploader.upload_to_huggingface(training_result)
+            if hf_model_uploads:
+                result["uploads"].update(hf_model_uploads)
+                write_json(result_path, result)
+
+            hf_metadata_uploads = uploader.upload_hf_metadata(
+                log_file=str(log_file),
+                effective_config_path=str(effective_config_path),
+                result_path=str(result_path),
+                training_result=training_result,
+                eval_result=evaluation_result,
+            )
+            if hf_metadata_uploads:
+                result["uploads"].update(hf_metadata_uploads)
+                write_json(result_path, result)
+        else:
+            logger.info("==> skipping publish stage")
+
+        if should_upload and cfg.upload.target == "url" and cfg.upload.url_targets.summary_url:
+            try:
+                summary_upload = uploader.upload_summary(str(result_path))
+                if summary_upload:
+                    result["uploads"].update(summary_upload)
+                    write_json(result_path, result)
+            except Exception as exc:
+                logger.exception("summary upload failed")
+                result["upload_errors"]["summary"] = str(exc)
+                write_json(result_path, result)
 
         if result["upload_errors"]:
             logger.warning("==> pipeline finished with upload warnings: %s", result["upload_errors"])
@@ -2002,6 +2245,44 @@ class ModelConfig(AppBaseModel):
     load_in_4bit: Optional[bool] = None
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     max_seq_length: int = 4096
+
+    # Дополнительные поля из remote-config оркестратора.
+    # Они нужны именно как логическая модель для HF metadata,
+    # даже если физически внутри контейнера модель лежит в /app.
+    base_model: Optional[str] = None
+    base_model_name_or_path: Optional[str] = None
+
+    @staticmethod
+    def _is_probably_local_path(value: str) -> bool:
+        value = str(value or "").strip()
+        if not value:
+            return False
+        if value.startswith("/"):
+            return True
+        if value.startswith("./") or value.startswith("../"):
+            return True
+        if value.startswith("\\") or "\\" in value:
+            return True
+        if len(value) > 1 and value[1] == ":":
+            return True
+        return False
+
+    @property
+    def logical_base_model_id(self) -> Optional[str]:
+        for candidate in (
+            self.repo_id,
+            self.base_model_name_or_path,
+            self.base_model,
+        ):
+            if not isinstance(candidate, str):
+                continue
+            value = candidate.strip()
+            if not value:
+                continue
+            if self._is_probably_local_path(value):
+                continue
+            return value
+        return None
 
     @model_validator(mode="after")
     def validate_source(self) -> "ModelConfig":
@@ -2101,6 +2382,39 @@ class PostprocessConfig(AppBaseModel):
     run_awq_quantization: bool = False
 
 
+class PipelineStage(AppBaseModel):
+    enabled: bool = True
+
+
+class TrainingStage(PipelineStage, TrainingConfig):
+    pass
+
+
+class MergeStage(PipelineStage, PostprocessConfig):
+    pass
+
+
+class EvaluationStage(PipelineStage, EvaluationConfig):
+    pass
+
+
+class PublishStage(PipelineStage, HuggingFacePublishConfig):
+    pass
+
+
+class UploadStage(PipelineStage, UploadConfig):
+    pass
+
+
+class PipelineConfig(AppBaseModel):
+    prepare_assets: PipelineStage = Field(default_factory=PipelineStage)
+    training: TrainingStage = Field(default_factory=TrainingStage)
+    merge: MergeStage = Field(default_factory=MergeStage)
+    evaluation: EvaluationStage = Field(default_factory=EvaluationStage)
+    publish: PublishStage = Field(default_factory=PublishStage)
+    upload: UploadStage = Field(default_factory=UploadStage)
+
+
 class AuthConfig(AppBaseModel):
     bearer_token: Optional[str] = None
     headers: Dict[str, str] = Field(default_factory=dict)
@@ -2150,7 +2464,11 @@ class EvaluationConfig(AppBaseModel):
     max_new_tokens: int = 128
     temperature: float = 0.0
     do_sample: bool = False
+    system_prompt: Optional[str] = None
     prompt_template: str = DEFAULT_EVAL_PROMPT
+    parsing_regex: Optional[str] = None
+    score_min: float = 0.0
+    score_max: float = 5.0
     dataset: Optional[EvaluationDatasetConfig] = None
 
     @model_validator(mode="after")
@@ -2217,6 +2535,8 @@ class JobConfig(AppBaseModel):
     huggingface: HuggingFacePublishConfig = Field(default_factory=HuggingFacePublishConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
 
+    pipeline: Optional[PipelineConfig] = None
+
     report_url: Optional[str] = None
 
 
@@ -2245,8 +2565,11 @@ class TestRemoteFlow(unittest.TestCase):
             "job_name": "test-job",
             "mode": "remote",
             "model": {
-                "source": "huggingface",
-                "repo_id": "test/model",
+                "source": "local",
+                "local_path": "/app",
+                "repo_id": "Qwen/Qwen2.5-7B-Instruct",
+                "base_model": "Qwen/Qwen2.5-7B-Instruct",
+                "base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
             },
             "dataset": {
                 "source": "url",
@@ -2313,7 +2636,9 @@ class TestRemoteFlow(unittest.TestCase):
         mock_run_training.return_value = {
             "status": "success",
             "job_name": self.cfg.job_name,
-            "base_model": "test/model",
+            "base_model": "/app",
+            "base_model_id": "Qwen/Qwen2.5-7B-Instruct",
+            "base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
             "lora_dir": "test_outputs/lora/test-job",
             "merged_dir": "test_outputs/merged/test-job",
             "checkpoint_dir": "test_outputs/checkpoints/test-job",
@@ -2324,11 +2649,13 @@ class TestRemoteFlow(unittest.TestCase):
         }
 
         mock_uploader = mock_uploader_cls.return_value
+        mock_uploader.ensure_hf_ready.return_value = {}
         mock_uploader.upload_non_summary_artifacts.return_value = (
             {"logs": {"url": "http://example.com/upload/logs", "path": "trainer.log"}},
             {},
         )
         mock_uploader.upload_to_huggingface.return_value = {}
+        mock_uploader.upload_hf_metadata.return_value = {}
         mock_uploader.upload_summary.return_value = {
             "summary": {"url": "http://example.com/upload/summary", "path": "job-result.json"}
         }
@@ -2352,6 +2679,7 @@ class TestRemoteFlow(unittest.TestCase):
         reporter.report_final.assert_called_once()
 
         mock_asset_manager_cls.return_value.prepare_dataset.assert_called_once_with(self.cfg)
+        mock_asset_manager_cls.return_value.prepare_evaluation_dataset.assert_called_once_with(self.cfg)
 
         mock_archiver = mock_archiver_cls.return_value
         mock_archiver.make_archive.assert_called_once()
@@ -2419,7 +2747,9 @@ class TestRemoteFlow(unittest.TestCase):
         mock_run_training.return_value = {
             "status": "success",
             "job_name": self.cfg.job_name,
-            "base_model": "test/model",
+            "base_model": "/app",
+            "base_model_id": "Qwen/Qwen2.5-7B-Instruct",
+            "base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
             "lora_dir": "test_outputs/lora/test-job",
             "merged_dir": "test_outputs/merged/test-job",
             "checkpoint_dir": "test_outputs/checkpoints/test-job",
@@ -2430,11 +2760,13 @@ class TestRemoteFlow(unittest.TestCase):
         }
 
         mock_uploader = mock_uploader_cls.return_value
+        mock_uploader.ensure_hf_ready.return_value = {}
         mock_uploader.upload_non_summary_artifacts.return_value = (
             {"logs": {"url": "http://example.com/upload/logs", "path": "trainer.log"}},
             {"merged_archive": "SSL EOF"},
         )
         mock_uploader.upload_to_huggingface.return_value = {}
+        mock_uploader.upload_hf_metadata.return_value = {}
         mock_uploader.upload_summary.return_value = {
             "summary": {"url": "http://example.com/upload/summary", "path": "job-result.json"}
         }
@@ -2499,7 +2831,7 @@ def ensure_dirs(cfg: JobConfig) -> None:
         Path(path).mkdir(parents=True, exist_ok=True)
 
 
-def resolve_model_args(cfg: JobConfig) -> tuple[str, bool]:
+def resolve_model_args(cfg: JobConfig) -> tuple[str, bool, Optional[str]]:
     if cfg.model.source == "local":
         model_name = cfg.model.local_path
     else:
@@ -2514,7 +2846,9 @@ def resolve_model_args(cfg: JobConfig) -> tuple[str, bool]:
         else (cfg.training.method == "qlora")
     )
 
-    return model_name, load_in_4bit
+    logical_base_model_id = cfg.model.logical_base_model_id
+
+    return model_name, load_in_4bit, logical_base_model_id
 
 
 def safe_float(value: Any) -> Optional[float]:
@@ -2717,9 +3051,11 @@ def _build_sft_trainer(
 def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
     ensure_dirs(cfg)
 
-    model_name, load_in_4bit = resolve_model_args(cfg)
+    model_name, load_in_4bit, logical_base_model_id = resolve_model_args(cfg)
 
     logger.info("==> loading model: %s", model_name)
+    if logical_base_model_id:
+        logger.info("==> logical base model id: %s", logical_base_model_id)
     logger.info("==> method: %s", cfg.training.method)
 
     if reporter:
@@ -2730,6 +3066,7 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
             message="loading base model",
             extra={
                 "model_name": model_name,
+                "logical_base_model_id": logical_base_model_id,
                 "load_in_4bit": load_in_4bit,
                 "dtype": cfg.model.dtype,
             },
@@ -2868,6 +3205,8 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
         "validation_rows": len(dataset["validation"]) if "validation" in dataset else 0,
         "method": cfg.training.method,
         "base_model": model_name,
+        "base_model_id": logical_base_model_id,
+        "base_model_name_or_path": logical_base_model_id,
         "load_in_4bit": load_in_4bit,
         "bf16": cfg.training.bf16,
         "merged_saved": merged_saved,
@@ -2912,6 +3251,8 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
         "status": "success",
         "job_name": cfg.job_name,
         "base_model": model_name,
+        "base_model_id": logical_base_model_id,
+        "base_model_name_or_path": logical_base_model_id,
         "lora_dir": str(lora_dir),
         "merged_dir": str(merged_dir) if merged_saved else None,
         "checkpoint_dir": checkpoint_dir,
@@ -3184,7 +3525,8 @@ bundle().catch(err => {
 
 path: /docker/Dockerfile
 ----------------------------------------
-FROM igortet/model-qwen-7b
+ARG BASE_IMAGE=igortet/model-qwen-7b
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -4268,9 +4610,28 @@ docker run --rm --gpus all \
   trainer-service
 
 
+path: /requirements.txt
+----------------------------------------
+unsloth
+unsloth-zoo
+
+bitsandbytes>=0.45.0
+xformers==0.0.35
+
+transformers>=4.48.0
+datasets>=3.6.0
+accelerate>=1.10.1
+trl>=0.19.0
+peft>=0.17.1
+sentencepiece>=0.2.1
+huggingface_hub[hf-xet]
+pydantic>=2.11.7
+requests>=2.32.3
+
+
 === SUMMARY ===
-included: 26
+included: 27
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 128248
+totalBytes(approx): 140815
