@@ -7,3 +7,10 @@
 
   ➜  Local:   http://localhost:5173/
   ➜  Network: http://192.168.0.2:5173/
+11:45:05 AM [vite] (client) hmr update /src/features/training/page.tsx, /src/index.css
+11:45:07 AM [vite] (client) hmr update /src/features/training/page.tsx, /src/index.css
+11:45:11 AM [vite] (client) hmr update /src/features/training/page.tsx, /src/index.css
+11:45:14 AM [vite] (client) hmr update /src/features/training/page.tsx, /src/index.css
+11:45:16 AM [vite] (client) hmr update /src/features/training/page.tsx, /src/index.css
+11:45:26 AM [vite] (client) hmr update /src/features/training/page.tsx, /src/index.css
+11:47:50 AM [vite] (client) hmr update /src/components/job-details-fine-tune.tsx, /src/index.css

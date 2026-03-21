@@ -143,7 +143,18 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
     },
 
     evaluation: {
-      enabled: false,
+      enabled: !!pipeline.evaluation?.enabled,
+      target: pipeline.evaluation?.target || 'auto',
+      max_samples: toInt(pipeline.evaluation?.max_samples, null),
+      max_new_tokens: toInt(pipeline.evaluation?.max_new_tokens, 128),
+      temperature: toNum(pipeline.evaluation?.temperature, 0.0),
+      do_sample: !!pipeline.evaluation?.do_sample,
+      system_prompt: pipeline.evaluation?.system_prompt || null,
+      prompt_template: pipeline.evaluation?.prompt_template || undefined,
+      parsing_regex: pipeline.evaluation?.parsing_regex || null,
+      score_min: toNum(pipeline.evaluation?.score_min, 0.0),
+      score_max: toNum(pipeline.evaluation?.score_max, 5.0),
+      dataset: pipeline.evaluation?.dataset || undefined,
     },
 
     reporting: {
