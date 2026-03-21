@@ -9,7 +9,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const token = localStorage.getItem('llm_lab_token');
   if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+    headers.Authorization = `Bearer ${token}`;
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
@@ -34,6 +34,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         window.location.href = '/login';
       }
     }
+
     const message =
       typeof data === 'object' && data && 'error' in data
         ? String((data as { error?: unknown }).error)
@@ -44,9 +45,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
+async function requestText(path: string): Promise<string> {
+  const headers: Record<string, string> = {};
+  const token = localStorage.getItem('llm_lab_token');
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
 
+  const response = await fetch(`${API_BASE}${path}`, { headers });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(text || `HTTP ${response.status}`);
+  }
+  return text;
+}
+
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
 export type AwqCalibrationMode = 'text_only' | 'permissive';
+export type MergeDeviceStrategy = 'cpu' | 'cuda' | 'auto';
+export type MergeDtype = 'auto' | 'float16' | 'bfloat16' | 'float32';
+export type BaseModelSource = 'auto' | 'manual';
 
 export type Settings = {
   baseModel: string;
@@ -132,10 +150,6 @@ export type ModelItem = {
   envName?: string;
   quantizationCapability?: QuantizationCapability;
 };
-
-export type MergeDeviceStrategy = 'cpu' | 'cuda' | 'auto';
-export type MergeDtype = 'auto' | 'float16' | 'bfloat16' | 'float32';
-export type BaseModelSource = 'auto' | 'manual';
 
 export type MergeBuildOptions = {
   deviceStrategy: MergeDeviceStrategy;
@@ -315,26 +329,48 @@ export type JobProgress = {
   updatedAt?: string;
 };
 
+export type CapabilityFlags = {
+  qlora: boolean;
+  lora: boolean;
+  merge: boolean;
+  evaluation: boolean;
+};
+
 export type BaseModelImage = {
   id: string;
   title: string;
   slug?: string;
   description?: string;
   family?: string;
-  logical_base_model_id: string;
-  docker_image: string;
+  logical_base_model_id?: string;
+  logicalBaseModelId?: string;
+  docker_image?: string;
+  dockerImage?: string;
   docker_registry?: string;
+  dockerRegistry?: string;
   docker_repository?: string;
+  dockerRepository?: string;
   docker_tag?: string;
-  model_local_path: string;
-  default_shm_size: string;
-  default_gpu_count: number;
-  supports_qlora: boolean;
-  supports_lora: boolean;
-  supports_merge: boolean;
-  supports_evaluation: boolean;
+  dockerTag?: string;
+  model_local_path?: string;
+  modelLocalPath?: string;
+  default_shm_size?: string;
+  defaultShmSize?: string;
+  default_gpu_count?: number;
+  defaultGpuCount?: number;
+  cudaNotes?: string;
+  memoryNotes?: string;
+  notes?: string;
+  supports_qlora?: boolean;
+  supports_lora?: boolean;
+  supports_merge?: boolean;
+  supports_evaluation?: boolean;
+  supports?: CapabilityFlags;
   enabled: boolean;
+  archived?: boolean;
   sortOrder?: number;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type AgentBuildRecipe = {
@@ -342,112 +378,88 @@ export type AgentBuildRecipe = {
   name: string;
   description?: string;
   enabled: boolean;
-  base_model_image_id: string;
+  base_model_image_id?: string;
+  baseModelImageId?: string;
   base_image_override?: string;
+  baseImageOverride?: string;
+  trainer_context_path?: string;
+  trainerContextPath?: string;
+  dockerfile_path?: string;
+  dockerfilePath?: string;
+  build_args?: Record<string, string>;
+  buildArgs?: Record<string, string>;
   target_registry?: string;
+  targetRegistry?: string;
   target_repository: string;
+  targetRepository?: string;
   target_tag_template: string;
-  stable_tag: string;
+  targetTagTemplate?: string;
+  stable_tag?: string;
+  stableTag?: string;
   push_enabled: boolean;
+  pushEnabled?: boolean;
   default_runtime_preset_title?: string;
+  defaultRuntimePresetTitle?: string;
+  default_runtime_preset_description?: string;
+  defaultRuntimePresetDescription?: string;
+  default_runtime_preset_enabled?: boolean;
+  defaultRuntimePresetEnabled?: boolean;
   default_shm_size?: string;
+  defaultShmSize?: string;
   default_gpu_count?: number;
+  defaultGpuCount?: number;
+  capabilities?: CapabilityFlags;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type AgentBuild = {
   id: string;
-  recipe_id: string;
-  base_model_image_id: string;
+  recipe_id?: string;
+  recipeId?: string;
+  base_model_image_id?: string;
+  baseModelImageId?: string;
   status: 'queued' | 'running' | 'completed' | 'failed';
   logs?: string;
   resolved_base_image?: string;
+  resolvedBaseImage?: string;
   result_image?: string;
+  resultImage?: string;
   pushed_image?: string;
+  pushedImage?: string;
+  immutable_tag?: string;
+  immutableTag?: string;
+  stable_tag?: string;
+  stableTag?: string;
+  docker_hub_repo?: string;
+  dockerHubRepo?: string;
+  digest?: string;
   started_at: string;
+  startedAt?: string;
   finished_at?: string;
+  finishedAt?: string;
   error?: string;
   published_runtime_preset_id?: string;
+  publishedRuntimePresetId?: string;
 };
 
 export type RuntimePreset = {
   id: string;
   title: string;
-  family: string;
+  family?: string;
+  description?: string;
   logicalBaseModelId: string;
-  localModelPath: string;
+  baseModelImageId?: string | null;
+  sourceBuildId?: string | null;
   trainerImage: string;
-  dockerHubRepo: string;
+  modelLocalPath: string;
+  dockerHubRepo?: string;
   defaultShmSize: string;
   gpuCount: number;
-  supports: {
-    qlora: boolean;
-    lora: boolean;
-    merge: boolean;
-    evaluation: boolean;
-  };
+  supports: CapabilityFlags;
   enabled: boolean;
-};
-
-export type Job = {
-  id: string;
-  type: string;
-  name: string;
-  status: JobStatus;
-  createdAt: string;
-  startedAt: string | null;
-  finishedAt: string | null;
-  datasetId?: string;
-  datasetPath?: string;
-  modelId?: string | null;
-  baseModel?: string;
-  qlora?: Partial<Settings['qlora']>;
-  outputDir: string;
-  logFile: string;
-  pid: number | null;
-  error: string | null;
-  paramsSnapshot?: any;
-  modelPath?: string;
-  currentStage?: string;
-  datasetSnapshot?: {
-    path: string;
-    size: number;
-    mtime: string | null;
-    hash?: string | null;
-  };
-  modelSnapshot?: any;
-  envSnapshot?: {
-    python: string;
-    torch: string;
-    transformers: string;
-    unsloth: string;
-  };
-  tags?: string[];
-  notes?: string;
-  artifacts?: Array<{ name: string; size: number; path: string }>;
-  progressStep?: string;
-  progress?: JobProgress;
-  runner?: string;
-  summaryMetrics?: SummaryMetrics;
-  resultDatasetId?: string | null;
-  syntheticMeta?: SyntheticMeta;
-  workerId?: string | null;
-  runtimePresetId?: string | null;
-  modelLocalPath?: string | null;
-  jobConfigUrl?: string | null;
-  hfRepoIdLora?: string | null;
-  hfRepoIdMerged?: string | null;
-  hfRepoIdMetadata?: string | null;
-
-  mode?: 'local' | 'remote';
-  progressPercent?: number;
-
-  launch?: {
-    jobConfigUrl: string;
-    env: {
-      JOB_CONFIG_URL: string;
-    };
-    exampleDockerRun: string;
-  } | null;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type WorkerItem = {
@@ -498,17 +510,34 @@ export type RuntimeCapabilities = {
   supportsAwq: boolean;
 };
 
-export type PipelineStage = {
+export type PipelineStageBase = {
   enabled: boolean;
+  order?: number;
+  title?: string;
+  description?: string;
 };
 
 export type PipelineConfig = {
-  prepare_assets: PipelineStage;
-  training: PipelineStage & Record<string, any>;
-  merge: PipelineStage & Record<string, any>;
-  evaluation: PipelineStage & Record<string, any>;
-  publish: PipelineStage & Record<string, any>;
-  upload: PipelineStage & Record<string, any>;
+  prepare_assets?: PipelineStageBase & Record<string, any>;
+  training?: PipelineStageBase & Record<string, any>;
+  save_lora?: PipelineStageBase & Record<string, any>;
+  merge_model?: PipelineStageBase & Record<string, any>;
+  evaluation?: PipelineStageBase & Record<string, any>;
+  upload_huggingface?: PipelineStageBase & Record<string, any>;
+  finalize?: PipelineStageBase & Record<string, any>;
+  reporting?: PipelineStageBase & Record<string, any>;
+  merge?: PipelineStageBase & Record<string, any>;
+  publish?: PipelineStageBase & Record<string, any>;
+  upload?: PipelineStageBase & Record<string, any>;
+};
+
+export type LaunchInfo = {
+  jobConfigUrl: string;
+  env: {
+    JOB_CONFIG_URL: string;
+  };
+  exampleDockerRun: string;
+  trainerImage?: string;
 };
 
 export type InferenceRuntime = {
@@ -769,6 +798,62 @@ export type ComparisonResultItem = {
   results: ComparisonResultRow[];
 };
 
+export type Job = {
+  id: string;
+  type: string;
+  name: string;
+  status: JobStatus;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  datasetId?: string;
+  datasetPath?: string;
+  modelId?: string | null;
+  baseModel?: string | null;
+  qlora?: Partial<Settings['qlora']>;
+  outputDir: string;
+  logFile: string;
+  pid: number | null;
+  error: string | null;
+  paramsSnapshot?: any;
+  modelPath?: string;
+  currentStage?: string;
+  datasetSnapshot?: {
+    path: string;
+    size: number;
+    mtime: string | null;
+    hash?: string | null;
+  };
+  modelSnapshot?: any;
+  envSnapshot?: {
+    python: string;
+    torch: string;
+    transformers: string;
+    unsloth: string;
+  };
+  tags?: string[];
+  notes?: string;
+  artifacts?: Array<{ name: string; size: number; path: string }>;
+  progressStep?: string;
+  progress?: JobProgress;
+  runner?: string;
+  summaryMetrics?: SummaryMetrics;
+  resultDatasetId?: string | null;
+  syntheticMeta?: SyntheticMeta;
+  workerId?: string | null;
+  runtimePresetId?: string | null;
+  runtimePresetTitle?: string | null;
+  modelLocalPath?: string | null;
+  containerImage?: string | null;
+  jobConfigUrl?: string | null;
+  hfRepoIdLora?: string | null;
+  hfRepoIdMerged?: string | null;
+  hfRepoIdMetadata?: string | null;
+  mode?: 'local' | 'remote';
+  progressPercent?: number;
+  launch?: LaunchInfo | null;
+};
+
 type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends Array<infer U>
     ? U[]
@@ -920,7 +1005,7 @@ export const api = {
   getJobs: () => request<Job[]>('/jobs'),
   getJob: (id: string) => request<Job>(`/jobs/${id}`),
   getJobLogs: (id: string, tail = 200) =>
-    request<{ id: string; logFile: string; content: string }>(`/jobs/${id}/logs?tail=${tail}`),
+    request<{ id: string; logFile: string; content: string; offset?: number }>(`/jobs/${id}/logs?tail=${tail}`),
   startFineTune: (payload: {
     datasetId: string;
     name?: string;
@@ -948,6 +1033,7 @@ export const api = {
     };
     pipeline?: PipelineConfig;
     workerId?: string;
+    runtimePresetId?: string;
   }) =>
     request<Job>('/jobs/remote-train', {
       method: 'POST',
@@ -963,12 +1049,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  getComparisonJob: (jobId: string) =>
-    request<Job>(`/comparisons/${jobId}`),
-  getComparisonResult: (jobId: string) =>
-    request<ComparisonResultItem[]>(`/comparisons/${jobId}/result`),
-  getComparisonSummary: (jobId: string) =>
-    request<ComparisonSummary>(`/comparisons/${jobId}/summary`),
+  getComparisonJob: (jobId: string) => request<Job>(`/comparisons/${jobId}`),
+  getComparisonResult: (jobId: string) => request<ComparisonResultItem[]>(`/comparisons/${jobId}/result`),
+  getComparisonSummary: (jobId: string) => request<ComparisonSummary>(`/comparisons/${jobId}/summary`),
   stopJob: (id: string) =>
     request<{ ok: boolean }>(`/jobs/${id}/stop`, {
       method: 'POST',
@@ -988,31 +1071,60 @@ export const api = {
     }),
 
   getBaseModels: () => request<BaseModelImage[]>('/infrastructure/base-models'),
+  createBaseModel: (payload: Partial<BaseModelImage>) =>
+    request<BaseModelImage>('/infrastructure/base-models', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateBaseModel: (id: string, payload: Partial<BaseModelImage>) =>
+    request<BaseModelImage>(`/infrastructure/base-models/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteBaseModel: (id: string) =>
+    request<{ ok: boolean }>(`/infrastructure/base-models/${id}`, {
+      method: 'DELETE',
+    }),
+
   getRecipes: () => request<AgentBuildRecipe[]>('/infrastructure/recipes'),
+  createRecipe: (payload: Partial<AgentBuildRecipe>) =>
+    request<AgentBuildRecipe>('/infrastructure/recipes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateRecipe: (id: string, payload: Partial<AgentBuildRecipe>) =>
+    request<AgentBuildRecipe>(`/infrastructure/recipes/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteRecipe: (id: string) =>
+    request<{ ok: boolean }>(`/infrastructure/recipes/${id}`, {
+      method: 'DELETE',
+    }),
+
   getBuilds: () => request<AgentBuild[]>('/infrastructure/builds'),
   startBuild: (recipeId: string) => request<AgentBuild>('/infrastructure/builds', {
     method: 'POST',
-    body: JSON.stringify({ recipeId })
+    body: JSON.stringify({ recipeId }),
   }),
+  getBuildLogs: (buildId: string) => request<{ content: string }>(`/infrastructure/builds/${buildId}/logs`),
   publishRuntimePreset: (buildId: string) => request<RuntimePreset>(`/infrastructure/builds/${buildId}/publish`, {
-    method: 'POST'
+    method: 'POST',
   }),
 
   getRuntimePresets: () => request<RuntimePreset[]>('/jobs/runtime-presets'),
+  updateRuntimePreset: (id: string, payload: Partial<RuntimePreset>) =>
+    request<RuntimePreset>(`/jobs/runtime-presets/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
 
-  getJobLaunchCompose: (id: string) =>
-    fetch(`${API_BASE}/jobs/${id}/launch/compose`, {
-      headers: { 'Authorization': `Bearer ${localStorage.getItem('llm_lab_token')}` }
-    }).then(r => r.text()),
-
-  getJobLaunchEnv: (id: string) =>
-    fetch(`${API_BASE}/jobs/${id}/launch/env`, {
-      headers: { 'Authorization': `Bearer ${localStorage.getItem('llm_lab_token')}` }
-    }).then(r => r.text()),
-
+  getJobLaunchCompose: (id: string) => requestText(`/jobs/${id}/launch/compose`),
+  getJobLaunchEnv: (id: string) => requestText(`/jobs/${id}/launch/env`),
   downloadJobLaunchBundle: (id: string) => {
     const token = localStorage.getItem('llm_lab_token');
-    window.location.href = `${API_BASE}/jobs/${id}/launch/bundle?token=${token}`;
+    const query = token ? `?token=${encodeURIComponent(token)}` : '';
+    window.location.href = `${API_BASE}/jobs/${id}/launch/bundle${query}`;
   },
 
   getSyntheticJobPreview: (jobId: string, limit = 20) =>
@@ -1064,21 +1176,17 @@ export const api = {
     gpuProcesses: Array<{ pid: number; name: string; cpu: number; mem: number; user: string; command: string }>;
   }>('/monitor/stats'),
 
-  getManagedProcesses: () =>
-    request<ManagedProcess[]>('/monitor/managed-processes'),
-
+  getManagedProcesses: () => request<ManagedProcess[]>('/monitor/managed-processes'),
   cleanupManagedProcesses: (payload?: { types?: string[] }) =>
     request<ManagedProcessesCleanupResponse>('/monitor/managed-processes/cleanup', {
       method: 'POST',
       body: JSON.stringify(payload || {}),
     }),
-
   killProcess: (pid: number) =>
     request<{ ok: boolean }>('/monitor/kill', {
       method: 'POST',
       body: JSON.stringify({ pid }),
     }),
-
   clearGpu: () =>
     request<{ ok: boolean; killedCount: number }>('/monitor/clear-gpu', {
       method: 'POST',
@@ -1095,16 +1203,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-
   chatStream: async (payload: {
     model?: string;
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
     temperature?: number;
     max_tokens?: number;
   }) => {
+    const token = localStorage.getItem('llm_lab_token');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     const res = await fetch(`${API_BASE}/runtime/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ ...payload, stream: true }),
     });
 
@@ -1140,15 +1253,14 @@ export const api = {
     }),
   getEvalConfig: () =>
     request<{ defaultPromptTemplate: string; availableVariables: Array<{ name: string; description: string }> }>(
-      '/evaluations/config'
+      '/evaluations/config',
     ),
   runEvalBenchmark: (payload: { datasetId: string; targets: any[]; name?: string; promptTemplate?: string }) =>
     request<{ jobId: string }>('/evaluations/benchmark', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  getEvalBenchmarkResult: (jobId: string) =>
-    request<EvalBenchmarkResult[]>(`/evaluations/jobs/${jobId}/result`),
+  getEvalBenchmarkResult: (jobId: string) => request<EvalBenchmarkResult[]>(`/evaluations/jobs/${jobId}/result`),
 
   uploadSyntheticSource: (file: File) => {
     const formData = new FormData();

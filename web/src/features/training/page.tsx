@@ -1,18 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import {
-  ChevronDown,
-  ChevronRight,
-  Cpu,
-  FlaskConical,
-  FolderCog,
-  Layers3,
-  PackageCheck,
-  ShieldCheck,
-  UploadCloud,
-} from 'lucide-react';
-import { api } from '../../lib/api';
+import { useNavigate } from 'react-router-dom';
+import { ChevronDown, ChevronRight, Copy, Layers3, Link2, Package2, Workflow } from 'lucide-react';
+import { api, type PipelineConfig, type RuntimePreset } from '../../lib/api';
 import { PageHeader } from '../../components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -20,149 +10,292 @@ import { Input } from '../../components/ui/input';
 import { Select } from '../../components/ui/select';
 import { Textarea } from '../../components/ui/textarea';
 import { cn } from '../../lib/utils';
+import { CopyButton } from '../../components/copy-button';
 
-type StageId =
-  | 'prepare_assets'
-  | 'training'
-  | 'merge'
-  | 'evaluation'
-  | 'publish'
-  | 'upload';
+type ExpandMap = Record<string, boolean>;
 
-const STAGE_ORDER: Array<{
-  id: StageId;
-  title: string;
-  dependency?: string;
-  icon: React.ComponentType<{ size?: number; className?: string }>;
-}> = [
-  { id: 'prepare_assets', title: 'Prepare / Assets', icon: FolderCog },
-  { id: 'training', title: 'Training', dependency: 'Depends on: Prepare / Assets', icon: Cpu },
-  { id: 'merge', title: 'Merge', dependency: 'Depends on: Training', icon: Layers3 },
-  { id: 'evaluation', title: 'Evaluation', dependency: 'Depends on: Training or Merge target', icon: FlaskConical },
-  { id: 'publish', title: 'Publish', dependency: 'Depends on: Training / Merge outputs', icon: PackageCheck },
-  { id: 'upload', title: 'Upload / Reporting', dependency: 'Depends on: previous enabled stages', icon: UploadCloud },
-];
+type TrainingStageState = {
+  method: 'lora' | 'qlora';
+  runtimePresetId: string;
+  logicalBaseModelId: string;
+  trainerImage: string;
+  modelLocalPath: string;
+  loadIn4bit: boolean;
+  maxSeqLength: string;
+  perDeviceTrainBatchSize: string;
+  gradientAccumulationSteps: string;
+  numTrainEpochs: string;
+  learningRate: string;
+  warmupRatio: string;
+  loggingSteps: string;
+  saveSteps: string;
+  evalSteps: string;
+  bf16: boolean;
+  packing: boolean;
+  saveTotalLimit: string;
+  optim: string;
+  loraR: string;
+  loraAlpha: string;
+  loraDropout: string;
+  targetModules: string;
+  gradientCheckpointing: boolean;
+  randomState: string;
+};
+
+type MergeStageState = {
+  saveMerged16Bit: boolean;
+  mergeLora: boolean;
+  outputBehavior: 'default' | 'custom';
+  outputPath: string;
+  safeSerialization: boolean;
+};
+
+type EvalStageState = {
+  target: 'auto' | 'lora' | 'merged';
+  datasetId: string;
+  datasetSource: 'local' | 'remote';
+  format: 'jsonl' | 'json';
+  questionField: string;
+  answerField: string;
+  scoreField: string;
+  maxScoreField: string;
+  tagsField: string;
+  maxSamples: string;
+  maxNewTokens: string;
+  temperature: string;
+  doSample: boolean;
+  promptTemplate: string;
+};
+
+type UploadStageState = {
+  pushLora: boolean;
+  pushMerged: boolean;
+  pushMetadata: boolean;
+  repoIdLora: string;
+  repoIdMerged: string;
+  repoIdMetadata: string;
+  visibility: 'private' | 'public';
+  commitMessage: string;
+  revision: string;
+};
+
+type ReportingStageState = {
+  statusCallback: boolean;
+  progressCallback: boolean;
+  finalCallback: boolean;
+  logsCallback: boolean;
+  authTokenInheritance: boolean;
+  timeoutSeconds: string;
+};
 
 function numberOrUndefined(value: string) {
-  if (value === '') return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return undefined;
+  return Number(trimmed);
 }
 
-function parseCsv(value: string) {
-  return value
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
+function boolSummary(enabled: boolean, label: string) {
+  return enabled ? label : null;
 }
 
-
-function normalizeArray<T>(value: unknown): T[] {
-  if (Array.isArray(value)) return value as T[];
-  if (value && typeof value === 'object' && Array.isArray((value as { items?: unknown[] }).items)) {
-    return (value as { items: T[] }).items;
-  }
-  return [];
+function stageSummary(parts: Array<string | null | undefined>) {
+  return parts.filter(Boolean).join(' · ') || 'No custom settings';
 }
 
-function FieldLabel({ children, note }: { children: React.ReactNode; note?: React.ReactNode }) {
-  return (
-    <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-slate-500">
-      <span>{children}</span>
-      {note ? <span className="ml-1 normal-case font-normal tracking-normal text-slate-600">{note}</span> : null}
-    </label>
-  );
+function normalizePreset(preset: RuntimePreset | undefined | null) {
+  if (!preset) return null;
+  return {
+    id: preset.id,
+    title: preset.title,
+    description: preset.description || '',
+    family: preset.family || '—',
+    logicalBaseModelId: preset.logicalBaseModelId,
+    trainerImage: preset.trainerImage,
+    modelLocalPath: preset.modelLocalPath,
+    defaultShmSize: preset.defaultShmSize,
+    gpuCount: preset.gpuCount,
+    supports: preset.supports,
+  };
 }
 
-function Toggle({
-  checked,
-  onChange,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        'relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50',
-        checked ? 'bg-emerald-600' : 'bg-slate-700',
-      )}
-    >
-      <span
-        className={cn(
-          'inline-block h-3 w-3 rounded-full bg-white transition-transform',
-          checked ? 'translate-x-5' : 'translate-x-1',
-        )}
-      />
-    </button>
-  );
+function buildPipelinePayload(args: {
+  prepareEnabled: boolean;
+  trainingEnabled: boolean;
+  saveLoraEnabled: boolean;
+  mergeEnabled: boolean;
+  evaluationEnabled: boolean;
+  uploadEnabled: boolean;
+  reportingEnabled: boolean;
+  training: TrainingStageState;
+  merge: MergeStageState;
+  evaluation: EvalStageState;
+  upload: UploadStageState;
+  reporting: ReportingStageState;
+  selectedEvalDataset?: { id: string; jsonPath: string; name: string } | null;
+}): PipelineConfig {
+  const { prepareEnabled, trainingEnabled, saveLoraEnabled, mergeEnabled, evaluationEnabled, uploadEnabled, reportingEnabled, training, merge, evaluation, upload, reporting, selectedEvalDataset } = args;
+
+  return {
+    prepare_assets: {
+      enabled: prepareEnabled,
+      order: 10,
+      title: 'Prepare / Assets',
+      description: 'Resolve config, runtime preset, dataset and output locations.',
+    },
+    training: {
+      enabled: trainingEnabled,
+      order: 20,
+      title: 'Training',
+      description: 'Run remote LoRA/QLoRA training inside trainer image.',
+      method: training.method,
+      runtime_preset_id: training.runtimePresetId,
+      logical_base_model_id: training.logicalBaseModelId,
+      trainer_image: training.trainerImage,
+      model_local_path: training.modelLocalPath,
+      load_in_4bit: training.loadIn4bit,
+      max_seq_length: numberOrUndefined(training.maxSeqLength),
+      per_device_train_batch_size: numberOrUndefined(training.perDeviceTrainBatchSize),
+      gradient_accumulation_steps: numberOrUndefined(training.gradientAccumulationSteps),
+      num_train_epochs: numberOrUndefined(training.numTrainEpochs),
+      learning_rate: numberOrUndefined(training.learningRate),
+      warmup_ratio: numberOrUndefined(training.warmupRatio),
+      logging_steps: numberOrUndefined(training.loggingSteps),
+      save_steps: numberOrUndefined(training.saveSteps),
+      eval_steps: numberOrUndefined(training.evalSteps),
+      bf16: training.bf16,
+      packing: training.packing,
+      save_total_limit: numberOrUndefined(training.saveTotalLimit),
+      optim: training.optim,
+      lora: {
+        r: numberOrUndefined(training.loraR),
+        alpha: numberOrUndefined(training.loraAlpha),
+        dropout: numberOrUndefined(training.loraDropout),
+      },
+      target_modules: training.targetModules.split(',').map((item) => item.trim()).filter(Boolean),
+      gradient_checkpointing: training.gradientCheckpointing,
+      random_state: numberOrUndefined(training.randomState),
+    },
+    save_lora: {
+      enabled: saveLoraEnabled,
+      order: 30,
+      title: 'Save LoRA',
+      description: 'Persist adapter weights and metadata snapshot.',
+    },
+    merge_model: {
+      enabled: mergeEnabled,
+      order: 40,
+      title: 'Merge',
+      description: 'Optional merged model export.',
+      merge_lora: merge.mergeLora,
+      save_merged_16bit: merge.saveMerged16Bit,
+      output_behavior: merge.outputBehavior,
+      output_path: merge.outputBehavior === 'custom' ? merge.outputPath || undefined : undefined,
+      safe_serialization: merge.safeSerialization,
+    },
+    evaluation: {
+      enabled: evaluationEnabled,
+      order: 50,
+      title: 'Evaluation',
+      description: 'Remote eval runner configuration.',
+      target: evaluation.target,
+      dataset: selectedEvalDataset
+        ? {
+            id: selectedEvalDataset.id,
+            source: evaluation.datasetSource,
+            path: selectedEvalDataset.jsonPath,
+            format: evaluation.format,
+          }
+        : undefined,
+      question_field: evaluation.questionField,
+      answer_field: evaluation.answerField,
+      score_field: evaluation.scoreField,
+      max_score_field: evaluation.maxScoreField,
+      tags_field: evaluation.tagsField,
+      max_samples: numberOrUndefined(evaluation.maxSamples),
+      max_new_tokens: numberOrUndefined(evaluation.maxNewTokens),
+      temperature: numberOrUndefined(evaluation.temperature),
+      do_sample: evaluation.doSample,
+      prompt_template: evaluation.promptTemplate,
+    },
+    upload_huggingface: {
+      enabled: uploadEnabled,
+      order: 60,
+      title: 'Upload / Hugging Face',
+      description: 'Push artifacts and metadata to HF repos.',
+      push_lora: upload.pushLora,
+      push_merged: upload.pushMerged,
+      push_metadata: upload.pushMetadata,
+      repo_id_lora: upload.repoIdLora || undefined,
+      repo_id_merged: upload.repoIdMerged || undefined,
+      repo_id_metadata: upload.repoIdMetadata || undefined,
+      private: upload.visibility === 'private',
+      commit_message: upload.commitMessage || undefined,
+      revision: upload.revision || undefined,
+    },
+    finalize: {
+      enabled: true,
+      order: 70,
+      title: 'Finalize / Reporting',
+      description: 'Final status, log upload and callbacks.',
+    },
+    reporting: {
+      enabled: reportingEnabled,
+      order: 80,
+      title: 'Reporting',
+      description: 'Callback transport and timeout policy.',
+      status_callback: reporting.statusCallback,
+      progress_callback: reporting.progressCallback,
+      final_callback: reporting.finalCallback,
+      logs_callback: reporting.logsCallback,
+      auth_token_inheritance: reporting.authTokenInheritance,
+      timeout_seconds: numberOrUndefined(reporting.timeoutSeconds),
+    },
+  };
 }
 
-function StagePanel({
+function StageCard({
+  id,
   title,
+  description,
+  enabled,
+  expanded,
   summary,
   dependency,
-  icon: Icon,
-  enabled,
-  onToggle,
-  expanded,
-  onExpand,
+  onToggleEnabled,
+  onToggleExpanded,
   children,
 }: {
+  id: string;
   title: string;
+  description: string;
+  enabled: boolean;
+  expanded: boolean;
   summary: string;
   dependency?: string;
-  icon: React.ComponentType<{ size?: number; className?: string }>;
-  enabled: boolean;
-  onToggle: (next: boolean) => void;
-  expanded: boolean;
-  onExpand: () => void;
-  children: React.ReactNode;
+  onToggleEnabled: (value: boolean) => void;
+  onToggleExpanded: () => void;
+  children: ReactNode;
 }) {
   return (
-    <div
-      className={cn(
-        'rounded-xl border transition-colors',
-        enabled ? 'border-slate-800 bg-slate-900/60' : 'border-slate-900 bg-slate-950/30 opacity-80',
-      )}
-    >
-      <div className="flex items-start gap-3 px-4 py-3">
-        <button
-          type="button"
-          onClick={onExpand}
-          className="mt-0.5 rounded-md border border-slate-800 bg-slate-950/70 p-1 text-slate-400 hover:text-white"
-        >
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </button>
-
-        <div className="mt-0.5 rounded-lg border border-slate-800 bg-slate-950/60 p-2 text-slate-300">
-          <Icon size={14} />
-        </div>
-
-        <button type="button" onClick={onExpand} className="min-w-0 flex-1 text-left">
-          <div className="flex items-center gap-2">
+    <div className={cn('rounded-xl border', enabled ? 'border-slate-700 bg-slate-900/70' : 'border-slate-800 bg-slate-950/30')}>
+      <div className="flex items-start gap-3 p-4">
+        <div className="pt-0.5 text-slate-500">{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</div>
+        <button type="button" onClick={onToggleExpanded} className="min-w-0 flex-1 text-left">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="text-sm font-semibold text-white">{title}</div>
-            <span className="rounded bg-slate-950/70 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
-              fixed order
-            </span>
+            <div className={cn('rounded-md px-1.5 py-0.5 text-[10px] uppercase tracking-wider', enabled ? 'bg-emerald-500/10 text-emerald-300' : 'bg-slate-800 text-slate-500')}>
+              {enabled ? 'enabled' : 'disabled'}
+            </div>
           </div>
-          <div className="mt-1 text-xs text-slate-400">{summary}</div>
-          {dependency ? <div className="mt-1 text-[10px] text-slate-500">{dependency}</div> : null}
+          <div className="mt-1 text-xs text-slate-400">{description}</div>
+          <div className="mt-2 text-[11px] text-slate-500">{summary}</div>
+          {dependency ? <div className="mt-1 text-[10px] uppercase tracking-wider text-slate-600">Depends on: {dependency}</div> : null}
         </button>
-
-        <div className="flex items-center gap-2 self-center">
-          <span className="text-[10px] uppercase tracking-wide text-slate-500">
-            {enabled ? 'Enabled' : 'Disabled'}
-          </span>
-          <Toggle checked={enabled} onChange={onToggle} />
-        </div>
+        <label className="mt-0.5 inline-flex cursor-pointer items-center gap-2 text-xs text-slate-400">
+          <input type="checkbox" checked={enabled} onChange={(event) => onToggleEnabled(event.target.checked)} className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-blue-600" />
+          Active
+        </label>
       </div>
-
       {expanded ? <div className="border-t border-slate-800 px-4 py-4">{children}</div> : null}
     </div>
   );
@@ -170,330 +303,188 @@ function StagePanel({
 
 export default function TrainingPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const datasetsQuery = useQuery({ queryKey: ['datasets'], queryFn: api.getDatasets });
-  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: api.getModels });
-  const lorasQuery = useQuery({ queryKey: ['loras'], queryFn: api.getLoras });
   const workersQuery = useQuery({ queryKey: ['workers'], queryFn: api.getWorkers });
   const presetsQuery = useQuery({ queryKey: ['runtime-presets'], queryFn: api.getRuntimePresets });
   const evalDatasetsQuery = useQuery({ queryKey: ['eval-datasets'], queryFn: api.getEvalDatasets });
   const evalConfigQuery = useQuery({ queryKey: ['eval-config'], queryFn: api.getEvalConfig });
 
-  const [expandedStage, setExpandedStage] = useState<StageId>('training');
-
   const [name, setName] = useState('');
-  const [datasetId, setDatasetId] = useState(searchParams.get('datasetId') || '');
+  const [datasetId, setDatasetId] = useState('');
   const [workerId, setWorkerId] = useState('any');
-  const [runtimePresetId, setRuntimePresetId] = useState('');
-  const [modelId, setModelId] = useState('');
+  const [expanded, setExpanded] = useState<ExpandMap>({
+    prepare: true,
+    training: true,
+    saveLora: false,
+    merge: false,
+    evaluation: false,
+    upload: false,
+    reporting: false,
+  });
 
-  const [stagePrepare, setStagePrepare] = useState(true);
-  const [stageTraining, setStageTraining] = useState(true);
-  const [stageMerge, setStageMerge] = useState(true);
-  const [stageEvaluation, setStageEvaluation] = useState(false);
-  const [stagePublish, setStagePublish] = useState(true);
-  const [stageUpload, setStageUpload] = useState(true);
+  const [prepareEnabled, setPrepareEnabled] = useState(true);
+  const [trainingEnabled, setTrainingEnabled] = useState(true);
+  const [saveLoraEnabled, setSaveLoraEnabled] = useState(true);
+  const [mergeEnabled, setMergeEnabled] = useState(true);
+  const [evaluationEnabled, setEvaluationEnabled] = useState(false);
+  const [uploadEnabled, setUploadEnabled] = useState(true);
+  const [reportingEnabled, setReportingEnabled] = useState(true);
 
-  const [method, setMethod] = useState<'qlora' | 'lora' | 'full'>('qlora');
-  const [loadIn4bit, setLoadIn4bit] = useState(true);
-  const [maxSeqLength, setMaxSeqLength] = useState('4096');
-  const [perDeviceTrainBatchSize, setPerDeviceTrainBatchSize] = useState('1');
-  const [gradientAccumulationSteps, setGradientAccumulationSteps] = useState('8');
-  const [numTrainEpochs, setNumTrainEpochs] = useState('3');
-  const [learningRate, setLearningRate] = useState('0.0002');
-  const [warmupRatio, setWarmupRatio] = useState('0.03');
-  const [loggingSteps, setLoggingSteps] = useState('10');
-  const [saveSteps, setSaveSteps] = useState('100');
-  const [evalSteps, setEvalSteps] = useState('100');
-  const [bf16, setBf16] = useState(true);
-  const [packing, setPacking] = useState(false);
-  const [saveTotalLimit, setSaveTotalLimit] = useState('2');
-  const [optim, setOptim] = useState('paged_adamw_8bit');
-  const [loraR, setLoraR] = useState('16');
-  const [loraAlpha, setLoraAlpha] = useState('16');
-  const [loraDropout, setLoraDropout] = useState('0');
-  const [targetModules, setTargetModules] = useState('q_proj, v_proj, k_proj, o_proj, gate_proj, up_proj, down_proj');
-  const [gradientCheckpointing, setGradientCheckpointing] = useState(true);
-  const [randomState, setRandomState] = useState('3407');
+  const [training, setTraining] = useState<TrainingStageState>({
+    method: 'qlora',
+    runtimePresetId: '',
+    logicalBaseModelId: '',
+    trainerImage: '',
+    modelLocalPath: '',
+    loadIn4bit: true,
+    maxSeqLength: '4096',
+    perDeviceTrainBatchSize: '1',
+    gradientAccumulationSteps: '8',
+    numTrainEpochs: '3',
+    learningRate: '0.0002',
+    warmupRatio: '0.03',
+    loggingSteps: '10',
+    saveSteps: '200',
+    evalSteps: '200',
+    bf16: true,
+    packing: false,
+    saveTotalLimit: '2',
+    optim: 'adamw_8bit',
+    loraR: '16',
+    loraAlpha: '16',
+    loraDropout: '0',
+    targetModules: 'q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj',
+    gradientCheckpointing: true,
+    randomState: '3407',
+  });
 
-  const [evalTarget, setEvalTarget] = useState<'auto' | 'lora' | 'merged'>('auto');
-  const [evalDatasetMode, setEvalDatasetMode] = useState<'catalog' | 'custom'>('catalog');
-  const [evalDatasetId, setEvalDatasetId] = useState('');
-  const [evalDatasetSource, setEvalDatasetSource] = useState('local');
-  const [evalDatasetConfig, setEvalDatasetConfig] = useState('');
-  const [evalDatasetPath, setEvalDatasetPath] = useState('');
-  const [evalDatasetFormat, setEvalDatasetFormat] = useState('jsonl');
-  const [questionField, setQuestionField] = useState('question');
-  const [answerField, setAnswerField] = useState('candidateAnswer');
-  const [scoreField, setScoreField] = useState('referenceScore');
-  const [maxScoreField, setMaxScoreField] = useState('maxScore');
-  const [tagsField, setTagsField] = useState('hashTags');
-  const [maxSamples, setMaxSamples] = useState('100');
-  const [maxNewTokens, setMaxNewTokens] = useState('128');
-  const [temperature, setTemperature] = useState('0');
-  const [doSample, setDoSample] = useState(false);
-  const [evalPromptTemplate, setEvalPromptTemplate] = useState('');
-  const [evalSystemPrompt, setEvalSystemPrompt] = useState('');
-  const [parsingRegex, setParsingRegex] = useState('');
-  const [scoreMin, setScoreMin] = useState('0');
-  const [scoreMax, setScoreMax] = useState('10');
+  const [merge, setMerge] = useState<MergeStageState>({
+    saveMerged16Bit: true,
+    mergeLora: true,
+    outputBehavior: 'default',
+    outputPath: '',
+    safeSerialization: true,
+  });
 
-  const [hfRepoLora, setHfRepoLora] = useState('');
-  const [hfRepoMerged, setHfRepoMerged] = useState('');
+  const [evaluation, setEvaluation] = useState<EvalStageState>({
+    target: 'auto',
+    datasetId: '',
+    datasetSource: 'local',
+    format: 'jsonl',
+    questionField: 'question',
+    answerField: 'candidateAnswer',
+    scoreField: 'referenceScore',
+    maxScoreField: 'maxScore',
+    tagsField: 'hashTags',
+    maxSamples: '100',
+    maxNewTokens: '128',
+    temperature: '0',
+    doSample: false,
+    promptTemplate: '',
+  });
+
+  const [upload, setUpload] = useState<UploadStageState>({
+    pushLora: true,
+    pushMerged: true,
+    pushMetadata: true,
+    repoIdLora: '',
+    repoIdMerged: '',
+    repoIdMetadata: '',
+    visibility: 'private',
+    commitMessage: 'Upload training artifacts',
+    revision: '',
+  });
+
+  const [reporting, setReporting] = useState<ReportingStageState>({
+    statusCallback: true,
+    progressCallback: true,
+    finalCallback: true,
+    logsCallback: true,
+    authTokenInheritance: true,
+    timeoutSeconds: '30',
+  });
 
   useEffect(() => {
-    const defaults = settingsQuery.data?.qlora;
-    if (!defaults) return;
-
-    setLoadIn4bit(!!defaults.loadIn4bit);
-    setMaxSeqLength(String(defaults.maxSeqLength ?? 4096));
-    setPerDeviceTrainBatchSize(String(defaults.perDeviceTrainBatchSize ?? 1));
-    setGradientAccumulationSteps(String(defaults.gradientAccumulationSteps ?? 8));
-    setNumTrainEpochs(String(defaults.numTrainEpochs ?? 3));
-    setLearningRate(String(defaults.learningRate ?? 0.0002));
-    setWarmupRatio(String((defaults as any).warmupRatio ?? 0.03));
-    setLoggingSteps(String((defaults as any).loggingSteps ?? 10));
-    setSaveSteps(String((defaults as any).saveSteps ?? 100));
-    setEvalSteps(String((defaults as any).evalSteps ?? 100));
-    setBf16(Boolean((defaults as any).bf16 ?? true));
-    setPacking(Boolean((defaults as any).packing ?? false));
-    setSaveTotalLimit(String((defaults as any).saveTotalLimit ?? 2));
-    setOptim(String((defaults as any).optim ?? 'paged_adamw_8bit'));
-    setLoraR(String(defaults.loraR ?? 16));
-    setLoraAlpha(String(defaults.loraAlpha ?? 16));
-    setLoraDropout(String(defaults.loraDropout ?? 0));
-    setTargetModules(((defaults.targetModules || []) as string[]).join(', ') || 'q_proj, v_proj, k_proj, o_proj');
-    setGradientCheckpointing(Boolean((defaults as any).gradientCheckpointing ?? true));
-    setRandomState(String((defaults as any).randomState ?? 3407));
+    const qlora = settingsQuery.data?.qlora;
+    if (!qlora) return;
+    setTraining((current) => ({
+      ...current,
+      loadIn4bit: qlora.loadIn4bit,
+      maxSeqLength: String(qlora.maxSeqLength ?? current.maxSeqLength),
+      perDeviceTrainBatchSize: String(qlora.perDeviceTrainBatchSize ?? current.perDeviceTrainBatchSize),
+      gradientAccumulationSteps: String(qlora.gradientAccumulationSteps ?? current.gradientAccumulationSteps),
+      numTrainEpochs: String(qlora.numTrainEpochs ?? current.numTrainEpochs),
+      learningRate: String(qlora.learningRate ?? current.learningRate),
+      warmupRatio: String(qlora.warmupRatio ?? current.warmupRatio),
+      loraR: String(qlora.loraR ?? current.loraR),
+      loraAlpha: String(qlora.loraAlpha ?? current.loraAlpha),
+      loraDropout: String(qlora.loraDropout ?? current.loraDropout),
+      targetModules: Array.isArray(qlora.targetModules) ? qlora.targetModules.join(', ') : current.targetModules,
+      method: qlora.loadIn4bit ? 'qlora' : current.method,
+    }));
   }, [settingsQuery.data]);
 
-  useEffect(() => {
-    if (!runtimePresetId && presets[0]?.id) {
-      setRuntimePresetId(presets[0].id);
-    }
-  }, [presets, runtimePresetId]);
+  const presets = useMemo(() => (Array.isArray(presetsQuery.data) ? presetsQuery.data : []), [presetsQuery.data]);
+  const datasets = useMemo(() => (Array.isArray(datasetsQuery.data) ? datasetsQuery.data : []), [datasetsQuery.data]);
+  const workers = useMemo(() => (Array.isArray(workersQuery.data) ? workersQuery.data : []), [workersQuery.data]);
+  const evalDatasets = useMemo(() => (Array.isArray(evalDatasetsQuery.data) ? evalDatasetsQuery.data : []), [evalDatasetsQuery.data]);
 
   useEffect(() => {
-    if (!datasetId && datasets[0]?.id) {
-      setDatasetId(datasets[0].id);
-    }
-  }, [datasets, datasetId]);
+    if (!datasetId && datasets[0]?.id) setDatasetId(datasets[0].id);
+  }, [datasetId, datasets]);
 
   useEffect(() => {
-    if (!evalDatasetId && evalDatasets[0]?.id) {
-      setEvalDatasetId(evalDatasets[0].id);
+    if (!training.runtimePresetId && presets[0]?.id) {
+      setTraining((current) => ({ ...current, runtimePresetId: presets[0].id }));
     }
-  }, [evalDatasets, evalDatasetId]);
+  }, [presets, training.runtimePresetId]);
 
   useEffect(() => {
-    if (!evalPromptTemplate && evalConfigQuery.data?.defaultPromptTemplate) {
-      setEvalPromptTemplate(evalConfigQuery.data.defaultPromptTemplate);
+    if (!evaluation.datasetId && evalDatasets[0]?.id) {
+      setEvaluation((current) => ({ ...current, datasetId: evalDatasets[0].id }));
     }
-  }, [evalConfigQuery.data, evalPromptTemplate]);
+  }, [evaluation.datasetId, evalDatasets]);
 
-  const presets = useMemo(() => normalizeArray<any>(presetsQuery.data), [presetsQuery.data]);
-  const datasets = useMemo(() => normalizeArray<any>(datasetsQuery.data), [datasetsQuery.data]);
-  const evalDatasets = useMemo(() => normalizeArray<any>(evalDatasetsQuery.data), [evalDatasetsQuery.data]);
-  const workers = useMemo(() => normalizeArray<any>(workersQuery.data), [workersQuery.data]);
-  const loras = useMemo(() => normalizeArray<any>(lorasQuery.data), [lorasQuery.data]);
+  useEffect(() => {
+    if (!evaluation.promptTemplate && evalConfigQuery.data?.defaultPromptTemplate) {
+      setEvaluation((current) => ({ ...current, promptTemplate: evalConfigQuery.data?.defaultPromptTemplate || current.promptTemplate }));
+    }
+  }, [evalConfigQuery.data, evaluation.promptTemplate]);
 
-  const selectedPreset = useMemo(
-    () => presets.find((preset) => preset.id === runtimePresetId) || null,
-    [presets, runtimePresetId],
+  const selectedPreset = useMemo(() => normalizePreset(presets.find((item) => item.id === training.runtimePresetId)), [presets, training.runtimePresetId]);
+  const selectedDataset = useMemo(() => datasets.find((item) => item.id === datasetId) || null, [datasetId, datasets]);
+  const selectedEvalDataset = useMemo(() => evalDatasets.find((item) => item.id === evaluation.datasetId) || null, [evalDatasets, evaluation.datasetId]);
+
+  useEffect(() => {
+    if (!selectedPreset) return;
+    setTraining((current) => ({
+      ...current,
+      runtimePresetId: selectedPreset.id,
+      logicalBaseModelId: selectedPreset.logicalBaseModelId,
+      trainerImage: selectedPreset.trainerImage,
+      modelLocalPath: selectedPreset.modelLocalPath,
+    }));
+  }, [selectedPreset]);
+
+  const pipelinePayload = useMemo(
+    () => buildPipelinePayload({
+      prepareEnabled,
+      trainingEnabled,
+      saveLoraEnabled,
+      mergeEnabled,
+      evaluationEnabled,
+      uploadEnabled,
+      reportingEnabled,
+      training,
+      merge,
+      evaluation,
+      upload,
+      reporting,
+      selectedEvalDataset: selectedEvalDataset ? { id: selectedEvalDataset.id, jsonPath: selectedEvalDataset.jsonPath, name: selectedEvalDataset.name } : null,
+    }),
+    [trainingEnabled, mergeEnabled, evaluationEnabled, uploadEnabled, reportingEnabled, training, merge, evaluation, upload, reporting, selectedEvalDataset],
   );
-
-  const readyModels = useMemo(
-    () => normalizeArray<any>(modelsQuery.data).filter((model) => model.status === 'ready'),
-    [modelsQuery.data],
-  );
-
-  useEffect(() => {
-    if (!modelId && readyModels[0]?.id) {
-      setModelId(readyModels[0].id);
-    }
-  }, [readyModels, modelId]);
-
-  useEffect(() => {
-    if (!selectedPreset?.logicalBaseModelId) return;
-    const matchingModel =
-      readyModels.find((model) => model.repoId === selectedPreset.logicalBaseModelId) ||
-      readyModels.find((model) => model.name === selectedPreset.logicalBaseModelId);
-
-    if (matchingModel && matchingModel.id !== modelId) {
-      setModelId(matchingModel.id);
-    }
-  }, [selectedPreset, readyModels, modelId]);
-
-  const selectedModel = useMemo(
-    () => readyModels.find((model) => model.id === modelId) || null,
-    [readyModels, modelId],
-  );
-
-  const selectedDataset = useMemo(
-    () => datasets.find((dataset) => dataset.id === datasetId) || null,
-    [datasets, datasetId],
-  );
-
-  const selectedEvalDataset = useMemo(
-    () => evalDatasets.find((dataset) => dataset.id === evalDatasetId) || null,
-    [evalDatasets, evalDatasetId],
-  );
-
-  const relatedLoras = useMemo(() => {
-    const baseRef = selectedPreset?.logicalBaseModelId || selectedModel?.repoId;
-    return loras.filter((lora) => {
-      return (
-        lora.baseModelId === selectedModel?.id ||
-        lora.baseModelRef === baseRef ||
-        lora.trainingBaseModelPath === selectedPreset?.localModelPath
-      );
-    });
-  }, [loras, selectedModel, selectedPreset]);
-
-  const trainingSummary = `${method.toUpperCase()} · ${numTrainEpochs} ep · lr ${learningRate} · bs ${perDeviceTrainBatchSize} × ga ${gradientAccumulationSteps}`;
-  const evaluationSummary = stageEvaluation
-    ? `${selectedEvalDataset?.name || evalDatasetPath || 'dataset pending'} · target ${evalTarget} · prompt ${evalPromptTemplate ? 'configured' : 'missing'}`
-    : 'Evaluation disabled';
-
-  const pipelinePayload = useMemo(() => {
-    return {
-      prepare_assets: {
-        enabled: stagePrepare,
-        dataset_id: datasetId || undefined,
-        dataset_name: selectedDataset?.name || undefined,
-        worker_id: workerId === 'any' ? undefined : workerId,
-      },
-      training: {
-        enabled: stageTraining,
-        runtime_preset_id: runtimePresetId || undefined,
-        logical_base_model: selectedPreset?.logicalBaseModelId || selectedModel?.repoId || undefined,
-        trainer_image: selectedPreset?.trainerImage || undefined,
-        model_local_path: selectedPreset?.localModelPath || selectedModel?.path || undefined,
-        method,
-        load_in_4bit: method === 'qlora' ? true : loadIn4bit,
-        max_seq_length: numberOrUndefined(maxSeqLength),
-        per_device_train_batch_size: numberOrUndefined(perDeviceTrainBatchSize),
-        gradient_accumulation_steps: numberOrUndefined(gradientAccumulationSteps),
-        num_train_epochs: numberOrUndefined(numTrainEpochs),
-        learning_rate: numberOrUndefined(learningRate),
-        warmup_ratio: numberOrUndefined(warmupRatio),
-        logging_steps: numberOrUndefined(loggingSteps),
-        save_steps: numberOrUndefined(saveSteps),
-        eval_steps: numberOrUndefined(evalSteps),
-        bf16,
-        packing,
-        save_total_limit: numberOrUndefined(saveTotalLimit),
-        optim,
-        lora_r: numberOrUndefined(loraR),
-        lora_alpha: numberOrUndefined(loraAlpha),
-        lora_dropout: numberOrUndefined(loraDropout),
-        target_modules: parseCsv(targetModules),
-        gradient_checkpointing: gradientCheckpointing,
-        random_state: numberOrUndefined(randomState),
-      },
-      merge: {
-        enabled: stageMerge,
-        source: method === 'full' ? 'full_finetune' : 'adapter',
-      },
-      evaluation: {
-        enabled: stageEvaluation,
-        target: evalTarget,
-        dataset: {
-          source: evalDatasetMode === 'catalog' ? 'local' : evalDatasetSource,
-          config: evalDatasetMode === 'catalog' ? selectedEvalDataset?.id : evalDatasetConfig || undefined,
-          path: evalDatasetMode === 'catalog' ? selectedEvalDataset?.jsonPath : evalDatasetPath || undefined,
-          format: evalDatasetFormat,
-        },
-        fields: {
-          question: questionField,
-          answer: answerField,
-          score: scoreField,
-          max_score: maxScoreField,
-          tags: tagsField,
-        },
-        max_samples: numberOrUndefined(maxSamples),
-        max_new_tokens: numberOrUndefined(maxNewTokens),
-        temperature: numberOrUndefined(temperature) ?? 0,
-        do_sample: doSample,
-        system_prompt: evalSystemPrompt || undefined,
-        prompt: evalPromptTemplate || undefined,
-        prompt_template: evalPromptTemplate || undefined,
-        parsing_regex: parsingRegex || undefined,
-        score_min: numberOrUndefined(scoreMin),
-        score_max: numberOrUndefined(scoreMax),
-      },
-      publish: {
-        enabled: stagePublish,
-        push_lora: true,
-        push_merged: stageMerge,
-        repo_id_lora: hfRepoLora || undefined,
-        repo_id_merged: hfRepoMerged || undefined,
-      },
-      upload: {
-        enabled: stageUpload,
-      },
-    };
-  }, [
-    answerField,
-    bf16,
-    datasetId,
-    doSample,
-    evalDatasetConfig,
-    evalDatasetFormat,
-    evalDatasetId,
-    evalDatasetMode,
-    evalDatasetPath,
-    evalDatasetSource,
-    evalPromptTemplate,
-    evalSteps,
-    evalSystemPrompt,
-    evalTarget,
-    gradientAccumulationSteps,
-    gradientCheckpointing,
-    hfRepoLora,
-    hfRepoMerged,
-    learningRate,
-    loadIn4bit,
-    loggingSteps,
-    loraAlpha,
-    loraDropout,
-    loraR,
-    maxNewTokens,
-    maxSamples,
-    maxScoreField,
-    maxSeqLength,
-    method,
-    numTrainEpochs,
-    optim,
-    packing,
-    parsingRegex,
-    perDeviceTrainBatchSize,
-    questionField,
-    randomState,
-    runtimePresetId,
-    saveSteps,
-    saveTotalLimit,
-    scoreField,
-    scoreMax,
-    scoreMin,
-    selectedDataset,
-    selectedEvalDataset,
-    selectedModel,
-    selectedPreset,
-    stageEvaluation,
-    stageMerge,
-    stagePrepare,
-    stagePublish,
-    stageTraining,
-    stageUpload,
-    tagsField,
-    targetModules,
-    temperature,
-    warmupRatio,
-    workerId,
-  ]);
 
   const startMutation = useMutation({
     mutationFn: (payload: any) => api.startRemoteTrain(payload),
@@ -502,655 +493,650 @@ export default function TrainingPage() {
     },
   });
 
+  const canStart = !!datasetId && !!training.runtimePresetId && trainingEnabled;
+
   const handleStart = () => {
     startMutation.mutate({
       datasetId,
       name: name.trim() || undefined,
-      modelId: modelId || undefined,
-      baseModel: selectedPreset?.logicalBaseModelId || selectedModel?.repoId || selectedModel?.path || undefined,
       workerId: workerId === 'any' ? undefined : workerId,
-      runtimePresetId: runtimePresetId || undefined,
+      runtimePresetId: training.runtimePresetId,
       qlora: {
-        useLora: method !== 'full',
-        method,
-        loadIn4bit: method === 'qlora' ? true : loadIn4bit,
-        maxSeqLength: numberOrUndefined(maxSeqLength),
-        perDeviceTrainBatchSize: numberOrUndefined(perDeviceTrainBatchSize),
-        gradientAccumulationSteps: numberOrUndefined(gradientAccumulationSteps),
-        numTrainEpochs: numberOrUndefined(numTrainEpochs),
-        learningRate: numberOrUndefined(learningRate),
-        warmupRatio: numberOrUndefined(warmupRatio),
-        loggingSteps: numberOrUndefined(loggingSteps),
-        saveSteps: numberOrUndefined(saveSteps),
-        evalSteps: numberOrUndefined(evalSteps),
-        bf16,
-        packing,
-        saveTotalLimit: numberOrUndefined(saveTotalLimit),
-        optim,
-        loraR: numberOrUndefined(loraR),
-        loraAlpha: numberOrUndefined(loraAlpha),
-        loraDropout: numberOrUndefined(loraDropout),
-        targetModules: parseCsv(targetModules),
-        gradientCheckpointing,
-        randomState: numberOrUndefined(randomState),
+        loadIn4bit: training.method === 'qlora' ? true : training.loadIn4bit,
+        maxSeqLength: Number(training.maxSeqLength),
+        perDeviceTrainBatchSize: Number(training.perDeviceTrainBatchSize),
+        gradientAccumulationSteps: Number(training.gradientAccumulationSteps),
+        learningRate: Number(training.learningRate),
+        numTrainEpochs: Number(training.numTrainEpochs),
+        warmupRatio: Number(training.warmupRatio),
+        loraR: Number(training.loraR),
+        loraAlpha: Number(training.loraAlpha),
+        loraDropout: Number(training.loraDropout),
+        targetModules: training.targetModules.split(',').map((item) => item.trim()).filter(Boolean),
+        useLora: true,
       },
       hfPublish: {
-        enabled: stagePublish,
-        push_lora: true,
-        push_merged: stageMerge,
-        repo_id_lora: hfRepoLora || undefined,
-        repo_id_merged: hfRepoMerged || undefined,
+        enabled: uploadEnabled,
+        push_lora: upload.pushLora,
+        push_merged: upload.pushMerged,
+        repo_id_lora: upload.repoIdLora || undefined,
+        repo_id_merged: upload.repoIdMerged || undefined,
       },
       pipeline: pipelinePayload,
     });
   };
 
-  const canStart = Boolean(datasetId && runtimePresetId);
+  const trainingSummary = stageSummary([
+    training.method.toUpperCase(),
+    `${training.numTrainEpochs} epochs`,
+    `lr ${training.learningRate}`,
+    `${training.perDeviceTrainBatchSize}×${training.gradientAccumulationSteps}`,
+    selectedPreset?.title,
+  ]);
 
-  const presetCapabilities = selectedPreset
-    ? [
-        selectedPreset.supports?.qlora ? 'QLoRA' : null,
-        selectedPreset.supports?.lora ? 'LoRA' : null,
-        selectedPreset.supports?.merge ? 'Merge' : null,
-        selectedPreset.supports?.evaluation ? 'Evaluation' : null,
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : 'No preset selected';
+  const mergeSummary = stageSummary([
+    merge.saveMerged16Bit ? 'save merged 16-bit' : null,
+    merge.safeSerialization ? 'safe serialization' : null,
+    merge.outputBehavior === 'custom' ? `custom path ${merge.outputPath || '—'}` : 'default output',
+  ]);
+
+  const evalSummary = stageSummary([
+    evaluation.target,
+    selectedEvalDataset?.name,
+    `${evaluation.maxSamples || 'all'} samples`,
+    `${evaluation.maxNewTokens} tokens`,
+  ]);
+
+  const uploadSummary = stageSummary([
+    boolSummary(upload.pushLora, 'push LoRA'),
+    boolSummary(upload.pushMerged, 'push merged'),
+    boolSummary(upload.pushMetadata, 'push metadata'),
+    upload.visibility,
+  ]);
+
+  const reportingSummary = stageSummary([
+    boolSummary(reporting.statusCallback, 'status'),
+    boolSummary(reporting.progressCallback, 'progress'),
+    boolSummary(reporting.finalCallback, 'final'),
+    boolSummary(reporting.logsCallback, 'logs'),
+    `${reporting.timeoutSeconds}s timeout`,
+  ]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <PageHeader
-        title="Training"
-        description="Dense pipeline-based training for remote jobs. Fixed safe order, stage toggles, compact summaries, and backward-compatible payloads."
+        title="Train"
+        description="Remote training is configured as a pipeline. Choose runtime preset, tune stages, then generate a launchable remote job."
+        actions={
+          <Button onClick={handleStart} disabled={!canStart || startMutation.isPending}>
+            {startMutation.isPending ? 'Creating…' : 'Create remote job'}
+          </Button>
+        }
       />
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
+      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader>
+            <CardTitle>Job context</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-4 md:grid-cols-2">
             <div>
-              <CardTitle>Train Pipeline</CardTitle>
-              <div className="mt-1 text-xs text-slate-500">
-                Train is no longer a loose legacy settings form. Configure a fixed vertical pipeline and start a new remote job.
-              </div>
+              <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Job name</label>
+              <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="qwen-7b-remote-train" />
             </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500">
-              safe fixed order
+            <div>
+              <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Dataset</label>
+              <Select value={datasetId} onChange={(event) => setDatasetId(event.target.value)}>
+                <option value="">Select dataset</option>
+                {datasets.map((dataset) => (
+                  <option key={dataset.id} value={dataset.id}>
+                    {dataset.name} ({dataset.rows} rows)
+                  </option>
+                ))}
+              </Select>
             </div>
+            <div>
+              <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Worker</label>
+              <Select value={workerId} onChange={(event) => setWorkerId(event.target.value)}>
+                <option value="any">Any available</option>
+                {workers.map((worker) => (
+                  <option key={worker.id} value={worker.id}>
+                    {worker.name} ({worker.status})
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-sm text-slate-400">
+              Remote flow stays agent-based: orchestrator creates job, operator launches trainer container from launch bundle, agent reports status/progress/final/logs back.
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Runtime preset</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div>
+              <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Preset</label>
+              <Select
+                value={training.runtimePresetId}
+                onChange={(event) => setTraining((current) => ({ ...current, runtimePresetId: event.target.value }))}
+              >
+                <option value="">Select preset</option>
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.title}
+                  </option>
+                ))}
+              </Select>
+            </div>
+
+            {selectedPreset ? (
+              <div className="space-y-3 rounded-xl border border-blue-900/30 bg-blue-950/10 p-4 text-sm">
+                <div className="flex items-center gap-2 text-blue-300">
+                  <Package2 size={14} />
+                  {selectedPreset.title}
+                </div>
+                <div className="grid gap-3">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-slate-500">Family</div>
+                    <div className="text-white">{selectedPreset.family}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-slate-500">Logical base model</div>
+                    <div className="break-all text-white">{selectedPreset.logicalBaseModelId}</div>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-slate-500">
+                      <span>Trainer image</span>
+                      <CopyButton text={selectedPreset.trainerImage} className="h-5 w-5 px-1 py-0.5" />
+                    </div>
+                    <div className="break-all font-mono text-[11px] text-slate-300">{selectedPreset.trainerImage}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-slate-500">model local path</div>
+                      <div className="text-white">{selectedPreset.modelLocalPath}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-slate-500">SHM / GPU</div>
+                      <div className="text-white">{selectedPreset.defaultShmSize} · {selectedPreset.gpuCount}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">No runtime preset selected.</div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Workflow size={16} className="text-blue-400" />
+            Pipeline stages
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <StageCard
+            id="prepare"
+            title="1. Prepare / Assets"
+            description="Resolve runtime preset, dataset and output locations. Safe fixed order, no drag-and-drop."
+            enabled={prepareEnabled}
+            expanded={!!expanded.prepare}
+            summary={stageSummary([selectedDataset?.name, selectedPreset?.title, selectedPreset?.logicalBaseModelId])}
+            onToggleEnabled={setPrepareEnabled}
+            onToggleExpanded={() => setExpanded((value) => ({ ...value, prepare: !value.prepare }))}
+          >
             <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">Dataset source</div>
+                <div className="mt-1 text-sm text-white">{selectedDataset?.name || '—'}</div>
+                <div className="mt-1 text-[11px] text-slate-500">{selectedDataset?.processedPath || 'Select dataset above'}</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">Resolved runtime</div>
+                <div className="mt-1 text-sm text-white">{selectedPreset?.title || '—'}</div>
+                <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500">
+                  <Link2 size={12} />
+                  {selectedPreset?.trainerImage || 'Select preset above'}
+                </div>
+              </div>
+            </div>
+          </StageCard>
+
+          <StageCard
+            id="training"
+            title="2. Training"
+            description="Fine-grained remote trainer settings. Runtime preset fields are shown explicitly and serialized into payload."
+            enabled={trainingEnabled}
+            expanded={!!expanded.training}
+            summary={trainingSummary}
+            dependency="Prepare / Assets"
+            onToggleEnabled={setTrainingEnabled}
+            onToggleExpanded={() => setExpanded((value) => ({ ...value, training: !value.training }))}
+          >
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div>
-                <FieldLabel>Job name</FieldLabel>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="train-qwen-stage-run-01" />
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Method</label>
+                <Select
+                  value={training.method}
+                  onChange={(event) => setTraining((current) => ({ ...current, method: event.target.value as 'lora' | 'qlora', loadIn4bit: event.target.value === 'qlora' ? true : current.loadIn4bit }))}
+                >
+                  <option value="lora">LoRA</option>
+                  <option value="qlora">QLoRA</option>
+                </Select>
               </div>
               <div>
-                <FieldLabel>Dataset</FieldLabel>
-                <Select value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
-                  <option value="">Select dataset</option>
-                  {datasets.map((dataset) => (
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">load_in_4bit</label>
+                <div className="flex h-10 items-center gap-2 rounded-xl border border-slate-800 bg-slate-950 px-3 text-sm text-white">
+                  <input
+                    type="checkbox"
+                    checked={training.method === 'qlora' ? true : training.loadIn4bit}
+                    disabled={training.method === 'qlora'}
+                    onChange={(event) => setTraining((current) => ({ ...current, loadIn4bit: event.target.checked }))}
+                    className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600"
+                  />
+                  {training.method === 'qlora' ? 'Forced by QLoRA' : 'Enabled'}
+                </div>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Logical base model</label>
+                <Input value={training.logicalBaseModelId} readOnly className="font-mono text-[11px] text-slate-300" />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Trainer image</label>
+                <div className="relative">
+                  <Input value={training.trainerImage} readOnly className="pr-9 font-mono text-[11px] text-slate-300" />
+                  <div className="absolute inset-y-0 right-2 flex items-center">
+                    <CopyButton text={training.trainerImage} className="h-5 w-5 px-1 py-0.5" />
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Model local path</label>
+                <Input value={training.modelLocalPath} readOnly className="font-mono text-[11px] text-slate-300" />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">max_seq_length</label>
+                <Input value={training.maxSeqLength} onChange={(event) => setTraining((current) => ({ ...current, maxSeqLength: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">per_device_train_batch_size</label>
+                <Input value={training.perDeviceTrainBatchSize} onChange={(event) => setTraining((current) => ({ ...current, perDeviceTrainBatchSize: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">gradient_accumulation_steps</label>
+                <Input value={training.gradientAccumulationSteps} onChange={(event) => setTraining((current) => ({ ...current, gradientAccumulationSteps: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">num_train_epochs</label>
+                <Input value={training.numTrainEpochs} onChange={(event) => setTraining((current) => ({ ...current, numTrainEpochs: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">learning_rate</label>
+                <Input value={training.learningRate} onChange={(event) => setTraining((current) => ({ ...current, learningRate: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">warmup_ratio</label>
+                <Input value={training.warmupRatio} onChange={(event) => setTraining((current) => ({ ...current, warmupRatio: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">optim</label>
+                <Input value={training.optim} onChange={(event) => setTraining((current) => ({ ...current, optim: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">logging_steps</label>
+                <Input value={training.loggingSteps} onChange={(event) => setTraining((current) => ({ ...current, loggingSteps: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">save_steps</label>
+                <Input value={training.saveSteps} onChange={(event) => setTraining((current) => ({ ...current, saveSteps: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">eval_steps</label>
+                <Input value={training.evalSteps} onChange={(event) => setTraining((current) => ({ ...current, evalSteps: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">save_total_limit</label>
+                <Input value={training.saveTotalLimit} onChange={(event) => setTraining((current) => ({ ...current, saveTotalLimit: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">lora.r</label>
+                <Input value={training.loraR} onChange={(event) => setTraining((current) => ({ ...current, loraR: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">lora.alpha</label>
+                <Input value={training.loraAlpha} onChange={(event) => setTraining((current) => ({ ...current, loraAlpha: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">lora.dropout</label>
+                <Input value={training.loraDropout} onChange={(event) => setTraining((current) => ({ ...current, loraDropout: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">random_state</label>
+                <Input value={training.randomState} onChange={(event) => setTraining((current) => ({ ...current, randomState: event.target.value }))} />
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_260px]">
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">target_modules</label>
+                <Textarea value={training.targetModules} onChange={(event) => setTraining((current) => ({ ...current, targetModules: event.target.value }))} className="min-h-[96px] font-mono text-[11px]" />
+              </div>
+              <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <label className="flex items-center gap-2 text-sm text-slate-200">
+                  <input type="checkbox" checked={training.bf16} onChange={(event) => setTraining((current) => ({ ...current, bf16: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                  bf16
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-200">
+                  <input type="checkbox" checked={training.packing} onChange={(event) => setTraining((current) => ({ ...current, packing: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                  packing
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-200">
+                  <input type="checkbox" checked={training.gradientCheckpointing} onChange={(event) => setTraining((current) => ({ ...current, gradientCheckpointing: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                  gradient checkpointing
+                </label>
+              </div>
+            </div>
+          </StageCard>
+
+          <StageCard
+            id="saveLora"
+            title="3. Save LoRA"
+            description="Persist adapter weights before optional merge and upload stages."
+            enabled={saveLoraEnabled}
+            expanded={!!expanded.saveLora}
+            summary="Adapter weights and training snapshot are stored for downstream stages."
+            dependency="Training"
+            onToggleEnabled={setSaveLoraEnabled}
+            onToggleExpanded={() => setExpanded((value) => ({ ...value, saveLora: !value.saveLora }))}
+          >
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-sm text-slate-400">
+              No extra settings yet. Stage remains explicit because downstream merge/upload/evaluation depend on saved adapters.
+            </div>
+          </StageCard>
+
+          <StageCard
+            id="merge"
+            title="4. Merge model"
+            description="Optional merge of LoRA into a runnable merged checkpoint."
+            enabled={mergeEnabled}
+            expanded={!!expanded.merge}
+            summary={mergeSummary}
+            dependency="Save LoRA"
+            onToggleEnabled={setMergeEnabled}
+            onToggleExpanded={() => setExpanded((value) => ({ ...value, merge: !value.merge }))}
+          >
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={merge.mergeLora} onChange={(event) => setMerge((current) => ({ ...current, mergeLora: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                merge_lora
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={merge.saveMerged16Bit} onChange={(event) => setMerge((current) => ({ ...current, saveMerged16Bit: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                save_merged_16bit
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={merge.safeSerialization} onChange={(event) => setMerge((current) => ({ ...current, safeSerialization: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                safe serialization
+              </label>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Output behavior</label>
+                <Select value={merge.outputBehavior} onChange={(event) => setMerge((current) => ({ ...current, outputBehavior: event.target.value as 'default' | 'custom' }))}>
+                  <option value="default">default</option>
+                  <option value="custom">custom path</option>
+                </Select>
+              </div>
+            </div>
+            {merge.outputBehavior === 'custom' ? (
+              <div className="mt-4">
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Target path / behavior</label>
+                <Input value={merge.outputPath} onChange={(event) => setMerge((current) => ({ ...current, outputPath: event.target.value }))} placeholder="/output/merged" />
+              </div>
+            ) : null}
+          </StageCard>
+
+          <StageCard
+            id="evaluation"
+            title="5. Evaluation"
+            description="Remote evaluation configuration, including editable input prompt/template for eval runner."
+            enabled={evaluationEnabled}
+            expanded={!!expanded.evaluation}
+            summary={evalSummary}
+            dependency="Training or Merge model"
+            onToggleEnabled={setEvaluationEnabled}
+            onToggleExpanded={() => setExpanded((value) => ({ ...value, evaluation: !value.evaluation }))}
+          >
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Target</label>
+                <Select value={evaluation.target} onChange={(event) => setEvaluation((current) => ({ ...current, target: event.target.value as 'auto' | 'lora' | 'merged' }))}>
+                  <option value="auto">auto</option>
+                  <option value="lora">lora</option>
+                  <option value="merged">merged</option>
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Dataset</label>
+                <Select value={evaluation.datasetId} onChange={(event) => setEvaluation((current) => ({ ...current, datasetId: event.target.value }))}>
+                  <option value="">Select eval dataset</option>
+                  {evalDatasets.map((dataset) => (
                     <option key={dataset.id} value={dataset.id}>
-                      {dataset.name} ({dataset.rows})
-                    </option>
-                  ))}
-                </Select>
-              </div>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-3">
-              <div className="md:col-span-2">
-                <FieldLabel>Runtime preset</FieldLabel>
-                <Select value={runtimePresetId} onChange={(e) => setRuntimePresetId(e.target.value)}>
-                  <option value="">Select preset</option>
-                  {presets.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.title} · {preset.family}
+                      {dataset.name} ({dataset.samplesCount})
                     </option>
                   ))}
                 </Select>
               </div>
               <div>
-                <FieldLabel>Target worker</FieldLabel>
-                <Select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
-                  <option value="any">Any available</option>
-                  {workers.map((worker) => (
-                    <option key={worker.id} value={worker.id}>
-                      {worker.name} ({worker.status})
-                    </option>
-                  ))}
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Dataset source</label>
+                <Select value={evaluation.datasetSource} onChange={(event) => setEvaluation((current) => ({ ...current, datasetSource: event.target.value as 'local' | 'remote' }))}>
+                  <option value="local">local</option>
+                  <option value="remote">remote</option>
                 </Select>
               </div>
-            </div>
-
-            <div className="space-y-3">
-              {STAGE_ORDER.map((stage) => {
-                const enabled =
-                  stage.id === 'prepare_assets'
-                    ? stagePrepare
-                    : stage.id === 'training'
-                    ? stageTraining
-                    : stage.id === 'merge'
-                    ? stageMerge
-                    : stage.id === 'evaluation'
-                    ? stageEvaluation
-                    : stage.id === 'publish'
-                    ? stagePublish
-                    : stageUpload;
-
-                const summary =
-                  stage.id === 'prepare_assets'
-                    ? `${selectedDataset?.name || 'dataset pending'} · ${workerId === 'any' ? 'auto worker' : workerId}`
-                    : stage.id === 'training'
-                    ? trainingSummary
-                    : stage.id === 'merge'
-                    ? stageMerge
-                      ? 'Merged export enabled'
-                      : 'Merged export disabled'
-                    : stage.id === 'evaluation'
-                    ? evaluationSummary
-                    : stage.id === 'publish'
-                    ? stagePublish
-                      ? `${hfRepoLora || 'LoRA repo pending'}${stageMerge ? ` · ${hfRepoMerged || 'merged repo pending'}` : ''}`
-                      : 'HF publish disabled'
-                    : stageUpload
-                    ? 'Upload logs, reports and bundle references'
-                    : 'Upload / reporting disabled';
-
-                const handleToggle =
-                  stage.id === 'prepare_assets'
-                    ? setStagePrepare
-                    : stage.id === 'training'
-                    ? setStageTraining
-                    : stage.id === 'merge'
-                    ? setStageMerge
-                    : stage.id === 'evaluation'
-                    ? setStageEvaluation
-                    : stage.id === 'publish'
-                    ? setStagePublish
-                    : setStageUpload;
-
-                return (
-                  <StagePanel
-                    key={stage.id}
-                    title={stage.title}
-                    summary={summary}
-                    dependency={stage.dependency}
-                    icon={stage.icon}
-                    enabled={enabled}
-                    onToggle={handleToggle}
-                    expanded={expandedStage === stage.id}
-                    onExpand={() => setExpandedStage(stage.id)}
-                  >
-                    {stage.id === 'prepare_assets' ? (
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <div>
-                          <FieldLabel>Dataset snapshot</FieldLabel>
-                          <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-300">
-                            {selectedDataset ? `${selectedDataset.name} · ${selectedDataset.rows} rows` : 'Select dataset'}
-                          </div>
-                        </div>
-                        <div>
-                          <FieldLabel>Worker allocation</FieldLabel>
-                          <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-300">
-                            {workerId === 'any' ? 'Any available worker' : workerId}
-                          </div>
-                        </div>
-                        <div>
-                          <FieldLabel>Runtime hand-off</FieldLabel>
-                          <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-300">
-                            {selectedPreset?.title || 'Select runtime preset'}
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {stage.id === 'training' ? (
-                      <div className="space-y-4">
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <div>
-                            <FieldLabel>Logical base model</FieldLabel>
-                            <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-                              <option value="">Select model</option>
-                              {readyModels.map((model) => (
-                                <option key={model.id} value={model.id}>
-                                  {model.name}
-                                </option>
-                              ))}
-                            </Select>
-                          </div>
-                          <div>
-                            <FieldLabel>Method</FieldLabel>
-                            <Select
-                              value={method}
-                              onChange={(e) => {
-                                const next = e.target.value as 'qlora' | 'lora' | 'full';
-                                setMethod(next);
-                                if (next === 'qlora') setLoadIn4bit(true);
-                                if (next === 'full') setLoadIn4bit(false);
-                              }}
-                            >
-                              <option value="qlora">QLoRA</option>
-                              <option value="lora">LoRA</option>
-                              <option value="full">Full fine-tune</option>
-                            </Select>
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-3">
-                          <div>
-                            <FieldLabel>Trainer image</FieldLabel>
-                            <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs font-mono text-slate-300">
-                              {selectedPreset?.trainerImage || 'Resolved from runtime preset'}
-                            </div>
-                          </div>
-                          <div>
-                            <FieldLabel>Model local path</FieldLabel>
-                            <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs font-mono text-slate-300">
-                              {selectedPreset?.localModelPath || selectedModel?.path || 'Resolved by backend / preset'}
-                            </div>
-                          </div>
-                          <div>
-                            <FieldLabel>4-bit loading</FieldLabel>
-                            <div className="flex h-10 items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/70 px-3">
-                              <Toggle
-                                checked={method === 'qlora' ? true : loadIn4bit}
-                                onChange={setLoadIn4bit}
-                                disabled={method === 'qlora'}
-                              />
-                              <span className="text-xs text-slate-300">
-                                {method === 'qlora' ? 'Forced by method=QLoRA' : loadIn4bit ? 'Enabled' : 'Disabled'}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-4">
-                          <div>
-                            <FieldLabel>max_seq_length</FieldLabel>
-                            <Input value={maxSeqLength} onChange={(e) => setMaxSeqLength(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>per_device_train_batch_size</FieldLabel>
-                            <Input value={perDeviceTrainBatchSize} onChange={(e) => setPerDeviceTrainBatchSize(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>gradient_accumulation_steps</FieldLabel>
-                            <Input value={gradientAccumulationSteps} onChange={(e) => setGradientAccumulationSteps(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>num_train_epochs</FieldLabel>
-                            <Input value={numTrainEpochs} onChange={(e) => setNumTrainEpochs(e.target.value)} />
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-4">
-                          <div>
-                            <FieldLabel>learning_rate</FieldLabel>
-                            <Input value={learningRate} onChange={(e) => setLearningRate(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>warmup_ratio</FieldLabel>
-                            <Input value={warmupRatio} onChange={(e) => setWarmupRatio(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>logging_steps</FieldLabel>
-                            <Input value={loggingSteps} onChange={(e) => setLoggingSteps(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>save_steps</FieldLabel>
-                            <Input value={saveSteps} onChange={(e) => setSaveSteps(e.target.value)} />
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-4">
-                          <div>
-                            <FieldLabel>eval_steps</FieldLabel>
-                            <Input value={evalSteps} onChange={(e) => setEvalSteps(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>save_total_limit</FieldLabel>
-                            <Input value={saveTotalLimit} onChange={(e) => setSaveTotalLimit(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>optim</FieldLabel>
-                            <Input value={optim} onChange={(e) => setOptim(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>random_state</FieldLabel>
-                            <Input value={randomState} onChange={(e) => setRandomState(e.target.value)} />
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-3">
-                          <div>
-                            <FieldLabel>lora r</FieldLabel>
-                            <Input value={loraR} onChange={(e) => setLoraR(e.target.value)} disabled={method === 'full'} />
-                          </div>
-                          <div>
-                            <FieldLabel>lora alpha</FieldLabel>
-                            <Input value={loraAlpha} onChange={(e) => setLoraAlpha(e.target.value)} disabled={method === 'full'} />
-                          </div>
-                          <div>
-                            <FieldLabel>lora dropout</FieldLabel>
-                            <Input value={loraDropout} onChange={(e) => setLoraDropout(e.target.value)} disabled={method === 'full'} />
-                          </div>
-                        </div>
-
-                        <div>
-                          <FieldLabel>target_modules</FieldLabel>
-                          <Input value={targetModules} onChange={(e) => setTargetModules(e.target.value)} disabled={method === 'full'} />
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-3">
-                          <label className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
-                            <Toggle checked={bf16} onChange={setBf16} />
-                            <span className="text-xs text-slate-300">bf16</span>
-                          </label>
-                          <label className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
-                            <Toggle checked={packing} onChange={setPacking} />
-                            <span className="text-xs text-slate-300">packing</span>
-                          </label>
-                          <label className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
-                            <Toggle checked={gradientCheckpointing} onChange={setGradientCheckpointing} />
-                            <span className="text-xs text-slate-300">gradient checkpointing</span>
-                          </label>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {stage.id === 'merge' ? (
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                          <div className="text-[10px] uppercase tracking-wide text-slate-500">Source</div>
-                          <div className="mt-1 text-sm text-white">
-                            {method === 'full' ? 'Full fine-tune output' : 'Adapter / LoRA output'}
-                          </div>
-                        </div>
-                        <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                          <div className="text-[10px] uppercase tracking-wide text-slate-500">Dependency</div>
-                          <div className="mt-1 text-sm text-white">Uses previous training outputs only</div>
-                        </div>
-                        <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                          <div className="text-[10px] uppercase tracking-wide text-slate-500">Safe default</div>
-                          <div className="mt-1 text-sm text-white">Enabled for publishable merged model</div>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {stage.id === 'evaluation' ? (
-                      <div className="space-y-4">
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <div>
-                            <FieldLabel>target</FieldLabel>
-                            <Select value={evalTarget} onChange={(e) => setEvalTarget(e.target.value as 'auto' | 'lora' | 'merged')}>
-                              <option value="auto">auto</option>
-                              <option value="lora">lora</option>
-                              <option value="merged">merged</option>
-                            </Select>
-                          </div>
-                          <div>
-                            <FieldLabel>dataset source/config</FieldLabel>
-                            <Select value={evalDatasetMode} onChange={(e) => setEvalDatasetMode(e.target.value as 'catalog' | 'custom')}>
-                              <option value="catalog">catalog dataset</option>
-                              <option value="custom">custom source/config</option>
-                            </Select>
-                          </div>
-                        </div>
-
-                        {evalDatasetMode === 'catalog' ? (
-                          <div className="grid gap-3 md:grid-cols-2">
-                            <div>
-                              <FieldLabel>dataset</FieldLabel>
-                              <Select value={evalDatasetId} onChange={(e) => setEvalDatasetId(e.target.value)}>
-                                <option value="">Select eval dataset</option>
-                                {evalDatasets.map((dataset) => (
-                                  <option key={dataset.id} value={dataset.id}>
-                                    {dataset.name} ({dataset.samplesCount} samples)
-                                  </option>
-                                ))}
-                              </Select>
-                            </div>
-                            <div>
-                              <FieldLabel>format</FieldLabel>
-                              <Input value={evalDatasetFormat} onChange={(e) => setEvalDatasetFormat(e.target.value)} />
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="grid gap-3 md:grid-cols-3">
-                            <div>
-                              <FieldLabel>dataset source</FieldLabel>
-                              <Input value={evalDatasetSource} onChange={(e) => setEvalDatasetSource(e.target.value)} placeholder="hf / s3 / local" />
-                            </div>
-                            <div>
-                              <FieldLabel>dataset config</FieldLabel>
-                              <Input value={evalDatasetConfig} onChange={(e) => setEvalDatasetConfig(e.target.value)} placeholder="split or config id" />
-                            </div>
-                            <div>
-                              <FieldLabel>format</FieldLabel>
-                              <Input value={evalDatasetFormat} onChange={(e) => setEvalDatasetFormat(e.target.value)} placeholder="jsonl" />
-                            </div>
-                            <div className="md:col-span-3">
-                              <FieldLabel>dataset path</FieldLabel>
-                              <Input value={evalDatasetPath} onChange={(e) => setEvalDatasetPath(e.target.value)} placeholder="/datasets/eval.jsonl or hf://repo/path" />
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="grid gap-3 md:grid-cols-5">
-                          <div>
-                            <FieldLabel>question field</FieldLabel>
-                            <Input value={questionField} onChange={(e) => setQuestionField(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>answer field</FieldLabel>
-                            <Input value={answerField} onChange={(e) => setAnswerField(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>score field</FieldLabel>
-                            <Input value={scoreField} onChange={(e) => setScoreField(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>max score field</FieldLabel>
-                            <Input value={maxScoreField} onChange={(e) => setMaxScoreField(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>tags field</FieldLabel>
-                            <Input value={tagsField} onChange={(e) => setTagsField(e.target.value)} />
-                          </div>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-4">
-                          <div>
-                            <FieldLabel>max_samples</FieldLabel>
-                            <Input value={maxSamples} onChange={(e) => setMaxSamples(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>max_new_tokens</FieldLabel>
-                            <Input value={maxNewTokens} onChange={(e) => setMaxNewTokens(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>temperature</FieldLabel>
-                            <Input value={temperature} onChange={(e) => setTemperature(e.target.value)} />
-                          </div>
-                          <label className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
-                            <Toggle checked={doSample} onChange={setDoSample} />
-                            <span className="text-xs text-slate-300">do_sample</span>
-                          </label>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <div>
-                            <FieldLabel>score min</FieldLabel>
-                            <Input value={scoreMin} onChange={(e) => setScoreMin(e.target.value)} />
-                          </div>
-                          <div>
-                            <FieldLabel>score max</FieldLabel>
-                            <Input value={scoreMax} onChange={(e) => setScoreMax(e.target.value)} />
-                          </div>
-                        </div>
-
-                        <div>
-                          <FieldLabel>prompt_template for eval_runner</FieldLabel>
-                          <Textarea
-                            value={evalPromptTemplate}
-                            onChange={(e) => setEvalPromptTemplate(e.target.value)}
-                            className="min-h-[180px] font-mono text-xs"
-                            placeholder="Keep this stable: it is serialized into the pipeline payload and should survive retry / reopen."
-                          />
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {['${question}', '${candidateAnswer}', '${referenceScore}', '${maxScore}', '${tagsText}'].map((variable) => (
-                              <button
-                                key={variable}
-                                type="button"
-                                onClick={() => setEvalPromptTemplate((value) => `${value}${value ? '\n' : ''}${variable}`)}
-                                className="rounded border border-slate-800 bg-slate-950/70 px-2 py-1 text-[10px] font-mono text-blue-300 hover:bg-slate-900"
-                              >
-                                {variable}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div>
-                          <FieldLabel>system prompt</FieldLabel>
-                          <Textarea value={evalSystemPrompt} onChange={(e) => setEvalSystemPrompt(e.target.value)} className="min-h-[80px] text-xs" />
-                        </div>
-
-                        <div>
-                          <FieldLabel>parsing regex</FieldLabel>
-                          <Input value={parsingRegex} onChange={(e) => setParsingRegex(e.target.value)} placeholder="Optional capture pattern for score extraction" />
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {stage.id === 'publish' ? (
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div>
-                          <FieldLabel>LoRA repo</FieldLabel>
-                          <Input value={hfRepoLora} onChange={(e) => setHfRepoLora(e.target.value)} placeholder="org/model-lora" />
-                        </div>
-                        <div>
-                          <FieldLabel>merged repo</FieldLabel>
-                          <Input
-                            value={hfRepoMerged}
-                            onChange={(e) => setHfRepoMerged(e.target.value)}
-                            placeholder="org/model-merged"
-                            disabled={!stageMerge}
-                          />
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {stage.id === 'upload' ? (
-                      <div className="grid gap-3 md:grid-cols-3">
-                        <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                          <div className="text-[10px] uppercase tracking-wide text-slate-500">Logs</div>
-                          <div className="mt-1 text-sm text-white">Upload / expose log history</div>
-                        </div>
-                        <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                          <div className="text-[10px] uppercase tracking-wide text-slate-500">Reports</div>
-                          <div className="mt-1 text-sm text-white">Metrics and evaluation summaries</div>
-                        </div>
-                        <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-                          <div className="text-[10px] uppercase tracking-wide text-slate-500">Launch data</div>
-                          <div className="mt-1 text-sm text-white">Bundle remains available in job details</div>
-                        </div>
-                      </div>
-                    ) : null}
-                  </StagePanel>
-                );
-              })}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 pt-4">
-              <div className="text-xs text-slate-500">
-                New remote job will inherit pipeline, runtime preset, publish settings, and evaluation prompt template.
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Format</label>
+                <Select value={evaluation.format} onChange={(event) => setEvaluation((current) => ({ ...current, format: event.target.value as 'jsonl' | 'json' }))}>
+                  <option value="jsonl">jsonl</option>
+                  <option value="json">json</option>
+                </Select>
               </div>
-              <Button onClick={handleStart} disabled={!canStart || startMutation.isPending}>
-                {startMutation.isPending ? 'Starting…' : 'Start remote pipeline'}
-              </Button>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">question field</label>
+                <Input value={evaluation.questionField} onChange={(event) => setEvaluation((current) => ({ ...current, questionField: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">answer field</label>
+                <Input value={evaluation.answerField} onChange={(event) => setEvaluation((current) => ({ ...current, answerField: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">score field</label>
+                <Input value={evaluation.scoreField} onChange={(event) => setEvaluation((current) => ({ ...current, scoreField: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">max score field</label>
+                <Input value={evaluation.maxScoreField} onChange={(event) => setEvaluation((current) => ({ ...current, maxScoreField: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">tags field</label>
+                <Input value={evaluation.tagsField} onChange={(event) => setEvaluation((current) => ({ ...current, tagsField: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">max_samples</label>
+                <Input value={evaluation.maxSamples} onChange={(event) => setEvaluation((current) => ({ ...current, maxSamples: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">max_new_tokens</label>
+                <Input value={evaluation.maxNewTokens} onChange={(event) => setEvaluation((current) => ({ ...current, maxNewTokens: event.target.value }))} />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">temperature</label>
+                <Input value={evaluation.temperature} onChange={(event) => setEvaluation((current) => ({ ...current, temperature: event.target.value }))} />
+              </div>
             </div>
 
+            <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_220px]">
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Evaluation prompt / prompt_template</label>
+                <Textarea value={evaluation.promptTemplate} onChange={(event) => setEvaluation((current) => ({ ...current, promptTemplate: event.target.value }))} className="min-h-[220px] font-mono text-[11px]" />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {['${question}', '${candidateAnswer}', '${referenceScore}', '${maxScore}', '${tagsText}'].map((token) => (
+                    <button
+                      key={token}
+                      type="button"
+                      onClick={() => setEvaluation((current) => ({ ...current, promptTemplate: `${current.promptTemplate}${current.promptTemplate ? '\n' : ''}${token}` }))}
+                      className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] text-blue-300 hover:bg-slate-700"
+                    >
+                      {token}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-sm text-slate-300">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={evaluation.doSample} onChange={(event) => setEvaluation((current) => ({ ...current, doSample: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                  do_sample
+                </label>
+                <div className="rounded-lg border border-slate-800 bg-black/20 p-2 text-[11px] text-slate-500">
+                  Prompt is stored in frontend state and serialized into pipeline payload, so it survives save / retry / clone / reopen when backend echoes paramsSnapshot.
+                </div>
+              </div>
+            </div>
+          </StageCard>
+
+          <StageCard
+            id="upload"
+            title="6. Upload / Hugging Face"
+            description="Artifact publication and metadata upload configuration."
+            enabled={uploadEnabled}
+            expanded={!!expanded.upload}
+            summary={uploadSummary}
+            dependency="Save LoRA / Merge / Evaluation"
+            onToggleEnabled={setUploadEnabled}
+            onToggleExpanded={() => setExpanded((value) => ({ ...value, upload: !value.upload }))}
+          >
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={upload.pushLora} onChange={(event) => setUpload((current) => ({ ...current, pushLora: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                push_lora
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={upload.pushMerged} onChange={(event) => setUpload((current) => ({ ...current, pushMerged: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                push_merged
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={upload.pushMetadata} onChange={(event) => setUpload((current) => ({ ...current, pushMetadata: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                push_metadata
+              </label>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">Visibility</label>
+                <Select value={upload.visibility} onChange={(event) => setUpload((current) => ({ ...current, visibility: event.target.value as 'private' | 'public' }))}>
+                  <option value="private">private</option>
+                  <option value="public">public</option>
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">repo_id_lora</label>
+                <Input value={upload.repoIdLora} onChange={(event) => setUpload((current) => ({ ...current, repoIdLora: event.target.value }))} placeholder="org/model-lora" />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">repo_id_merged</label>
+                <Input value={upload.repoIdMerged} onChange={(event) => setUpload((current) => ({ ...current, repoIdMerged: event.target.value }))} placeholder="org/model-merged" />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">repo_id_metadata</label>
+                <Input value={upload.repoIdMetadata} onChange={(event) => setUpload((current) => ({ ...current, repoIdMetadata: event.target.value }))} placeholder="org/model-metadata" />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">revision</label>
+                <Input value={upload.revision} onChange={(event) => setUpload((current) => ({ ...current, revision: event.target.value }))} placeholder="main" />
+              </div>
+            </div>
+            <div className="mt-4">
+              <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">commit_message</label>
+              <Input value={upload.commitMessage} onChange={(event) => setUpload((current) => ({ ...current, commitMessage: event.target.value }))} />
+            </div>
+          </StageCard>
+
+          <StageCard
+            id="reporting"
+            title="7. Finalize / Reporting"
+            description="Callback behaviour, auth-token inheritance and timeout policy."
+            enabled={reportingEnabled}
+            expanded={!!expanded.reporting}
+            summary={reportingSummary}
+            dependency="All enabled upstream stages"
+            onToggleEnabled={setReportingEnabled}
+            onToggleExpanded={() => setExpanded((value) => ({ ...value, reporting: !value.reporting }))}
+          >
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={reporting.statusCallback} onChange={(event) => setReporting((current) => ({ ...current, statusCallback: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                status callback
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={reporting.progressCallback} onChange={(event) => setReporting((current) => ({ ...current, progressCallback: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                progress callback
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={reporting.finalCallback} onChange={(event) => setReporting((current) => ({ ...current, finalCallback: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                final callback
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={reporting.logsCallback} onChange={(event) => setReporting((current) => ({ ...current, logsCallback: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                logs callback
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={reporting.authTokenInheritance} onChange={(event) => setReporting((current) => ({ ...current, authTokenInheritance: event.target.checked }))} className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600" />
+                auth token inheritance
+              </label>
+              <div>
+                <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-slate-500">timeouts</label>
+                <Input value={reporting.timeoutSeconds} onChange={(event) => setReporting((current) => ({ ...current, timeoutSeconds: event.target.value }))} />
+              </div>
+            </div>
+          </StageCard>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+        <Card>
+          <CardHeader>
+            <CardTitle>Serialized pipeline preview</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <pre className="scrollbar-thin max-h-[540px] overflow-auto rounded-xl bg-slate-950 p-4 text-[11px] text-slate-300">{JSON.stringify(pipelinePayload, null, 2)}</pre>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Operator notes</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm text-slate-400">
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+              Runtime preset is the only source of truth for trainer image, logical base model and model local path.
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+              `logical_base_model_id` is serialized separately from `model_local_path`, so `/app` will not leak into HF metadata as base model.
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+              Evaluation prompt template is part of pipeline payload, so retry/clone/reopen can restore it from paramsSnapshot.
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+              Launch bundle is generated after job creation. Operator can copy `JOB_CONFIG_URL`, `docker run`, `docker-compose` or download the bundle from job details.
+            </div>
             {startMutation.error ? (
-              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-3 text-sm text-rose-300">
+              <div className="rounded-xl border border-rose-900 bg-rose-950/30 p-3 text-sm text-rose-200">
                 {(startMutation.error as Error).message}
               </div>
             ) : null}
           </CardContent>
         </Card>
-
-        <div className="space-y-4">
-          <Card className="border-blue-500/20 bg-blue-500/5">
-            <CardHeader>
-              <CardTitle>Runtime Preset Preview</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <div className="rounded-lg bg-slate-950/40 p-3">
-                <div className="text-[10px] uppercase tracking-wide text-slate-500">title</div>
-                <div className="mt-1 text-white">{selectedPreset?.title || '—'}</div>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-lg bg-slate-950/40 p-3">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-500">family</div>
-                  <div className="mt-1 text-white">{selectedPreset?.family || '—'}</div>
-                </div>
-                <div className="rounded-lg bg-slate-950/40 p-3">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-500">logical base model</div>
-                  <div className="mt-1 text-white">{selectedPreset?.logicalBaseModelId || selectedModel?.repoId || '—'}</div>
-                </div>
-                <div className="rounded-lg bg-slate-950/40 p-3 sm:col-span-2">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-500">trainer image</div>
-                  <div className="mt-1 break-all font-mono text-xs text-slate-300">{selectedPreset?.trainerImage || '—'}</div>
-                </div>
-                <div className="rounded-lg bg-slate-950/40 p-3">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-500">model local path</div>
-                  <div className="mt-1 break-all font-mono text-xs text-slate-300">{selectedPreset?.localModelPath || selectedModel?.path || '—'}</div>
-                </div>
-                <div className="rounded-lg bg-slate-950/40 p-3">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-500">shm size</div>
-                  <div className="mt-1 text-white">{selectedPreset?.defaultShmSize || '—'}</div>
-                </div>
-              </div>
-              <div className="rounded-lg border border-blue-500/20 bg-slate-950/40 p-3">
-                <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wide text-blue-400">
-                  <ShieldCheck size={12} />
-                  capabilities
-                </div>
-                <div className="text-xs text-slate-300">{presetCapabilities}</div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Operator Context</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="rounded-lg bg-slate-950/40 p-3">
-                <div className="text-[10px] uppercase tracking-wide text-slate-500">Existing LoRAs for base model</div>
-                <div className="mt-2 space-y-2">
-                  {!relatedLoras.length ? (
-                    <div className="text-xs text-slate-500">No related adapters found yet.</div>
-                  ) : (
-                    relatedLoras.slice(0, 5).map((lora) => (
-                      <div key={lora.id} className="rounded border border-slate-800 bg-slate-950/70 px-2 py-2 text-xs">
-                        <div className="text-white">{lora.name}</div>
-                        <div className="mt-1 text-slate-500">{lora.jobId}</div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-lg bg-slate-950/40 p-3">
-                <div className="text-[10px] uppercase tracking-wide text-slate-500">Serialized pipeline preview</div>
-                <pre className="mt-2 max-h-[380px] overflow-auto text-[10px] text-slate-300">
-                  {JSON.stringify(pipelinePayload, null, 2)}
-                </pre>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
       </div>
     </div>
   );

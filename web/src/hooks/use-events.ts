@@ -1,196 +1,128 @@
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { apiBase } from '../lib/api';
+import { createEventsSource } from '../lib/api';
 
-function appendLogChunk(existing: string, chunk: string) {
-  const current = String(existing || '');
-  const addition = String(chunk || '');
-
-  if (!addition) return current;
-  if (!current) return addition;
-  if (current.endsWith(addition)) return current;
-
-  const maxOverlap = Math.min(current.length, addition.length, 4000);
-  for (let size = maxOverlap; size > 0; size -= 1) {
-    if (current.endsWith(addition.slice(0, size))) {
-      return current + addition.slice(size);
-    }
-  }
-
-  const recentTail = current.slice(-Math.min(current.length, addition.length * 2));
-  if (recentTail.includes(addition)) {
-    return current;
-  }
-
-  return current + addition;
-}
-
-type StreamEvent = {
-  event: string;
-  data: string;
+type LogCache = {
+  id?: string;
+  logFile?: string;
+  content: string;
+  offset?: number;
 };
 
-function parseSseChunk(buffer: string): { events: StreamEvent[]; rest: string } {
-  const parts = buffer.split(/\n\n/);
-  const rest = parts.pop() || '';
-  const events: StreamEvent[] = [];
+function mergeLogChunk(previous: string, incoming: string) {
+  if (!incoming) return previous;
+  if (!previous) return incoming;
+  if (previous.endsWith(incoming)) return previous;
 
-  for (const raw of parts) {
-    const lines = raw.split(/\n/);
-    let event = 'message';
-    const dataLines: string[] = [];
-
-    for (const line of lines) {
-      const normalized = line.replace(/\r$/, '');
-      if (!normalized || normalized.startsWith(':')) continue;
-      if (normalized.startsWith('event:')) {
-        event = normalized.slice(6).trim() || 'message';
-        continue;
-      }
-      if (normalized.startsWith('data:')) {
-        dataLines.push(normalized.slice(5).trimStart());
-      }
-    }
-
-    if (dataLines.length) {
-      events.push({ event, data: dataLines.join('\n') });
+  const maxOverlap = Math.min(previous.length, incoming.length, 4000);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    if (previous.slice(-overlap) === incoming.slice(0, overlap)) {
+      return previous + incoming.slice(overlap);
     }
   }
 
-  return { events, rest };
+  return previous + incoming;
 }
 
-export function useEvents(token?: string | null) {
+export function useEvents() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    if (!token) return;
+    const source = createEventsSource();
 
-    const controller = new AbortController();
-    let reconnectTimer: number | null = null;
-    let attempt = 0;
-
-    const invalidate = () => {
+    const invalidateAll = () => {
       queryClient.invalidateQueries();
     };
 
-    const handleEvent = (eventName: string, data: string) => {
-      try {
-        if (eventName === 'job_updated') {
-          invalidate();
-          return;
-        }
-
-        if (eventName === 'job_progress') {
-          const { payload } = JSON.parse(data) as { payload: { jobId: string } };
-          queryClient.invalidateQueries({ queryKey: ['job', payload.jobId] });
-          queryClient.invalidateQueries({ queryKey: ['jobs'] });
-          return;
-        }
-
-        if (eventName === 'job_finalized') {
-          const { payload } = JSON.parse(data) as { payload: { id: string } };
-          queryClient.invalidateQueries({ queryKey: ['job', payload.id] });
-          queryClient.invalidateQueries({ queryKey: ['jobs'] });
-          return;
-        }
-
-        if (eventName === 'job_log_chunk') {
-          const { payload } = JSON.parse(data) as { payload: { jobId: string; logs: string } };
-          const { jobId, logs } = payload;
-          queryClient.setQueryData(['job-logs', jobId], (old: { id: string; content: string } | undefined) => {
-            if (!old) return { id: jobId, content: logs };
-            return {
-              ...old,
-              content: appendLogChunk(old.content || '', logs || ''),
-            };
-          });
-          return;
-        }
-
-        if (
-          eventName === 'dataset_created' ||
-          eventName === 'dataset_deleted' ||
-          eventName === 'runtime_started' ||
-          eventName === 'runtime_stopped' ||
-          eventName === 'model_updated' ||
-          eventName === 'model_deleted' ||
-          eventName === 'lora_created' ||
-          eventName === 'lora_updated' ||
-          eventName === 'lora_deleted' ||
-          eventName === 'lora_activated' ||
-          eventName === 'lora_deactivated'
-        ) {
-          invalidate();
-        }
-      } catch (err) {
-        console.error(`Failed to handle SSE event: ${eventName}`, err);
-      }
+    const invalidateJob = (jobId?: string) => {
+      if (!jobId) return;
+      queryClient.invalidateQueries({ queryKey: ['job', jobId] });
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
     };
 
-    const connect = async () => {
+    source.addEventListener('job_updated', invalidateAll);
+
+    source.addEventListener('job_progress', (event: MessageEvent) => {
       try {
-        const response = await fetch(`${apiBase}/events`, {
-          method: 'GET',
-          headers: {
-            Accept: 'text/event-stream',
-            Authorization: `Bearer ${token}`,
-            'Cache-Control': 'no-cache',
-          },
-          signal: controller.signal,
+        const { payload } = JSON.parse(event.data) as { payload?: { jobId?: string } };
+        invalidateJob(payload?.jobId);
+      } catch (error) {
+        console.error('Failed to handle job_progress event', error);
+      }
+    });
+
+    source.addEventListener('job_finalized', (event: MessageEvent) => {
+      try {
+        const { payload } = JSON.parse(event.data) as { payload?: { id?: string; jobId?: string } };
+        invalidateJob(payload?.id || payload?.jobId);
+      } catch (error) {
+        console.error('Failed to handle job_finalized event', error);
+      }
+    });
+
+    source.addEventListener('job_log_chunk', (event: MessageEvent) => {
+      try {
+        const { payload } = JSON.parse(event.data) as {
+          payload?: { jobId?: string; logs?: string; offset?: number; logFile?: string };
+        };
+
+        const jobId = payload?.jobId;
+        const logs = payload?.logs || '';
+        const offset = payload?.offset;
+        const logFile = payload?.logFile;
+        if (!jobId || !logs) return;
+
+        queryClient.setQueryData(['job-logs', jobId], (old: LogCache | undefined) => {
+          const previous = old?.content || '';
+          const currentOffset = typeof old?.offset === 'number' ? old.offset : previous.length;
+
+          if (typeof offset === 'number') {
+            if (offset < currentOffset) {
+              return old || { id: jobId, logFile, content: previous, offset: currentOffset };
+            }
+
+            if (offset === currentOffset) {
+              const merged = mergeLogChunk(previous, logs);
+              return {
+                id: jobId,
+                logFile: logFile || old?.logFile,
+                content: merged,
+                offset: offset + logs.length,
+              };
+            }
+          }
+
+          const merged = mergeLogChunk(previous, logs);
+          return {
+            id: jobId,
+            logFile: logFile || old?.logFile,
+            content: merged,
+            offset: typeof offset === 'number' ? offset + logs.length : merged.length,
+          };
         });
-
-        if (!response.ok) {
-          if (response.status === 401) {
-            console.warn('Events stream authorization failed. Falling back to polling-only mode.');
-            return;
-          }
-          throw new Error(`Events stream HTTP ${response.status}`);
-        }
-
-        if (!response.body) {
-          throw new Error('Events stream body is empty');
-        }
-
-        attempt = 0;
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (!controller.signal.aborted) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parsed = parseSseChunk(buffer);
-          buffer = parsed.rest;
-          for (const item of parsed.events) {
-            handleEvent(item.event, item.data);
-          }
-        }
-
-        if (!controller.signal.aborted) {
-          attempt += 1;
-          const delay = Math.min(10000, 1000 * Math.max(1, attempt));
-          reconnectTimer = window.setTimeout(() => {
-            void connect();
-          }, delay);
-        }
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        attempt += 1;
-        const delay = Math.min(10000, 1000 * Math.max(1, attempt));
-        console.warn('Events stream disconnected, retrying with fetch SSE.', err);
-        reconnectTimer = window.setTimeout(() => {
-          void connect();
-        }, delay);
+      } catch (error) {
+        console.error('Failed to handle job_log_chunk event', error);
       }
-    };
+    });
 
-    void connect();
+    source.addEventListener('dataset_created', invalidateAll);
+    source.addEventListener('dataset_deleted', invalidateAll);
+    source.addEventListener('runtime_started', invalidateAll);
+    source.addEventListener('runtime_stopped', invalidateAll);
+    source.addEventListener('model_updated', invalidateAll);
+    source.addEventListener('model_deleted', invalidateAll);
+    source.addEventListener('lora_created', invalidateAll);
+    source.addEventListener('lora_updated', invalidateAll);
+    source.addEventListener('lora_deleted', invalidateAll);
+    source.addEventListener('lora_activated', invalidateAll);
+    source.addEventListener('lora_deactivated', invalidateAll);
+
+    source.onerror = (event) => {
+      console.warn('Events stream disconnected, waiting for automatic reconnect.', event);
+    };
 
     return () => {
-      controller.abort();
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      source.close();
     };
-  }, [queryClient, token]);
+  }, [queryClient]);
 }
