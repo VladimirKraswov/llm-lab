@@ -15,71 +15,24 @@ Web UI origin: *
 Background reconcile scheduled: {
   ok: true,
   started: true,
-  runId: 'reconcile_438ac6e9d40c',
+  runId: 'reconcile_396be658e743',
   status: {
     isRunning: true,
-    currentRunId: 'reconcile_438ac6e9d40c',
-    lastRunId: 'reconcile_438ac6e9d40c',
+    currentRunId: 'reconcile_396be658e743',
+    lastRunId: 'reconcile_396be658e743',
     lastReason: 'startup',
-    lastStartedAt: '2026-03-21T10:45:55.239Z',
+    lastStartedAt: '2026-03-21T12:21:23.133Z',
     lastFinishedAt: null,
     lastError: null,
     lastResult: null
   }
 }
-2026-03-21T10:45:55.240Z [32mINFO[0m: Background reconcile started { runId: 'reconcile_438ac6e9d40c', reason: 'startup' }
-2026-03-21T10:45:55.256Z [32mINFO[0m: Background reconcile completed {
-  runId: 'reconcile_438ac6e9d40c',
+2026-03-21T12:21:23.135Z [32mINFO[0m: Background reconcile started { runId: 'reconcile_396be658e743', reason: 'startup' }
+2026-03-21T12:21:23.159Z [32mINFO[0m: Background reconcile completed {
+  runId: 'reconcile_396be658e743',
   reason: 'startup',
-  startedAt: '2026-03-21T10:45:55.240Z',
-  finishedAt: '2026-03-21T10:45:55.256Z',
-  models: {
-    totalAfter: 0,
-    added: 0,
-    updated: 0,
-    removed: 0,
-    preservedActive: 0
-  },
-  loras: {
-    totalAfter: 0,
-    added: 0,
-    updated: 0,
-    removed: 0,
-    preservedActive: 0
-  }
-}
-Restarting 'src/server.js'
-Initializing workspace...
-Initializing database...
-Initializing database (sqlite3)...
-Running migrations...
-Recovering state...
-Starting Express app...
-LLM Lab Service listening on http://0.0.0.0:8787
-Workspace: /app/test_workspace
-Python: /app/test_workspace/environments/ml_env/bin/python
-Web UI origin: *
-Background reconcile scheduled: {
-  ok: true,
-  started: true,
-  runId: 'reconcile_e000b66d84af',
-  status: {
-    isRunning: true,
-    currentRunId: 'reconcile_e000b66d84af',
-    lastRunId: 'reconcile_e000b66d84af',
-    lastReason: 'startup',
-    lastStartedAt: '2026-03-21T11:44:42.824Z',
-    lastFinishedAt: null,
-    lastError: null,
-    lastResult: null
-  }
-}
-2026-03-21T11:44:42.827Z [32mINFO[0m: Background reconcile started { runId: 'reconcile_e000b66d84af', reason: 'startup' }
-2026-03-21T11:44:42.855Z [32mINFO[0m: Background reconcile completed {
-  runId: 'reconcile_e000b66d84af',
-  reason: 'startup',
-  startedAt: '2026-03-21T11:44:42.827Z',
-  finishedAt: '2026-03-21T11:44:42.855Z',
+  startedAt: '2026-03-21T12:21:23.134Z',
+  finishedAt: '2026-03-21T12:21:23.159Z',
   models: {
     totalAfter: 0,
     added: 0,

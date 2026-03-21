@@ -1,0 +1,14 @@
+==> registering worker
+==> worker registered: worker_f9fd0735f1f8
+==> received job: job_379b66f20393
+==> starting job job_379b66f20393
+==> container: trainer-job_379b66f20393
+==> trainer image: itk-ai-trainer-service:qwen-7b
+==> job config url: http://localhost:8787/jobs/job_379b66f20393/config?token=cb_af2e4f1b2270
+==> output dir: /app/test_workspace/agent-output/job_379b66f20393
+==> cache dir: /app/test_workspace/agent-cache/job_379b66f20393
+Unable to find image 'itk-ai-trainer-service:qwen-7b' locally
+docker: Error response from daemon: pull access denied for itk-ai-trainer-service, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information
+==> trainer container exited, code=125, signal=none

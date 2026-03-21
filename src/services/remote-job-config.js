@@ -185,14 +185,14 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
     },
 
     upload: {
-      enabled: !!hfPublish.enabled,
-      target: hfPublish.enabled ? 'huggingface' : 'local',
+      enabled: !!pipeline.upload?.enabled,
+      target: pipeline.upload?.enabled ? 'url' : (pipeline.publish?.enabled ? 'huggingface' : 'local'),
     },
 
     huggingface: {
-      enabled: !!hfPublish.enabled,
-      push_lora: !!hfPublish.push_lora,
-      push_merged: !!hfPublish.push_merged,
+      enabled: !!pipeline.publish?.enabled,
+      push_lora: pipeline.publish?.push_lora !== undefined ? !!pipeline.publish.push_lora : !!hfPublish.push_lora,
+      push_merged: pipeline.publish?.push_merged !== undefined ? !!pipeline.publish.push_merged : !!hfPublish.push_merged,
       repo_id_lora: hfPublish.repo_id_lora || '',
       repo_id_merged: hfPublish.repo_id_merged || '',
       repo_id_metadata: hfPublish.repo_id_metadata || '',

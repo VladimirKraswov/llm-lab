@@ -307,7 +307,11 @@ router.get('/:id/logs', async (req, res) => {
 
 router.post('/fine-tune', roleMiddleware(['admin', 'member']), async (req, res) => {
   try {
-    res.json(await startFineTuneJob(req.body || {}));
+    // Mapping fine-tune to unified remote flow
+    res.json(await createRemoteJob({
+      ...(req.body || {}),
+      type: 'fine-tune'
+    }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
   }
