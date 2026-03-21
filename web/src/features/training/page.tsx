@@ -49,11 +49,50 @@ export default function TrainingPage() {
   const [stagePublish, setStagePublish] = useState(true);
   const [stageUpload, setStageUpload] = useState(true);
 
+  // Advanced Evaluation State
+  const [evalSystemPrompt, setEvalSystemPrompt] = useState('');
+  const [evalPromptTemplate, setEvalPromptTemplate] = useState('');
+  const [evalMaxSamples, setEvalMaxSamples] = useState('100');
+  const [evalMaxTokens, setEvalMaxTokens] = useState('128');
+  const [evalTemp, setEvalTemp] = useState('0');
+  const [evalDoSample, setEvalDoSample] = useState(false);
+  const [evalTarget, setEvalTarget] = useState<'auto' | 'lora' | 'merged'>('auto');
+  const [evalParsingRegex, setEvalParsingRegex] = useState('');
+  const [evalScoreMin, setEvalScoreMin] = useState('0');
+  const [evalScoreMax, setEvalScoreMax] = useState('5');
+  const [evalDatasetId, setEvalDatasetId] = useState('');
+
+  const [showAdvancedEval, setShowAdvancedEval] = useState(false);
+
   const presetsQuery = useQuery({
     queryKey: ['runtime-presets'],
     queryFn: api.getRuntimePresets,
     enabled: isRemote
   });
+
+  const evalDatasetsQuery = useQuery({
+    queryKey: ['eval-datasets'],
+    queryFn: api.getEvalDatasets,
+    enabled: isRemote && stageEval
+  });
+
+  const evalConfigQuery = useQuery({
+    queryKey: ['eval-config'],
+    queryFn: api.getEvalConfig,
+    enabled: isRemote && stageEval
+  });
+
+  useEffect(() => {
+    if (evalConfigQuery.data) {
+       setEvalPromptTemplate(prev => prev || evalConfigQuery.data.defaultPromptTemplate);
+    }
+  }, [evalConfigQuery.data]);
+
+  useEffect(() => {
+    if (evalDatasetsQuery.data && !evalDatasetId && evalDatasetsQuery.data.length > 0) {
+      setEvalDatasetId(evalDatasetsQuery.data[0].id);
+    }
+  }, [evalDatasetsQuery.data, evalDatasetId]);
 
   useEffect(() => {
     if (settingsQuery.data?.qlora) {
@@ -135,11 +174,30 @@ export default function TrainingPage() {
     };
 
     if (isRemote) {
+      const selectedEvalDataset = evalDatasetsQuery.data?.find(d => d.id === evalDatasetId);
+
       const pipeline = {
         prepare_assets: { enabled: stagePrepare },
         training: { enabled: stageTraining },
         merge: { enabled: stageMerge },
-        evaluation: { enabled: stageEval },
+        evaluation: {
+          enabled: stageEval,
+          target: evalTarget,
+          max_samples: evalMaxSamples ? Number(evalMaxSamples) : null,
+          max_new_tokens: Number(evalMaxTokens),
+          temperature: Number(evalTemp),
+          do_sample: evalDoSample,
+          system_prompt: evalSystemPrompt || null,
+          prompt_template: evalPromptTemplate || undefined,
+          parsing_regex: evalParsingRegex || null,
+          score_min: Number(evalScoreMin),
+          score_max: Number(evalScoreMax),
+          dataset: selectedEvalDataset ? {
+            source: 'local',
+            path: selectedEvalDataset.jsonPath,
+            format: 'jsonl', // Backend uses jsonl for processed eval datasets usually
+          } : undefined,
+        },
         publish: {
           enabled: stagePublish,
           push_lora: true,
@@ -277,7 +335,7 @@ export default function TrainingPage() {
                   </div>
                 </div>
 
-                {pipelineEnabled && (
+                {pipelineEnabled && !showAdvancedEval && (
                   <div className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
                     <div className={cn("p-3 rounded-xl border transition-colors", stagePrepare ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
                       <div className="flex items-center justify-between mb-2">
@@ -303,12 +361,20 @@ export default function TrainingPage() {
                       <p className="text-[10px] text-slate-500">Export merged 16-bit model.</p>
                     </div>
 
-                    <div className={cn("p-3 rounded-xl border transition-colors", stageEval ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
+                    <div className={cn("p-3 rounded-xl border transition-colors flex flex-col", stageEval ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
                       <div className="flex items-center justify-between mb-2">
                         <span className="text-xs font-bold text-slate-300">Evaluation</span>
                         <input type="checkbox" checked={stageEval} onChange={e => setStageEval(e.target.checked)} className="h-3 w-3 rounded bg-slate-900 text-blue-600 border-slate-700" />
                       </div>
-                      <p className="text-[10px] text-slate-500">Run benchmark after training.</p>
+                      <p className="text-[10px] text-slate-500 flex-1">Run benchmark after training.</p>
+                      {stageEval && (
+                        <button
+                          onClick={(e) => { e.preventDefault(); setShowAdvancedEval(!showAdvancedEval); }}
+                          className="mt-2 text-[10px] text-blue-400 hover:text-blue-300 font-medium text-left flex items-center gap-1"
+                        >
+                          {showAdvancedEval ? 'Hide Settings' : 'Configure Evaluation'}
+                        </button>
+                      )}
                     </div>
 
                     <div className={cn("p-3 rounded-xl border transition-colors", stagePublish ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
@@ -343,6 +409,98 @@ export default function TrainingPage() {
                         <input type="checkbox" checked={stageUpload} onChange={e => setStageUpload(e.target.checked)} className="h-3 w-3 rounded bg-slate-900 text-blue-600 border-slate-700" />
                       </div>
                       <p className="text-[10px] text-slate-500">Upload logs and metrics via URL.</p>
+                    </div>
+                  </div>
+                )}
+
+                {pipelineEnabled && showAdvancedEval && stageEval && (
+                  <div className="rounded-xl border border-blue-900/30 bg-blue-950/20 p-4 space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-blue-400 uppercase tracking-wider">Evaluation Pipeline Settings</h4>
+                      <button onClick={() => setShowAdvancedEval(false)} className="text-[10px] text-slate-500 hover:text-white uppercase font-bold">Back to pipeline</button>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1.5 block text-[10px] uppercase font-bold text-slate-500">Eval Dataset</label>
+                        <Select value={evalDatasetId} onChange={e => setEvalDatasetId(e.target.value)}>
+                          {evalDatasetsQuery.data?.map(d => (
+                            <option key={d.id} value={d.id}>{d.name} ({d.samplesCount} samples)</option>
+                          ))}
+                          {!evalDatasetsQuery.data?.length && <option value="">No eval datasets found</option>}
+                        </Select>
+                      </div>
+                      <div>
+                        <label className="mb-1.5 block text-[10px] uppercase font-bold text-slate-500">Evaluation Target</label>
+                        <Select value={evalTarget} onChange={e => setEvalTarget(e.target.value as any)}>
+                          <option value="auto">Auto (prefer merged)</option>
+                          <option value="lora">LoRA adapter</option>
+                          <option value="merged">Merged model</option>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <label className="mb-1.5 block text-[10px] uppercase font-bold text-slate-500">System Prompt</label>
+                        <textarea
+                          className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-[11px] text-white focus:border-blue-500 focus:outline-none min-h-[60px]"
+                          placeholder="Instructions for the evaluator model..."
+                          value={evalSystemPrompt}
+                          onChange={e => setEvalSystemPrompt(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1.5 block text-[10px] uppercase font-bold text-slate-500">Prompt Template</label>
+                        <textarea
+                          className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-[11px] font-mono text-white focus:border-blue-500 focus:outline-none min-h-[100px]"
+                          value={evalPromptTemplate}
+                          onChange={e => setEvalPromptTemplate(e.target.value)}
+                        />
+                        <div className="mt-1 flex flex-wrap gap-2">
+                           {['${question}', '${candidateAnswer}', '${referenceScore}', '${maxScore}', '${tagsText}'].map(v => (
+                             <code key={v} className="text-[9px] bg-slate-800 text-blue-300 px-1 rounded cursor-pointer" onClick={() => setEvalPromptTemplate(t => t + v)}>{v}</code>
+                           ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
+                      <div>
+                        <label className="mb-1 block text-[10px] text-slate-500 font-bold uppercase">Max Samples</label>
+                        <Input value={evalMaxSamples} onChange={e => setEvalMaxSamples(e.target.value)} placeholder="All" />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] text-slate-500 font-bold uppercase">Max Tokens</label>
+                        <Input value={evalMaxTokens} onChange={e => setEvalMaxTokens(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] text-slate-500 font-bold uppercase">Temperature</label>
+                        <Input value={evalTemp} onChange={e => setEvalTemp(e.target.value)} />
+                      </div>
+                      <div className="flex items-end h-9">
+                        <label className="flex items-center gap-2 cursor-pointer pb-2">
+                          <input type="checkbox" checked={evalDoSample} onChange={e => setEvalDoSample(e.target.checked)} className="h-3 w-3 rounded bg-slate-900 text-blue-600" />
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Do Sample</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-3 pt-2 border-t border-blue-900/20">
+                      <div className="md:col-span-2">
+                        <label className="mb-1.5 block text-[10px] uppercase font-bold text-slate-500">Parsing Regex (Capture Group 1)</label>
+                        <Input className="font-mono text-[11px]" value={evalParsingRegex} onChange={e => setEvalParsingRegex(e.target.value)} placeholder="e.g. score:\s*(\d+)" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="mb-1 block text-[10px] text-slate-500 font-bold uppercase">Min Score</label>
+                          <Input value={evalScoreMin} onChange={e => setEvalScoreMin(e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-[10px] text-slate-500 font-bold uppercase">Max Score</label>
+                          <Input value={evalScoreMax} onChange={e => setEvalScoreMax(e.target.value)} />
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}

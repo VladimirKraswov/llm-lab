@@ -55,7 +55,12 @@ def extract_generated_text(tokenizer, prompt_text: str, output_ids, input_len: i
     return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
 
 
-def parse_model_score(text: str) -> Dict[str, Any]:
+def parse_model_score(
+    text: str,
+    parsing_regex: Optional[str] = None,
+    score_min: float = 0.0,
+    score_max: float = 5.0,
+) -> Dict[str, Any]:
     if not text or not str(text).strip():
         return {"score": None, "feedback": None, "parseError": True}
 
@@ -69,7 +74,7 @@ def parse_model_score(text: str) -> Dict[str, Any]:
             if isinstance(raw_score, str):
                 raw_score = float(raw_score)
             if isinstance(raw_score, (int, float)) and math.isfinite(raw_score):
-                if 0 <= raw_score <= 5:
+                if score_min <= raw_score <= score_max:
                     return {
                         "score": float(raw_score),
                         "feedback": data.get("feedback") or data.get("reasoning"),
@@ -78,26 +83,34 @@ def parse_model_score(text: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    patterns = [
-        r"score:\s*(\d+(?:\.\d+)?)\s*/\s*5",
-        r"оценка:\s*(\d+(?:\.\d+)?)\s*/\s*5",
+    patterns = []
+    if parsing_regex:
+        patterns.append(parsing_regex)
+
+    # Defaults
+    patterns.extend([
+        fr"score:\s*(\d+(?:\.\d+)?)\s*/\s*{int(score_max)}",
+        fr"оценка:\s*(\d+(?:\.\d+)?)\s*/\s*{int(score_max)}",
         r"score:\s*(\d+(?:\.\d+)?)",
         r"оценка:\s*(\d+(?:\.\d+)?)",
-        r"(\d+(?:\.\d+)?)\s*/\s*5",
+        fr"(\d+(?:\.\d+)?)\s*/\s*{int(score_max)}",
         r"^(\d+(?:\.\d+)?)$",
-    ]
+    ])
 
     for pattern in patterns:
-        match = re.search(pattern, clean_text, re.IGNORECASE | re.MULTILINE)
-        if not match:
+        try:
+            match = re.search(pattern, clean_text, re.IGNORECASE | re.MULTILINE)
+            if not match:
+                continue
+            value = float(match.group(1))
+            if score_min <= value <= score_max:
+                return {
+                    "score": value,
+                    "feedback": clean_text,
+                    "parseError": False,
+                }
+        except Exception:
             continue
-        value = float(match.group(1))
-        if 0 <= value <= 5:
-            return {
-                "score": value,
-                "feedback": clean_text,
-                "parseError": False,
-            }
 
     return {
         "score": None,
@@ -242,11 +255,16 @@ def _normalize_eval_items(cfg: JobConfig) -> List[Dict[str, Any]]:
     return normalized
 
 
-def _build_prompt(tokenizer, template: str, sample: Dict[str, Any]) -> str:
+def _build_prompt(tokenizer, template: str, sample: Dict[str, Any], system_prompt: Optional[str] = None) -> str:
     rendered = render_prompt_template(template, sample)
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": rendered})
+
     try:
         return tokenizer.apply_chat_template(
-            [{"role": "user", "content": rendered}],
+            messages,
             tokenize=False,
             add_generation_prompt=True,
         )
@@ -347,7 +365,12 @@ def run_evaluation(
     model.eval()
 
     for index, sample in enumerate(samples, start=1):
-        prompt = _build_prompt(tokenizer, cfg.evaluation.prompt_template, sample)
+        prompt = _build_prompt(
+            tokenizer,
+            cfg.evaluation.prompt_template,
+            sample,
+            system_prompt=cfg.evaluation.system_prompt,
+        )
 
         row = {
             "sampleId": sample["id"],
@@ -385,7 +408,12 @@ def run_evaluation(
                 input_len=int(model_inputs["input_ids"].shape[1]),
             )
 
-            parsed = parse_model_score(raw_response)
+            parsed = parse_model_score(
+                raw_response,
+                parsing_regex=cfg.evaluation.parsing_regex,
+                score_min=cfg.evaluation.score_min,
+                score_max=cfg.evaluation.score_max,
+            )
 
             row["rawResponse"] = raw_response
             row["predictedScore"] = parsed["score"]

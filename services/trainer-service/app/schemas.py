@@ -258,7 +258,11 @@ class EvaluationConfig(AppBaseModel):
     max_new_tokens: int = 128
     temperature: float = 0.0
     do_sample: bool = False
+    system_prompt: Optional[str] = None
     prompt_template: str = DEFAULT_EVAL_PROMPT
+    parsing_regex: Optional[str] = None
+    score_min: float = 0.0
+    score_max: float = 5.0
     dataset: Optional[EvaluationDatasetConfig] = None
 
     @model_validator(mode="after")

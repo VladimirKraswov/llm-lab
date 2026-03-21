@@ -338,11 +338,11 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>QLoRA params</CardTitle>
+          <CardTitle>{pipeline ? 'Pipeline & Parameters' : 'QLoRA params'}</CardTitle>
         </CardHeader>
         <CardContent>
-          <pre className="max-h-[320px] overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-300">
-            {JSON.stringify(job.qlora || job.paramsSnapshot?.qlora || {}, null, 2)}
+          <pre className="max-h-[400px] overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-slate-300">
+            {JSON.stringify(job.paramsSnapshot || job.qlora || {}, null, 2)}
           </pre>
         </CardContent>
       </Card>
