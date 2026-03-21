@@ -49,30 +49,43 @@ function BuildStatus({ build }: { build: AgentBuild }) {
   return <AlertCircle size={16} className="text-rose-400" />;
 }
 
+function normalizeArray<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (value && typeof value === 'object' && Array.isArray((value as { items?: unknown[] }).items)) {
+    return (value as { items: T[] }).items;
+  }
+  return [];
+}
+
 export default function InfrastructurePage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = React.useState<TabId>('models');
 
-  const { data: baseModels = [], isLoading: loadingModels } = useQuery({
+  const { data: baseModelsRaw, isLoading: loadingModels } = useQuery({
     queryKey: ['base-models'],
     queryFn: api.getBaseModels,
   });
 
-  const { data: recipes = [], isLoading: loadingRecipes } = useQuery({
+  const { data: recipesRaw, isLoading: loadingRecipes } = useQuery({
     queryKey: ['recipes'],
     queryFn: api.getRecipes,
   });
 
-  const { data: builds = [], isLoading: loadingBuilds } = useQuery({
+  const { data: buildsRaw, isLoading: loadingBuilds } = useQuery({
     queryKey: ['builds'],
     queryFn: api.getBuilds,
     refetchInterval: 5000,
   });
 
-  const { data: presets = [], isLoading: loadingPresets } = useQuery({
+  const { data: presetsRaw, isLoading: loadingPresets } = useQuery({
     queryKey: ['runtime-presets'],
     queryFn: api.getRuntimePresets,
   });
+
+  const baseModels = React.useMemo(() => normalizeArray<BaseModelImage>(baseModelsRaw), [baseModelsRaw]);
+  const recipes = React.useMemo(() => normalizeArray<AgentBuildRecipe>(recipesRaw), [recipesRaw]);
+  const builds = React.useMemo(() => normalizeArray<AgentBuild>(buildsRaw), [buildsRaw]);
+  const presets = React.useMemo(() => normalizeArray<RuntimePreset>(presetsRaw), [presetsRaw]);
 
   const startBuildMutation = useMutation({
     mutationFn: (recipeId: string) => api.startBuild(recipeId),

@@ -11,7 +11,6 @@ import {
   PackageCheck,
   ShieldCheck,
   UploadCloud,
-  type LucideIcon,
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { PageHeader } from '../../components/page-header';
@@ -34,29 +33,14 @@ const STAGE_ORDER: Array<{
   id: StageId;
   title: string;
   dependency?: string;
-  icon: LucideIcon;
+  icon: React.ComponentType<{ size?: number; className?: string }>;
 }> = [
   { id: 'prepare_assets', title: 'Prepare / Assets', icon: FolderCog },
   { id: 'training', title: 'Training', dependency: 'Depends on: Prepare / Assets', icon: Cpu },
   { id: 'merge', title: 'Merge', dependency: 'Depends on: Training', icon: Layers3 },
-  {
-    id: 'evaluation',
-    title: 'Evaluation',
-    dependency: 'Depends on: Training or Merge target',
-    icon: FlaskConical,
-  },
-  {
-    id: 'publish',
-    title: 'Publish',
-    dependency: 'Depends on: Training / Merge outputs',
-    icon: PackageCheck,
-  },
-  {
-    id: 'upload',
-    title: 'Upload / Reporting',
-    dependency: 'Depends on: previous enabled stages',
-    icon: UploadCloud,
-  },
+  { id: 'evaluation', title: 'Evaluation', dependency: 'Depends on: Training or Merge target', icon: FlaskConical },
+  { id: 'publish', title: 'Publish', dependency: 'Depends on: Training / Merge outputs', icon: PackageCheck },
+  { id: 'upload', title: 'Upload / Reporting', dependency: 'Depends on: previous enabled stages', icon: UploadCloud },
 ];
 
 function numberOrUndefined(value: string) {
@@ -70,6 +54,15 @@ function parseCsv(value: string) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+
+function normalizeArray<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (value && typeof value === 'object' && Array.isArray((value as { items?: unknown[] }).items)) {
+    return (value as { items: T[] }).items;
+  }
+  return [];
 }
 
 function FieldLabel({ children, note }: { children: React.ReactNode; note?: React.ReactNode }) {
@@ -124,7 +117,7 @@ function StagePanel({
   title: string;
   summary: string;
   dependency?: string;
-  icon: LucideIcon;
+  icon: React.ComponentType<{ size?: number; className?: string }>;
   enabled: boolean;
   onToggle: (next: boolean) => void;
   expanded: boolean;
@@ -277,22 +270,22 @@ export default function TrainingPage() {
   }, [settingsQuery.data]);
 
   useEffect(() => {
-    if (!runtimePresetId && presetsQuery.data?.[0]?.id) {
-      setRuntimePresetId(presetsQuery.data[0].id);
+    if (!runtimePresetId && presets[0]?.id) {
+      setRuntimePresetId(presets[0].id);
     }
-  }, [presetsQuery.data, runtimePresetId]);
+  }, [presets, runtimePresetId]);
 
   useEffect(() => {
-    if (!datasetId && datasetsQuery.data?.[0]?.id) {
-      setDatasetId(datasetsQuery.data[0].id);
+    if (!datasetId && datasets[0]?.id) {
+      setDatasetId(datasets[0].id);
     }
-  }, [datasetsQuery.data, datasetId]);
+  }, [datasets, datasetId]);
 
   useEffect(() => {
-    if (!evalDatasetId && evalDatasetsQuery.data?.[0]?.id) {
-      setEvalDatasetId(evalDatasetsQuery.data[0].id);
+    if (!evalDatasetId && evalDatasets[0]?.id) {
+      setEvalDatasetId(evalDatasets[0].id);
     }
-  }, [evalDatasetsQuery.data, evalDatasetId]);
+  }, [evalDatasets, evalDatasetId]);
 
   useEffect(() => {
     if (!evalPromptTemplate && evalConfigQuery.data?.defaultPromptTemplate) {
@@ -300,13 +293,19 @@ export default function TrainingPage() {
     }
   }, [evalConfigQuery.data, evalPromptTemplate]);
 
+  const presets = useMemo(() => normalizeArray<any>(presetsQuery.data), [presetsQuery.data]);
+  const datasets = useMemo(() => normalizeArray<any>(datasetsQuery.data), [datasetsQuery.data]);
+  const evalDatasets = useMemo(() => normalizeArray<any>(evalDatasetsQuery.data), [evalDatasetsQuery.data]);
+  const workers = useMemo(() => normalizeArray<any>(workersQuery.data), [workersQuery.data]);
+  const loras = useMemo(() => normalizeArray<any>(lorasQuery.data), [lorasQuery.data]);
+
   const selectedPreset = useMemo(
-    () => presetsQuery.data?.find((preset) => preset.id === runtimePresetId) || null,
-    [presetsQuery.data, runtimePresetId],
+    () => presets.find((preset) => preset.id === runtimePresetId) || null,
+    [presets, runtimePresetId],
   );
 
   const readyModels = useMemo(
-    () => (modelsQuery.data || []).filter((model) => model.status === 'ready'),
+    () => normalizeArray<any>(modelsQuery.data).filter((model) => model.status === 'ready'),
     [modelsQuery.data],
   );
 
@@ -333,25 +332,25 @@ export default function TrainingPage() {
   );
 
   const selectedDataset = useMemo(
-    () => datasetsQuery.data?.find((dataset) => dataset.id === datasetId) || null,
-    [datasetsQuery.data, datasetId],
+    () => datasets.find((dataset) => dataset.id === datasetId) || null,
+    [datasets, datasetId],
   );
 
   const selectedEvalDataset = useMemo(
-    () => evalDatasetsQuery.data?.find((dataset) => dataset.id === evalDatasetId) || null,
-    [evalDatasetsQuery.data, evalDatasetId],
+    () => evalDatasets.find((dataset) => dataset.id === evalDatasetId) || null,
+    [evalDatasets, evalDatasetId],
   );
 
   const relatedLoras = useMemo(() => {
     const baseRef = selectedPreset?.logicalBaseModelId || selectedModel?.repoId;
-    return (lorasQuery.data || []).filter((lora) => {
+    return loras.filter((lora) => {
       return (
         lora.baseModelId === selectedModel?.id ||
         lora.baseModelRef === baseRef ||
         lora.trainingBaseModelPath === selectedPreset?.localModelPath
       );
     });
-  }, [lorasQuery.data, selectedModel, selectedPreset]);
+  }, [loras, selectedModel, selectedPreset]);
 
   const trainingSummary = `${method.toUpperCase()} · ${numTrainEpochs} ep · lr ${learningRate} · bs ${perDeviceTrainBatchSize} × ga ${gradientAccumulationSteps}`;
   const evaluationSummary = stageEvaluation
@@ -589,7 +588,7 @@ export default function TrainingPage() {
                 <FieldLabel>Dataset</FieldLabel>
                 <Select value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
                   <option value="">Select dataset</option>
-                  {datasetsQuery.data?.map((dataset) => (
+                  {datasets.map((dataset) => (
                     <option key={dataset.id} value={dataset.id}>
                       {dataset.name} ({dataset.rows})
                     </option>
@@ -603,7 +602,7 @@ export default function TrainingPage() {
                 <FieldLabel>Runtime preset</FieldLabel>
                 <Select value={runtimePresetId} onChange={(e) => setRuntimePresetId(e.target.value)}>
                   <option value="">Select preset</option>
-                  {presetsQuery.data?.map((preset) => (
+                  {presets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
                       {preset.title} · {preset.family}
                     </option>
@@ -614,7 +613,7 @@ export default function TrainingPage() {
                 <FieldLabel>Target worker</FieldLabel>
                 <Select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
                   <option value="any">Any available</option>
-                  {workersQuery.data?.map((worker) => (
+                  {workers.map((worker) => (
                     <option key={worker.id} value={worker.id}>
                       {worker.name} ({worker.status})
                     </option>
@@ -904,7 +903,7 @@ export default function TrainingPage() {
                               <FieldLabel>dataset</FieldLabel>
                               <Select value={evalDatasetId} onChange={(e) => setEvalDatasetId(e.target.value)}>
                                 <option value="">Select eval dataset</option>
-                                {evalDatasetsQuery.data?.map((dataset) => (
+                                {evalDatasets.map((dataset) => (
                                   <option key={dataset.id} value={dataset.id}>
                                     {dataset.name} ({dataset.samplesCount} samples)
                                   </option>
