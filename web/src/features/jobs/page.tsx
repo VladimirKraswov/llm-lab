@@ -17,6 +17,17 @@ import { LaunchBundleCard } from '../../components/launch-bundle-card';
 import { RemoteLogViewer } from '../../components/remote-log-viewer';
 import { ExternalLink } from 'lucide-react';
 
+const comparisonRows: [string, (job: Job) => ReactNode][] = [
+  ['Dataset', (job) => job.datasetId || '—'],
+  ['Runtime preset', (job) => job.runtimePresetId || 'legacy'],
+  ['Base model', (job) => job.baseModel || '—'],
+  ['Status', (job) => job.status],
+  ['Epochs', (job) => job.qlora?.numTrainEpochs ?? '—'],
+  ['LR', (job) => job.qlora?.learningRate ?? '—'],
+  ['Final loss', (job) => typeof job.summaryMetrics?.final_loss === 'number' ? job.summaryMetrics.final_loss.toFixed(4) : '—'],
+  ['Duration', (job) => job.summaryMetrics?.duration_human || '—'],
+];
+
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { size?: string }) {
   return (
     <button
@@ -312,20 +323,13 @@ export default function JobsPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
-                    {[
-                      ['Dataset', (job: Job) => job.datasetId || '—'],
-                      ['Runtime preset', (job: Job) => job.runtimePresetId || 'legacy'],
-                      ['Base model', (job: Job) => job.baseModel || '—'],
-                      ['Status', (job: Job) => job.status],
-                      ['Epochs', (job: Job) => job.qlora?.numTrainEpochs ?? '—'],
-                      ['LR', (job: Job) => job.qlora?.learningRate ?? '—'],
-                      ['Final loss', (job: Job) => typeof job.summaryMetrics?.final_loss === 'number' ? job.summaryMetrics.final_loss.toFixed(4) : '—'],
-                      ['Duration', (job: Job) => job.summaryMetrics?.duration_human || '—'],
-                    ].map(([label, getter]) => (
+                    {comparisonRows.map(([label, getter]) => (
                       <tr key={label} className="hover:bg-white/[0.02]">
                         <td className="p-3 font-medium text-slate-500">{label}</td>
                         {sortedCompareJobs.map((job) => (
-                          <td key={`${job.id}:${label}`} className="border-l border-slate-800/50 p-3 text-white">{(getter as (job: Job) => ReactNode)(job)}</td>
+                          <td key={`${job.id}:${label}`} className="border-l border-slate-800/50 p-3 text-white">
+                            {getter(job)}
+                          </td>
                         ))}
                       </tr>
                     ))}
