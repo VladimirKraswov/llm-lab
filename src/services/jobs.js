@@ -44,9 +44,12 @@ function normalizeJobStatus(value, fallback = 'running') {
   const raw = String(value || '').trim().toLowerCase();
   if (!raw) return fallback;
 
-  if (raw === 'success') return 'finished';
-  if (raw === 'completed') return 'finished';
-  if (raw === 'error') return 'failed';
+  if (raw === 'success' || raw === 'completed' || raw === 'finished') return 'finished';
+  if (raw === 'error' || raw === 'failed') return 'failed';
+  if (raw === 'stopped' || raw === 'cancelled') return 'stopped';
+  if (raw === 'running' || raw === 'started') return 'running';
+  if (raw === 'assigned') return 'assigned';
+  if (raw === 'queued') return 'queued';
 
   return raw;
 }

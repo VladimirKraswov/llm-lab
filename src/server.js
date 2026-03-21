@@ -24,7 +24,10 @@ const syntheticRoute = require('./routes/synthetic');
 const comparisonsRoute = require('./routes/comparisons');
 const evaluationsRoute = require('./routes/evaluations');
 const syncRoute = require('./routes/sync');
+const infrastructureRoute = require('./routes/infrastructure');
 const { startBackgroundReconcile } = require('./services/reconcile');
+const { seedPresets } = require('./services/runtime-presets');
+const roleMiddleware = require('./utils/role-middleware');
 
 function buildCorsOrigin() {
   if (!CONFIG.webUiOrigin || CONFIG.webUiOrigin === '*') {
@@ -41,6 +44,8 @@ async function main() {
     await initDb();
     console.log('Recovering state...');
     await recoverState();
+    console.log('Seeding presets...');
+    await seedPresets();
     console.log('Starting Express app...');
   } catch (err) {
     console.error('Critical failure during initialization:');
@@ -81,6 +86,7 @@ async function main() {
   mount('/comparisons', authMiddleware, comparisonsRoute);
   mount('/evaluations', authMiddleware, evaluationsRoute);
   mount('/sync', authMiddleware, syncRoute);
+  mount('/infrastructure', authMiddleware, roleMiddleware(['admin']), infrastructureRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -105,7 +111,8 @@ async function main() {
         req.path.startsWith('/synthetic') ||
         req.path.startsWith('/comparisons') ||
         req.path.startsWith('/evaluations') ||
-        req.path.startsWith('/sync')
+        req.path.startsWith('/sync') ||
+        req.path.startsWith('/infrastructure')
       ) {
         return next();
       }

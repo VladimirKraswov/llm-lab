@@ -9,6 +9,7 @@ const {
   cloneJob,
   retryJob,
   cancelJob,
+  normalizeJobStatus,
   handleWorkerStatus,
   handleWorkerProgress,
   handleWorkerFinal,
@@ -50,16 +51,6 @@ const upload = multer({
   dest: uploadTempDir,
 });
 
-function mapIncomingStatus(status) {
-  const value = String(status || '').trim().toLowerCase();
-
-  if (!value) return 'running';
-  if (value === 'success') return 'finished';
-  if (value === 'completed') return 'finished';
-  if (value === 'error') return 'failed';
-
-  return value;
-}
 
 async function callbackAuth(req, res, next) {
   try {
@@ -445,7 +436,7 @@ router.post('/status', callbackAuth, async (req, res) => {
   try {
     const normalized = {
       ...req.body,
-      status: mapIncomingStatus(req.body.status),
+      status: normalizeJobStatus(req.body.status),
     };
     res.json(await handleWorkerStatus(normalized.job_id, normalized));
   } catch (err) {
@@ -457,7 +448,7 @@ router.post('/progress', callbackAuth, async (req, res) => {
   try {
     const normalized = {
       ...req.body,
-      status: mapIncomingStatus(req.body.status || 'running'),
+      status: normalizeJobStatus(req.body.status || 'running'),
     };
     res.json(await handleWorkerProgress(normalized.job_id, normalized));
   } catch (err) {
@@ -470,7 +461,7 @@ router.post('/final', callbackAuth, async (req, res) => {
     const result = req.body?.result || {};
     const normalized = {
       ...req.body,
-      status: mapIncomingStatus(req.body.status || result.status || 'finished'),
+      status: normalizeJobStatus(req.body.status || result.status || 'finished'),
       metrics: {
         training: result?.training?.summary || null,
         evaluation: result?.evaluation?.summary || null,
