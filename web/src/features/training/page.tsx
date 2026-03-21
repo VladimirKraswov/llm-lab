@@ -474,7 +474,7 @@ export default function TrainingPage() {
                    </div>
                 )}
               </div>
-            )}
+            </div>
 
             <div className="grid gap-4 md:grid-cols-2 border-t border-slate-800 pt-4">
               <div>
