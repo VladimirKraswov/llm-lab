@@ -983,6 +983,17 @@ export const api = {
       method: 'POST',
     }),
 
+  getBaseModels: () => request<BaseModelImage[]>('/infrastructure/base-models'),
+  getRecipes: () => request<AgentBuildRecipe[]>('/infrastructure/recipes'),
+  getBuilds: () => request<AgentBuild[]>('/infrastructure/builds'),
+  startBuild: (recipeId: string) => request<AgentBuild>('/infrastructure/builds', {
+    method: 'POST',
+    body: JSON.stringify({ recipeId })
+  }),
+  publishRuntimePreset: (buildId: string) => request<RuntimePreset>(`/infrastructure/builds/${buildId}/publish`, {
+    method: 'POST'
+  }),
+
   getRuntimePresets: () => request<RuntimePreset[]>('/jobs/runtime-presets'),
 
   getJobLaunchCompose: (id: string) =>
