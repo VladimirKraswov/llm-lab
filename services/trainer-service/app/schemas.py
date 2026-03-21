@@ -176,6 +176,39 @@ class PostprocessConfig(AppBaseModel):
     run_awq_quantization: bool = False
 
 
+class PipelineStage(AppBaseModel):
+    enabled: bool = True
+
+
+class TrainingStage(PipelineStage, TrainingConfig):
+    pass
+
+
+class MergeStage(PipelineStage, PostprocessConfig):
+    pass
+
+
+class EvaluationStage(PipelineStage, EvaluationConfig):
+    pass
+
+
+class PublishStage(PipelineStage, HuggingFacePublishConfig):
+    pass
+
+
+class UploadStage(PipelineStage, UploadConfig):
+    pass
+
+
+class PipelineConfig(AppBaseModel):
+    prepare_assets: PipelineStage = Field(default_factory=PipelineStage)
+    training: TrainingStage = Field(default_factory=TrainingStage)
+    merge: MergeStage = Field(default_factory=MergeStage)
+    evaluation: EvaluationStage = Field(default_factory=EvaluationStage)
+    publish: PublishStage = Field(default_factory=PublishStage)
+    upload: UploadStage = Field(default_factory=UploadStage)
+
+
 class AuthConfig(AppBaseModel):
     bearer_token: Optional[str] = None
     headers: Dict[str, str] = Field(default_factory=dict)
@@ -291,5 +324,7 @@ class JobConfig(AppBaseModel):
     upload: UploadConfig = Field(default_factory=UploadConfig)
     huggingface: HuggingFacePublishConfig = Field(default_factory=HuggingFacePublishConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
+
+    pipeline: Optional[PipelineConfig] = None
 
     report_url: Optional[str] = None

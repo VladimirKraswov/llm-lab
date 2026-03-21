@@ -442,6 +442,19 @@ export type RuntimeCapabilities = {
   supportsAwq: boolean;
 };
 
+export type PipelineStage = {
+  enabled: boolean;
+};
+
+export type PipelineConfig = {
+  prepare_assets: PipelineStage;
+  training: PipelineStage & Record<string, any>;
+  merge: PipelineStage & Record<string, any>;
+  evaluation: PipelineStage & Record<string, any>;
+  publish: PipelineStage & Record<string, any>;
+  upload: PipelineStage & Record<string, any>;
+};
+
 export type InferenceRuntime = {
   pid: number | null;
   model: string | null;
@@ -873,6 +886,7 @@ export const api = {
       repo_id_merged?: string;
       private?: boolean;
     };
+    pipeline?: PipelineConfig;
     workerId?: string;
   }) =>
     request<Job>('/jobs/remote-train', {

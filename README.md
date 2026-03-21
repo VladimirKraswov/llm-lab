@@ -93,6 +93,24 @@ VITE_API_BASE=http://127.0.0.1:8787 npm run dev
 - `.env.example`: Шаблон переменных окружения (включая `JOB_CONFIG_URL` с токеном доступа).
 - `README.txt`: Краткая инструкция по запуску.
 
+### Pipeline Configuration (Remote Jobs)
+
+Remote jobs support a configurable **Pipeline** architecture. Instead of a hardcoded execution sequence, you can explicitly enable or disable individual stages:
+
+- **Prepare Assets**: Downloads the dataset and required remote assets.
+- **Training**: Executes the LoRA/QLoRA fine-tuning process.
+- **Merge LoRA**: Merges the trained adapter into a full 16-bit model.
+- **Evaluation**: Runs automated benchmarks (eval-benchmarks) on the resulting model.
+- **Hugging Face Publish**: Pushes the LoRA adapter, the merged model, and metadata to Hugging Face repositories.
+- **Artifact Upload**: Uploads logs, metrics, and summaries to the orchestrator via pre-configured URLs.
+
+#### Stage Dependencies & Validation:
+- **Evaluation** on a `merged` target requires the **Merge** stage to be enabled.
+- **Publishing** a `merged` model requires the **Merge** stage to be enabled.
+- Disabling the **Training** stage while keeping **Evaluation** enabled will trigger a warning, as evaluation might fail if weights are not pre-baked into the container image.
+
+Each stage can be toggled in the **Training** page under the **Pipeline Configuration** section. Safely configured defaults are provided for standard training runs.
+
 ## Безопасность
 
 `JOB_CONFIG_URL` содержит временный токен доступа к конфигурации задачи. Не передавайте этот URL третьим лицам. После завершения задачи или истечения срока действия токена доступ будет закрыт.

@@ -64,6 +64,16 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
 
   const trainerMethod = loadIn4bit ? 'qlora' : 'lora';
 
+  // Pipeline mapping
+  const pipeline = job.paramsSnapshot?.pipeline || {
+    prepare_assets: { enabled: true },
+    training: { enabled: true },
+    merge: { enabled: !!job.paramsSnapshot?.qlora?.useLora },
+    evaluation: { enabled: false },
+    publish: { enabled: !!hfPublish.enabled },
+    upload: { enabled: !!hfPublish.enabled },
+  };
+
   return {
     job_id: job.id,
     job_name: job.name || job.id,
@@ -176,6 +186,8 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
       repo_id_merged: hfPublish.repo_id_merged || '',
       repo_id_metadata: hfPublish.repo_id_metadata || '',
     },
+
+    pipeline,
   };
 }
 

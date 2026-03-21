@@ -1,8 +1,8 @@
-import { Job, api } from '../lib/api';
+import { Job, api, PipelineConfig } from '../lib/api';
 import { formatSize } from '../utils';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { CopyButton } from './copy-button';
-import { Terminal, Download, Archive, RefreshCw, ExternalLink } from 'lucide-react';
+import { Terminal, Download, Archive, RefreshCw, ExternalLink, CheckCircle2, Circle, Clock } from 'lucide-react';
 import { Button } from './ui/button';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -14,6 +14,63 @@ function fmtDate(value?: string | null) {
   } catch {
     return String(value);
   }
+}
+
+function PipelineVisualizer({ pipeline, currentStage, status }: { pipeline?: PipelineConfig, currentStage?: string, status: string }) {
+  if (!pipeline) return null;
+
+  const stages = [
+    { id: 'prepare_assets', label: 'Prepare' },
+    { id: 'training', label: 'Training' },
+    { id: 'merge', label: 'Merge' },
+    { id: 'evaluation', label: 'Eval' },
+    { id: 'publish_artifacts', label: 'Publish', stageKey: 'publish' },
+    { id: 'upload_artifacts', label: 'Upload', stageKey: 'upload' },
+  ];
+
+  return (
+    <Card className="border-slate-800 bg-slate-900/50">
+      <CardHeader className="py-3">
+        <CardTitle className="text-xs uppercase tracking-wider text-slate-500">Pipeline Execution</CardTitle>
+      </CardHeader>
+      <CardContent className="py-4">
+        <div className="flex items-center justify-between gap-2 overflow-x-auto pb-2 scrollbar-thin">
+          {stages.map((s, idx) => {
+            const stageConfig = (pipeline as any)[s.stageKey || s.id];
+            const isEnabled = stageConfig?.enabled !== false;
+            const isCurrent = currentStage === s.id;
+            const isFinished = status === 'completed'; // Simplified
+
+            // Real logic for "finished" would need stage-specific history,
+            // but for now we can use a heuristic.
+            const stageIdx = idx;
+            const currentStageIdx = stages.findIndex(st => st.id === currentStage);
+            const isPast = currentStageIdx > stageIdx || (status === 'completed' && isEnabled);
+
+            return (
+              <div key={s.id} className="flex items-center flex-1 min-w-[80px] last:flex-none">
+                <div className={`flex flex-col items-center gap-1.5 flex-1 ${!isEnabled ? 'opacity-30' : ''}`}>
+                  <div className={`rounded-full p-1 ${
+                    isCurrent ? 'bg-blue-500/20 text-blue-400 ring-2 ring-blue-500/50' :
+                    isPast ? 'bg-emerald-500/20 text-emerald-400' :
+                    'bg-slate-800 text-slate-600'
+                  }`}>
+                    {isPast ? <CheckCircle2 size={16} /> : isCurrent ? <Clock size={16} className="animate-pulse" /> : <Circle size={16} />}
+                  </div>
+                  <span className={`text-[10px] font-bold whitespace-nowrap ${isCurrent ? 'text-blue-400' : isPast ? 'text-emerald-400' : 'text-slate-500'}`}>
+                    {s.label}
+                  </span>
+                </div>
+                {idx < stages.length - 1 && (
+                  <div className={`h-[1px] w-full mx-2 ${isPast ? 'bg-emerald-500/30' : 'bg-slate-800'}`} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function JobDetailsFineTune({ job }: { job: Job }) {
@@ -50,8 +107,14 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
     navigator.clipboard.writeText(text);
   };
 
+  const pipeline = job.paramsSnapshot?.pipeline;
+
   return (
     <div className="space-y-4">
+      {job.mode === 'remote' && pipeline && (
+        <PipelineVisualizer pipeline={pipeline} currentStage={job.currentStage} status={job.status} />
+      )}
+
       <Card className="border-purple-500/20 bg-purple-500/5">
         <CardHeader>
           <CardTitle>Fine-tune Job</CardTitle>

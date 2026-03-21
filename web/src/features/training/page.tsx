@@ -40,6 +40,15 @@ export default function TrainingPage() {
   const [hfRepoLora, setHfRepoLora] = useState('');
   const [hfRepoMerged, setHfRepoMerged] = useState('');
 
+  // Pipeline state
+  const [pipelineEnabled, setPipelineEnabled] = useState(true);
+  const [stagePrepare, setStagePrepare] = useState(true);
+  const [stageTraining, setStageTraining] = useState(true);
+  const [stageMerge, setStageMerge] = useState(true);
+  const [stageEval, setStageEval] = useState(false);
+  const [stagePublish, setStagePublish] = useState(true);
+  const [stageUpload, setStageUpload] = useState(true);
+
   const presetsQuery = useQuery({
     queryKey: ['runtime-presets'],
     queryFn: api.getRuntimePresets,
@@ -126,6 +135,21 @@ export default function TrainingPage() {
     };
 
     if (isRemote) {
+      const pipeline = {
+        prepare_assets: { enabled: stagePrepare },
+        training: { enabled: stageTraining },
+        merge: { enabled: stageMerge },
+        evaluation: { enabled: stageEval },
+        publish: {
+          enabled: stagePublish,
+          push_lora: true,
+          push_merged: stageMerge,
+          repo_id_lora: hfRepoLora,
+          repo_id_merged: hfRepoMerged,
+        },
+        upload: { enabled: stageUpload },
+      };
+
       startMutation.mutate({
         datasetId,
         name,
@@ -133,12 +157,13 @@ export default function TrainingPage() {
         workerId: workerId === 'any' ? undefined : workerId,
         runtimePresetId,
         hfPublish: {
-          enabled: hfPushEnabled,
+          enabled: stagePublish,
           push_lora: true,
-          push_merged: true,
+          push_merged: stageMerge,
           repo_id_lora: hfRepoLora,
           repo_id_merged: hfRepoMerged,
-        }
+        },
+        pipeline: pipelineEnabled ? pipeline : undefined,
       });
     } else {
       startMutation.mutate({
@@ -238,31 +263,99 @@ export default function TrainingPage() {
             )}
 
             {isRemote && (
-              <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-medium text-blue-400">Hugging Face Publishing</h4>
-                  <input
-                    type="checkbox"
-                    checked={hfPushEnabled}
-                    onChange={(e) => setHfPushEnabled(e.target.checked)}
-                    className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600"
-                  />
-                </div>
-                {hfPushEnabled && (
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <Input
-                      size="sm"
-                      value={hfRepoLora}
-                      onChange={(e) => setHfRepoLora(e.target.value)}
-                      placeholder="Username/repo-lora"
-                    />
-                    <Input
-                      size="sm"
-                      value={hfRepoMerged}
-                      onChange={(e) => setHfRepoMerged(e.target.value)}
-                      placeholder="Username/repo-merged"
-                    />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between border-t border-slate-800 pt-4">
+                  <h3 className="text-sm font-bold text-white uppercase tracking-wider">Pipeline Configuration</h3>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-500 uppercase">Custom Pipeline</span>
+                    <button
+                      onClick={() => setPipelineEnabled(!pipelineEnabled)}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${pipelineEnabled ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${pipelineEnabled ? 'translate-x-5' : 'translate-x-1'}`} />
+                    </button>
                   </div>
+                </div>
+
+                {pipelineEnabled && (
+                  <div className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
+                    <div className={cn("p-3 rounded-xl border transition-colors", stagePrepare ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-300">Prepare Assets</span>
+                        <input type="checkbox" checked={stagePrepare} onChange={e => setStagePrepare(e.target.checked)} className="h-3 w-3 rounded bg-slate-900 text-blue-600 border-slate-700" />
+                      </div>
+                      <p className="text-[10px] text-slate-500">Download datasets and prerequisites.</p>
+                    </div>
+
+                    <div className={cn("p-3 rounded-xl border transition-colors", stageTraining ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-300">Training</span>
+                        <input type="checkbox" checked={stageTraining} onChange={e => setStageTraining(e.target.checked)} className="h-3 w-3 rounded bg-slate-900 text-blue-600 border-slate-700" />
+                      </div>
+                      <p className="text-[10px] text-slate-500">Run LoRA/QLoRA training.</p>
+                    </div>
+
+                    <div className={cn("p-3 rounded-xl border transition-colors", stageMerge ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-300">Merge LoRA</span>
+                        <input type="checkbox" checked={stageMerge} onChange={e => setStageMerge(e.target.checked)} className="h-3 w-3 rounded bg-slate-900 text-blue-600 border-slate-700" />
+                      </div>
+                      <p className="text-[10px] text-slate-500">Export merged 16-bit model.</p>
+                    </div>
+
+                    <div className={cn("p-3 rounded-xl border transition-colors", stageEval ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-300">Evaluation</span>
+                        <input type="checkbox" checked={stageEval} onChange={e => setStageEval(e.target.checked)} className="h-3 w-3 rounded bg-slate-900 text-blue-600 border-slate-700" />
+                      </div>
+                      <p className="text-[10px] text-slate-500">Run benchmark after training.</p>
+                    </div>
+
+                    <div className={cn("p-3 rounded-xl border transition-colors", stagePublish ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-300">HF Publish</span>
+                        <input type="checkbox" checked={stagePublish} onChange={e => setStagePublish(e.target.checked)} className="h-3 w-3 rounded bg-slate-900 text-blue-600 border-slate-700" />
+                      </div>
+                      {stagePublish && (
+                        <div className="space-y-2 mt-2">
+                          <Input
+                            size="sm"
+                            className="text-[10px] h-7"
+                            value={hfRepoLora}
+                            onChange={(e) => setHfRepoLora(e.target.value)}
+                            placeholder="Repo ID (LoRA)"
+                          />
+                          <Input
+                            size="sm"
+                            className="text-[10px] h-7"
+                            value={hfRepoMerged}
+                            onChange={(e) => setHfRepoMerged(e.target.value)}
+                            placeholder="Repo ID (Merged)"
+                            disabled={!stageMerge}
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    <div className={cn("p-3 rounded-xl border transition-colors", stageUpload ? "bg-slate-800/40 border-slate-700" : "bg-slate-950/20 border-slate-900")}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-300">Artifact Upload</span>
+                        <input type="checkbox" checked={stageUpload} onChange={e => setStageUpload(e.target.checked)} className="h-3 w-3 rounded bg-slate-900 text-blue-600 border-slate-700" />
+                      </div>
+                      <p className="text-[10px] text-slate-500">Upload logs and metrics via URL.</p>
+                    </div>
+                  </div>
+                )}
+
+                {stageEval && !stageTraining && (
+                   <div className="text-[10px] text-amber-400 bg-amber-400/10 p-2 rounded-lg">
+                     Warning: Evaluation stage might fail if training stage is disabled and no existing weights are found.
+                   </div>
+                )}
+                {stagePublish && !stageMerge && hfRepoMerged && (
+                   <div className="text-[10px] text-amber-400 bg-amber-400/10 p-2 rounded-lg">
+                     Warning: Merged model publishing is enabled but Merge stage is disabled.
+                   </div>
                 )}
               </div>
             )}

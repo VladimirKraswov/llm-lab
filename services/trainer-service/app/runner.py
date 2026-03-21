@@ -152,38 +152,62 @@ def main():
         try_hf_login()
         uploader.ensure_hf_ready()
 
-        logger.info("==> preparing assets")
-        reporter.report_status(
-            "running",
-            message="Preparing datasets and remote assets",
-            stage="prepare_assets",
-            progress=5,
-        )
-        asset_manager.prepare_dataset(cfg)
-        asset_manager.prepare_evaluation_dataset(cfg)
+        pipeline = cfg.pipeline
 
-        logger.info("==> starting training")
-        training_result = run_training(cfg, reporter=reporter)
+        # Stage: prepare_assets
+        if not pipeline or pipeline.prepare_assets.enabled:
+            logger.info("==> preparing assets")
+            reporter.report_status(
+                "running",
+                message="Preparing datasets and remote assets",
+                stage="prepare_assets",
+                progress=5,
+            )
+            asset_manager.prepare_dataset(cfg)
+            asset_manager.prepare_evaluation_dataset(cfg)
+        else:
+            logger.info("==> skipping assets preparation")
 
-        logical_base_model_id = cfg.model.logical_base_model_id
-        if logical_base_model_id and not training_result.get("base_model_id"):
-            training_result["base_model_id"] = logical_base_model_id
-            training_result["base_model_name_or_path"] = logical_base_model_id
-            summary = training_result.get("summary")
-            if isinstance(summary, dict):
-                summary.setdefault("base_model_id", logical_base_model_id)
-                summary.setdefault("base_model_name_or_path", logical_base_model_id)
+        # Stage: training
+        training_result = {}
+        if not pipeline or pipeline.training.enabled:
+            logger.info("==> starting training")
+            training_result = run_training(cfg, reporter=reporter)
 
-        logger.info("==> training finished")
+            logical_base_model_id = cfg.model.logical_base_model_id
+            if logical_base_model_id and not training_result.get("base_model_id"):
+                training_result["base_model_id"] = logical_base_model_id
+                training_result["base_model_name_or_path"] = logical_base_model_id
+                summary = training_result.get("summary")
+                if isinstance(summary, dict):
+                    summary.setdefault("base_model_id", logical_base_model_id)
+                    summary.setdefault("base_model_name_or_path", logical_base_model_id)
+
+            logger.info("==> training finished")
+        else:
+            logger.info("==> skipping training stage")
+            training_result = {
+                "status": "skipped",
+                "message": "Training stage disabled in pipeline",
+            }
 
         if cfg.postprocess.run_awq_quantization:
             raise NotImplementedError("AWQ quantization stage is not implemented in this service yet")
 
+        # Stage: evaluation
         evaluation_result = None
-        if cfg.evaluation.enabled:
+        should_eval = False
+        if pipeline:
+            should_eval = pipeline.evaluation.enabled
+        else:
+            should_eval = cfg.evaluation.enabled
+
+        if should_eval:
             logger.info("==> starting evaluation")
             evaluation_result = run_evaluation(cfg, training_result, reporter=reporter)
             logger.info("==> evaluation finished")
+        else:
+            logger.info("==> skipping evaluation stage")
 
         result: Dict[str, Any] = {
             "status": "success",
@@ -203,74 +227,94 @@ def main():
             "upload_errors": {},
         }
 
-        if cfg.upload.enabled and cfg.upload.target == "url" and cfg.upload.upload_url:
-            logger.info("==> legacy full archive upload")
-            try:
-                archive_path = Path(cfg.outputs.base_dir) / f"{cfg.job_name}.tar.gz"
-                archiver.make_archive(cfg.outputs.base_dir, str(archive_path))
-                archiver.upload_archive(
-                    str(archive_path),
-                    cfg.upload.upload_url,
-                    headers=uploader._headers(),
-                    form_data={
-                        "job_id": cfg.job_id or cfg.job_name,
-                        "job_name": cfg.job_name,
-                        "artifact_type": "full_archive",
-                    },
-                    timeout_sec=cfg.upload.timeout_sec,
-                )
-                result["uploads"]["legacy_full_archive"] = {
-                    "url": cfg.upload.upload_url,
-                    "archive_path": str(archive_path),
-                }
-            except Exception as exc:
-                logger.exception("legacy full archive upload failed")
-                result["upload_errors"]["legacy_full_archive"] = str(exc)
+        # Stage: upload (legacy / URL)
+        should_upload = False
+        if pipeline:
+            should_upload = pipeline.upload.enabled
+        else:
+            should_upload = cfg.upload.enabled
 
-        if cfg.upload.enabled and cfg.upload.target == "url":
-            reporter.report_status(
-                "running",
-                message="Uploading URL artifacts",
-                stage="upload_artifacts",
-                progress=97,
-            )
-            extra_uploads, extra_upload_errors = uploader.upload_non_summary_artifacts(
-                log_file=str(log_file),
-                effective_config_path=str(effective_config_path),
-                training_result=training_result,
-                eval_result=evaluation_result,
-            )
-            if extra_uploads:
-                result["uploads"].update(extra_uploads)
-            if extra_upload_errors:
-                result["upload_errors"].update(extra_upload_errors)
+        if should_upload:
+            if cfg.upload.target == "url" and cfg.upload.upload_url:
+                logger.info("==> legacy full archive upload")
+                try:
+                    archive_path = Path(cfg.outputs.base_dir) / f"{cfg.job_name}.tar.gz"
+                    archiver.make_archive(cfg.outputs.base_dir, str(archive_path))
+                    archiver.upload_archive(
+                        str(archive_path),
+                        cfg.upload.upload_url,
+                        headers=uploader._headers(),
+                        form_data={
+                            "job_id": cfg.job_id or cfg.job_name,
+                            "job_name": cfg.job_name,
+                            "artifact_type": "full_archive",
+                        },
+                        timeout_sec=cfg.upload.timeout_sec,
+                    )
+                    result["uploads"]["legacy_full_archive"] = {
+                        "url": cfg.upload.upload_url,
+                        "archive_path": str(archive_path),
+                    }
+                except Exception as exc:
+                    logger.exception("legacy full archive upload failed")
+                    result["upload_errors"]["legacy_full_archive"] = str(exc)
+
+            if cfg.upload.target == "url":
+                reporter.report_status(
+                    "running",
+                    message="Uploading URL artifacts",
+                    stage="upload_artifacts",
+                    progress=97,
+                )
+                extra_uploads, extra_upload_errors = uploader.upload_non_summary_artifacts(
+                    log_file=str(log_file),
+                    effective_config_path=str(effective_config_path),
+                    training_result=training_result,
+                    eval_result=evaluation_result,
+                )
+                if extra_uploads:
+                    result["uploads"].update(extra_uploads)
+                if extra_upload_errors:
+                    result["upload_errors"].update(extra_upload_errors)
+        else:
+            logger.info("==> skipping upload stage")
 
         write_json(result_path, result)
 
-        reporter.report_status(
-            "running",
-            message="Publishing artifacts to Hugging Face",
-            stage="publish_artifacts",
-            progress=98,
-        )
+        # Stage: publish (Hugging Face)
+        should_publish = False
+        if pipeline:
+            should_publish = pipeline.publish.enabled
+        else:
+            should_publish = cfg.huggingface.enabled
 
-        hf_model_uploads = uploader.upload_to_huggingface(training_result)
-        if hf_model_uploads:
-            result["uploads"].update(hf_model_uploads)
-            write_json(result_path, result)
+        if should_publish:
+            reporter.report_status(
+                "running",
+                message="Publishing artifacts to Hugging Face",
+                stage="publish_artifacts",
+                progress=98,
+            )
 
-        hf_metadata_uploads = uploader.upload_hf_metadata(
-            log_file=str(log_file),
-            effective_config_path=str(effective_config_path),
-            result_path=str(result_path),
-            training_result=training_result,
-            eval_result=evaluation_result,
-        )
-        if hf_metadata_uploads:
-            result["uploads"].update(hf_metadata_uploads)
-            write_json(result_path, result)
+            hf_model_uploads = uploader.upload_to_huggingface(training_result)
+            if hf_model_uploads:
+                result["uploads"].update(hf_model_uploads)
+                write_json(result_path, result)
 
-        if cfg.upload.enabled and cfg.upload.target == "url" and cfg.upload.url_targets.summary_url:
+            hf_metadata_uploads = uploader.upload_hf_metadata(
+                log_file=str(log_file),
+                effective_config_path=str(effective_config_path),
+                result_path=str(result_path),
+                training_result=training_result,
+                eval_result=evaluation_result,
+            )
+            if hf_metadata_uploads:
+                result["uploads"].update(hf_metadata_uploads)
+                write_json(result_path, result)
+        else:
+            logger.info("==> skipping publish stage")
+
+        if should_upload and cfg.upload.target == "url" and cfg.upload.url_targets.summary_url:
             try:
                 summary_upload = uploader.upload_summary(str(result_path))
                 if summary_upload:
