@@ -135,7 +135,7 @@ async function buildLaunchInfo(job, req) {
 
 router.get('/runtime-presets', async (req, res) => {
   try {
-    res.json(getRuntimePresets());
+    res.json(await getRuntimePresets());
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }

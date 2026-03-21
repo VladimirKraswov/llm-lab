@@ -145,7 +145,8 @@ export default function TrainingPage() {
   }, [modelsQuery.data, modelId]);
 
   const selectedPreset = useMemo(() => {
-    return presetsQuery.data?.find(p => p.id === runtimePresetId) || null;
+    if (!Array.isArray(presetsQuery.data)) return null;
+    return presetsQuery.data.find(p => p.id === runtimePresetId) || null;
   }, [presetsQuery.data, runtimePresetId]);
 
   const startMutation = useMutation({
@@ -170,7 +171,9 @@ export default function TrainingPage() {
       targetModules: targetModules.split(',').map(s => s.trim()).filter(Boolean),
     };
 
-    const selectedEvalDataset = evalDatasetsQuery.data?.find(d => d.id === evalDatasetId);
+    const selectedEvalDataset = Array.isArray(evalDatasetsQuery.data)
+      ? evalDatasetsQuery.data.find(d => d.id === evalDatasetId)
+      : null;
 
     const pipeline = {
       prepare_assets: { enabled: stagePrepare },

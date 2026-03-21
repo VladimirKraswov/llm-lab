@@ -44,6 +44,15 @@ function authMiddleware(req, res, next) {
     return next();
   }
 
+  // 5. SSE events: пропускаем дальше, если есть token в query
+  if (req.method === 'GET' && req.path === '/events' && req.query?.token) {
+    const decoded = verifyToken(req.query.token);
+    if (decoded) {
+      req.user = decoded;
+      return next();
+    }
+  }
+
   return res.status(401).json({ error: 'Unauthorized: No valid token provided' });
 }
 

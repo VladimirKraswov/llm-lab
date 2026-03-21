@@ -778,7 +778,11 @@ type DeepPartial<T> = {
 };
 
 export function createEventsSource() {
-  return new EventSource(`${API_BASE}/events`);
+  const token = localStorage.getItem('llm_lab_token');
+  const url = token
+    ? `${API_BASE}/events?token=${encodeURIComponent(token)}`
+    : `${API_BASE}/events`;
+  return new EventSource(url);
 }
 
 export const api = {
