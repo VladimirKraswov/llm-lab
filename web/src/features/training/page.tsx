@@ -32,11 +32,9 @@ export default function TrainingPage() {
   const [targetModules, setTargetModules] = useState('q_proj, v_proj, k_proj, o_proj, gate_proj, up_proj, down_proj');
   const [loadIn4bit, setLoadIn4bit] = useState(true);
 
-  // Remote specific
-  const [isRemote, setIsRemote] = useState(false);
+  // Unified Agent-based execution
   const [workerId, setWorkerId] = useState('any');
   const [runtimePresetId, setRuntimePresetId] = useState('');
-  const [hfPushEnabled, setHfPushEnabled] = useState(true);
   const [hfRepoLora, setHfRepoLora] = useState('');
   const [hfRepoMerged, setHfRepoMerged] = useState('');
 
@@ -67,19 +65,18 @@ export default function TrainingPage() {
   const presetsQuery = useQuery({
     queryKey: ['runtime-presets'],
     queryFn: api.getRuntimePresets,
-    enabled: isRemote
   });
 
   const evalDatasetsQuery = useQuery({
     queryKey: ['eval-datasets'],
     queryFn: api.getEvalDatasets,
-    enabled: isRemote && stageEval
+    enabled: stageEval
   });
 
   const evalConfigQuery = useQuery({
     queryKey: ['eval-config'],
     queryFn: api.getEvalConfig,
-    enabled: isRemote && stageEval
+    enabled: stageEval
   });
 
   useEffect(() => {
@@ -110,10 +107,10 @@ export default function TrainingPage() {
   }, [settingsQuery.data]);
 
   useEffect(() => {
-    if (isRemote && presetsQuery.data && !runtimePresetId) {
+    if (presetsQuery.data && !runtimePresetId) {
       setRuntimePresetId(presetsQuery.data[0]?.id || '');
     }
-  }, [isRemote, presetsQuery.data, runtimePresetId]);
+  }, [presetsQuery.data, runtimePresetId]);
 
   useEffect(() => {
     const data = datasetsQuery.data;
@@ -151,10 +148,9 @@ export default function TrainingPage() {
   }, [presetsQuery.data, runtimePresetId]);
 
   const startMutation = useMutation({
-    mutationFn: (payload: any) => isRemote ? api.startRemoteTrain(payload) : api.startFineTune(payload),
+    mutationFn: (payload: any) => api.startRemoteTrain(payload),
     onSuccess: (data: any) => {
-      const id = isRemote ? data.id : data.jobId;
-      navigate(`/app/jobs?selected=${id}`);
+      navigate(`/app/jobs?selected=${data.id}`);
     },
   });
 
@@ -173,112 +169,82 @@ export default function TrainingPage() {
       targetModules: targetModules.split(',').map(s => s.trim()).filter(Boolean),
     };
 
-    if (isRemote) {
-      const selectedEvalDataset = evalDatasetsQuery.data?.find(d => d.id === evalDatasetId);
+    const selectedEvalDataset = evalDatasetsQuery.data?.find(d => d.id === evalDatasetId);
 
-      const pipeline = {
-        prepare_assets: { enabled: stagePrepare },
-        training: { enabled: stageTraining },
-        merge: { enabled: stageMerge },
-        evaluation: {
-          enabled: stageEval,
-          target: evalTarget,
-          max_samples: evalMaxSamples ? Number(evalMaxSamples) : null,
-          max_new_tokens: Number(evalMaxTokens),
-          temperature: Number(evalTemp),
-          do_sample: evalDoSample,
-          system_prompt: evalSystemPrompt || null,
-          prompt_template: evalPromptTemplate || undefined,
-          parsing_regex: evalParsingRegex || null,
-          score_min: Number(evalScoreMin),
-          score_max: Number(evalScoreMax),
-          dataset: selectedEvalDataset ? {
-            source: 'local',
-            path: selectedEvalDataset.jsonPath,
-            format: 'jsonl', // Backend uses jsonl for processed eval datasets usually
-          } : undefined,
-        },
-        publish: {
-          enabled: stagePublish,
-          push_lora: true,
-          push_merged: stageMerge,
-          repo_id_lora: hfRepoLora,
-          repo_id_merged: hfRepoMerged,
-        },
-        upload: { enabled: stageUpload },
-      };
+    const pipeline = {
+      prepare_assets: { enabled: stagePrepare },
+      training: { enabled: stageTraining },
+      merge: { enabled: stageMerge },
+      evaluation: {
+        enabled: stageEval,
+        target: evalTarget,
+        max_samples: evalMaxSamples ? Number(evalMaxSamples) : null,
+        max_new_tokens: Number(evalMaxTokens),
+        temperature: Number(evalTemp),
+        do_sample: evalDoSample,
+        system_prompt: evalSystemPrompt || null,
+        prompt_template: evalPromptTemplate || undefined,
+        parsing_regex: evalParsingRegex || null,
+        score_min: Number(evalScoreMin),
+        score_max: Number(evalScoreMax),
+        dataset: selectedEvalDataset ? {
+          source: 'local',
+          path: selectedEvalDataset.jsonPath,
+          format: 'jsonl',
+        } : undefined,
+      },
+      publish: {
+        enabled: stagePublish,
+        push_lora: true,
+        push_merged: stageMerge,
+        repo_id_lora: hfRepoLora,
+        repo_id_merged: hfRepoMerged,
+      },
+      upload: { enabled: stageUpload },
+    };
 
-      startMutation.mutate({
-        datasetId,
-        name,
-        qlora: qloraParams,
-        workerId: workerId === 'any' ? undefined : workerId,
-        runtimePresetId,
-        hfPublish: {
-          enabled: stagePublish,
-          push_lora: true,
-          push_merged: stageMerge,
-          repo_id_lora: hfRepoLora,
-          repo_id_merged: hfRepoMerged,
-        },
-        pipeline: pipelineEnabled ? pipeline : undefined,
-      });
-    } else {
-      startMutation.mutate({
-        datasetId,
-        name,
-        modelId,
-        qlora: qloraParams,
-      });
-    }
+    startMutation.mutate({
+      datasetId,
+      name,
+      qlora: qloraParams,
+      workerId: workerId === 'any' ? undefined : workerId,
+      runtimePresetId,
+      hfPublish: {
+        enabled: stagePublish,
+        push_lora: true,
+        push_merged: stageMerge,
+        repo_id_lora: hfRepoLora,
+        repo_id_merged: hfRepoMerged,
+      },
+      pipeline: pipelineEnabled ? pipeline : undefined,
+    });
   };
 
   return (
     <div>
-      <PageHeader title="Training" description="Выбери базовую модель, датасет и настройки обучения. Поддерживается локальное и удаленное обучение на GPU воркерах." />
+      <PageHeader title="Training" description="Обучение моделей теперь полностью выполняется через агентов. Соберите pipeline шагов и назначьте его на подходящего воркера." />
 
       <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
-            <CardTitle>New training job</CardTitle>
+            <CardTitle>Pipeline Configuration</CardTitle>
             <div className="flex items-center gap-2">
-              <span className={`text-xs ${!isRemote ? 'text-blue-400 font-bold' : 'text-slate-500'}`}>LOCAL</span>
-              <button
-                onClick={() => setIsRemote(!isRemote)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${isRemote ? 'bg-blue-600' : 'bg-slate-700'}`}
-              >
-                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isRemote ? 'translate-x-6' : 'translate-x-1'}`} />
-              </button>
-              <span className={`text-xs ${isRemote ? 'text-blue-400 font-bold' : 'text-slate-500'}`}>REMOTE</span>
+              <span className="text-[10px] text-slate-500 font-bold uppercase">Executor: Agent</span>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
-              {!isRemote ? (
-                <div>
-                  <label className="mb-2 block text-sm text-slate-400">Base model</label>
-                  <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-                    <option value="">Select model</option>
-                    {Array.isArray(modelsQuery.data) && modelsQuery.data.map((m) => (
-                      <option key={m.id} value={m.id} disabled={m.status !== 'ready'}>
-                        {m.name} {m.status !== 'ready' ? `(${m.status})` : ''}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-              ) : (
-                <div>
-                  <label className="mb-2 block text-sm text-slate-400">Runtime Preset</label>
-                  <Select value={runtimePresetId} onChange={(e) => setRuntimePresetId(e.target.value)}>
-                    <option value="">Select preset</option>
-                    {presetsQuery.data?.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.title}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-              )}
+              <div>
+                <label className="mb-2 block text-sm text-slate-400">Runtime Preset</label>
+                <Select value={runtimePresetId} onChange={(e) => setRuntimePresetId(e.target.value)}>
+                  <option value="">Select preset</option>
+                  {presetsQuery.data?.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title}
+                    </option>
+                  ))}
+                </Select>
+              </div>
 
               <div>
                 <label className="mb-2 block text-sm text-slate-400">Dataset</label>
@@ -293,34 +259,25 @@ export default function TrainingPage() {
               </div>
             </div>
 
-            {isRemote && (
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="mb-2 block text-sm text-slate-400">Target Worker</label>
-                  <Select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
-                    <option value="any">Any available</option>
-                    {Array.isArray(workersQuery.data) && workersQuery.data.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name} ({w.status})
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <div>
-                   <label className="mb-2 block text-sm text-slate-400">Job Name</label>
-                   <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="remote-run-01" />
-                </div>
-              </div>
-            )}
-
-            {!isRemote && (
+            <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <label className="mb-2 block text-sm text-slate-400">Job / LoRA name</label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="support-bot-v1" />
+                <label className="mb-2 block text-sm text-slate-400">Target Worker</label>
+                <Select value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
+                  <option value="any">Any available</option>
+                  {Array.isArray(workersQuery.data) && workersQuery.data.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name} ({w.status})
+                    </option>
+                  ))}
+                </Select>
               </div>
-            )}
+              <div>
+                  <label className="mb-2 block text-sm text-slate-400">Job Name</label>
+                  <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="train-run-01" />
+              </div>
+            </div>
 
-            {isRemote && (
+            <div className="space-y-4">
               <div className="space-y-4">
                 <div className="flex items-center justify-between border-t border-slate-800 pt-4">
                   <h3 className="text-sm font-bold text-white uppercase tracking-wider">Pipeline Configuration</h3>
@@ -601,10 +558,10 @@ export default function TrainingPage() {
 
             <Button
               onClick={handleStart}
-              disabled={!datasetId || (!isRemote && !modelId) || startMutation.isPending}
+              disabled={!datasetId || !runtimePresetId || startMutation.isPending}
               className="w-full"
             >
-              {startMutation.isPending ? 'Starting…' : isRemote ? 'Start remote training' : 'Start local fine-tune'}
+              {startMutation.isPending ? 'Starting…' : 'Start Agent Pipeline'}
             </Button>
 
             {startMutation.error ? <p className="text-sm text-rose-300">{(startMutation.error as Error).message}</p> : null}
@@ -617,16 +574,16 @@ export default function TrainingPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
-              <div className="text-sm text-slate-400">Selected model</div>
+              <div className="text-sm text-slate-400">Selected Preset</div>
               <div className="mt-1 text-white">
-                {isRemote ? (selectedPreset?.title || '—') : (selectedModel?.name || '—')}
+                {selectedPreset?.title || '—'}
               </div>
               <div className="text-[10px] text-slate-500 font-mono uppercase mt-0.5">
-                {isRemote ? (selectedPreset?.logicalBaseModelId || 'NONE') : (selectedModel?.repoId || 'None')}
+                {selectedPreset?.logicalBaseModelId || 'NONE'}
               </div>
             </div>
 
-            {isRemote && selectedPreset && (
+            {selectedPreset && (
               <div className="rounded-xl border border-blue-900/30 bg-blue-950/10 p-3 text-[11px] text-blue-200/70 space-y-1">
                 <div className="font-bold text-blue-400 uppercase text-[10px]">Preset Details</div>
                 <div><span className="opacity-50">Base Model:</span> {selectedPreset.logicalBaseModelId}</div>
@@ -652,7 +609,7 @@ export default function TrainingPage() {
             </div>
 
             <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3 text-sm text-slate-400">
-              После завершения обучения LoRA появится в списке LoRAs. В удаленном режиме все веса будут опубликованы в Hugging Face.
+              После завершения обучения LoRA появится в списке LoRAs. Если включен этап HF Publish, веса будут опубликованы в Hugging Face.
             </div>
           </CardContent>
         </Card>

@@ -358,166 +358,12 @@ async function upsertJob(job) {
   return getJobById(job.id);
 }
 
-async function startFineTuneJob({ datasetId, name, modelId, baseModel, qlora }) {
-  if (qlora) validateQLoraParams(qlora);
-
-  await clearGpuMemory({ types: ['runtime', 'fine-tune'] });
-
-  const settings = await getSettings();
-  const datasets = await getDatasets();
-  const ds = datasets.find((x) => x.id === datasetId);
-  if (!ds) throw new Error('dataset not found');
-
-  let selectedBaseModel = baseModel || settings.baseModel;
-  let selectedModelId = modelId || null;
-
-  if (modelId) {
-    const model = await getModelById(modelId);
-    if (!model) throw new Error('model not found');
-    if (model.status !== 'ready') throw new Error('model is not ready');
-    selectedBaseModel = model.path;
-  }
-
-  const jobId = uid('job');
-  const outputDir = path.join(CONFIG.trainingOutputsDir, jobId);
-  const logFile = path.join(CONFIG.logsDir, `${jobId}.log`);
-
-  const trainConfig = {
-    baseModel: selectedBaseModel,
-    datasetPath: ds.processedPath,
-    outputDir,
-    qlora: { ...settings.qlora, ...(qlora || {}) },
-    wandb: settings.wandb || {},
-  };
-
-  const [envSnapshot, datasetSnapshot] = await Promise.all([
-    getEnvSnapshot(),
-    getDatasetSnapshot(ds.processedPath),
-  ]);
-
-  const job = {
-    id: jobId,
+/** @deprecated Direct backend execution is no longer recommended. Use agent-based flow. */
+async function startFineTuneJob(payload) {
+  return createRemoteJob({
+    ...payload,
     type: 'fine-tune',
-    mode: 'local',
-    name: name || jobId,
-    status: 'queued',
-    datasetId,
-    modelId: selectedModelId,
-    baseModel: selectedBaseModel,
-    outputDir,
-    logFile,
-    paramsSnapshot: trainConfig,
-    datasetSnapshot,
-    modelSnapshot: {
-      path: selectedBaseModel,
-      ...getModelMetadata(selectedBaseModel),
-    },
-    envSnapshot,
-    tags: [],
-    notes: '',
-  };
-
-  await upsertJob(job);
-  emitEvent('job_updated', job);
-
-  logger.info(`Starting local fine-tune job: ${job.name}`, {
-    jobId,
-    datasetId,
-    baseModel: selectedBaseModel,
   });
-
-  fs.mkdirSync(outputDir, { recursive: true });
-  fs.mkdirSync(CONFIG.logsDir, { recursive: true });
-  fs.mkdirSync(CONFIG.trainingConfigsDir, { recursive: true });
-
-  const outFd = fs.openSync(logFile, 'a');
-  const scriptPath = path.join(__dirname, '..', 'python', 'train.py');
-
-  const { child, configPath } = await spawnPythonJsonScript({
-    pythonBin: CONFIG.pythonBin,
-    scriptPath,
-    payload: trainConfig,
-    cwd: CONFIG.workspace,
-    detached: true,
-    stdio: ['ignore', outFd, outFd],
-    env: buildTrainingEnv(settings),
-    configDir: CONFIG.trainingConfigsDir,
-    configPrefix: jobId,
-    logLabel: `fine-tune:${jobId}`,
-  });
-
-  child.unref();
-
-  await registerManagedProcess({
-    pid: child.pid,
-    type: 'fine-tune',
-    label: `fine-tune:${jobId}`,
-    meta: {
-      jobId,
-      datasetId,
-      outputDir,
-      logFile,
-      baseModel: selectedBaseModel,
-    },
-  });
-
-  const runningJob = await upsertJob({
-    ...job,
-    status: 'running',
-    startedAt: nowIso(),
-    pid: child.pid,
-    configPath,
-  });
-
-  emitEvent('job_updated', runningJob);
-
-  child.on('exit', async (code) => {
-    await unregisterManagedProcess(child.pid);
-
-    const current = await getJobById(jobId);
-    if (!current) return;
-
-    const patch = {
-      status: code === 0 ? 'completed' : 'failed',
-      finishedAt: nowIso(),
-      error: code === 0 ? null : `trainer exited with code ${code}`,
-      pid: null,
-    };
-
-    if (code === 0) {
-      const summaryFile = path.join(current.outputDir, 'summary.json');
-      if (fs.existsSync(summaryFile)) {
-        try {
-          patch.summaryMetrics = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
-        } catch (err) {
-          logger.warn('Failed to read summary.json', { jobId, error: err.message });
-        }
-      }
-
-      const artifacts = getArtifacts(current.outputDir);
-      for (const art of artifacts) {
-        await db('job_artifacts').insert({
-          job_id: jobId,
-          name: art.name,
-          path: art.path,
-          size: art.size,
-        });
-      }
-    }
-
-    const next = await upsertJob({ ...current, ...patch });
-    emitEvent('job_updated', next);
-
-    if (code === 0 && current.paramsSnapshot?.qlora?.useLora !== false) {
-      try {
-        await registerLoraFromJob(jobId);
-      } catch (err) {
-        logger.error('LoRA auto-registration failed', { jobId, error: err.message });
-      }
-    }
-  });
-
-  return { ok: true, jobId };
 }
 
 async function createRemoteJob(payload, options = {}) {
@@ -677,15 +523,6 @@ async function retryJob(jobId) {
     });
   }
 
-  if (source.type === 'fine-tune') {
-    return startFineTuneJob({
-      datasetId: source.datasetId,
-      name: `${source.name} (retry)`,
-      modelId: source.modelId,
-      baseModel: source.baseModel,
-      qlora: source.paramsSnapshot?.qlora,
-    });
-  }
 
   const retried = await upsertJob({
     ...source,

@@ -93,9 +93,18 @@ VITE_API_BASE=http://127.0.0.1:8787 npm run dev
 - `.env.example`: Шаблон переменных окружения (включая `JOB_CONFIG_URL` с токеном доступа).
 - `README.txt`: Краткая инструкция по запуску.
 
-### Pipeline Configuration (Remote Jobs)
+### Agent-Based Training Architecture
 
-Remote jobs support a configurable **Pipeline** architecture. Instead of a hardcoded execution sequence, you can explicitly enable or disable individual stages:
+The system utilizes a unified **Agent-Based** execution model for all training tasks. There is no longer a distinction between "local" and "remote" training at the backend level. Every job is handled by a **Trainer Agent**.
+
+- **Orchestrator**: Manages the UI, API, database, and job queuing. It does not execute training directly.
+- **Agent**: A small Node.js process that polls the Orchestrator for jobs, downloads the configuration, and launches a Docker container with the `trainer-service` to execute the pipeline.
+
+To run training on the same machine as the Orchestrator, simply launch a "local agent" (e.g., using PM2 or Docker).
+
+### Pipeline Configuration
+
+Training jobs support a configurable **Pipeline** architecture. Instead of a hardcoded execution sequence, you can explicitly enable or disable individual stages:
 
 - **Prepare Assets**: Downloads the dataset and required remote assets.
 - **Training**: Executes the LoRA/QLoRA fine-tuning process.
