@@ -417,7 +417,7 @@ router.get('/:id/launch/compose', async (req, res) => {
   try {
     const job = await getJobById(req.params.id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    const preset = job.runtimePresetId ? getRuntimePresetById(job.runtimePresetId) : null;
+    const preset = job.runtimePresetId ? await getRuntimePresetById(job.runtimePresetId) : null;
     res.setHeader('Content-Type', 'text/yaml');
     res.send(generateDockerCompose(job, preset));
   } catch (err) {
@@ -453,7 +453,7 @@ router.get('/:id/launch/bundle', async (req, res) => {
     }
 
     const launch = await buildLaunchInfo(job, req);
-    const preset = job.runtimePresetId ? getRuntimePresetById(job.runtimePresetId) : null;
+    const preset = job.runtimePresetId ? await getRuntimePresetById(job.runtimePresetId) : null;
 
     const archive = archiver('tar', { gzip: true });
     res.attachment(`job_bundle_${job.id}.tar.gz`);

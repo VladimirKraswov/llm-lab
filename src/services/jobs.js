@@ -406,7 +406,7 @@ async function createRemoteJob(payload, options = {}) {
   const jobId = uid('job');
   const jobName = String(name || jobId).trim();
 
-  const preset = runtimePresetId ? getRuntimePresetById(runtimePresetId) : null;
+  const preset = runtimePresetId ? await getRuntimePresetById(runtimePresetId) : null;
 
   // ЛОГИЧЕСКАЯ базовая модель для metadata / HF publish.
   // Не должна быть /app.
@@ -777,7 +777,7 @@ async function getJobLogs(id, tail = 200) {
 
   const logs = await db('job_logs')
     .where({ job_id: id })
-    .orderBy('created_at', 'desc')
+    .orderBy('offset', 'desc')
     .limit(tail);
 
   const dbContent = logs.reverse().map((entry) => entry.content).join('');
