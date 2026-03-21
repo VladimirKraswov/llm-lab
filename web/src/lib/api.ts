@@ -315,6 +315,60 @@ export type JobProgress = {
   updatedAt?: string;
 };
 
+export type BaseModelImage = {
+  id: string;
+  title: string;
+  slug?: string;
+  description?: string;
+  family?: string;
+  logical_base_model_id: string;
+  docker_image: string;
+  docker_registry?: string;
+  docker_repository?: string;
+  docker_tag?: string;
+  model_local_path: string;
+  default_shm_size: string;
+  default_gpu_count: number;
+  supports_qlora: boolean;
+  supports_lora: boolean;
+  supports_merge: boolean;
+  supports_evaluation: boolean;
+  enabled: boolean;
+  sortOrder?: number;
+};
+
+export type AgentBuildRecipe = {
+  id: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  base_model_image_id: string;
+  base_image_override?: string;
+  target_registry?: string;
+  target_repository: string;
+  target_tag_template: string;
+  stable_tag: string;
+  push_enabled: boolean;
+  default_runtime_preset_title?: string;
+  default_shm_size?: string;
+  default_gpu_count?: number;
+};
+
+export type AgentBuild = {
+  id: string;
+  recipe_id: string;
+  base_model_image_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  logs?: string;
+  resolved_base_image?: string;
+  result_image?: string;
+  pushed_image?: string;
+  started_at: string;
+  finished_at?: string;
+  error?: string;
+  published_runtime_preset_id?: string;
+};
+
 export type RuntimePreset = {
   id: string;
   title: string;
@@ -329,6 +383,7 @@ export type RuntimePreset = {
     qlora: boolean;
     lora: boolean;
     merge: boolean;
+    evaluation: boolean;
   };
   enabled: boolean;
 };

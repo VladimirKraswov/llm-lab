@@ -86,6 +86,54 @@ exports.up = async function(knex) {
       table.timestamps(true, true);
     });
 
+  // Initial Seeding
+  const now = new Date().toISOString();
+  await knex('base_model_images').insert([
+    {
+      id: 'bmi_qwen_7b',
+      title: 'Qwen 2.5 7B',
+      logical_base_model_id: 'Qwen/Qwen2.5-7B-Instruct',
+      docker_image: 'igortet/model-qwen-7b',
+      model_local_path: '/app',
+      family: 'qwen',
+      default_shm_size: '16g',
+      default_gpu_count: 1,
+      sort_order: 1,
+      created_at: now,
+      updated_at: now
+    },
+    {
+      id: 'bmi_llama_8b',
+      title: 'Llama 3 8B',
+      logical_base_model_id: 'meta-llama/Meta-Llama-3-8B-Instruct',
+      docker_image: 'igortet/model-llama-8b',
+      model_local_path: '/app',
+      family: 'llama',
+      default_shm_size: '16g',
+      default_gpu_count: 1,
+      sort_order: 2,
+      created_at: now,
+      updated_at: now
+    }
+  ]);
+
+  await knex('agent_build_recipes').insert([
+    {
+      id: 'recipe_qwen_7b_standard',
+      name: 'Qwen 7B Standard Agent',
+      description: 'Standard trainer agent for Qwen 2.5 7B',
+      base_model_image_id: 'bmi_qwen_7b',
+      target_repository: 'igortet/itk-ai-trainer-service',
+      target_tag_template: 'qwen-7b-{{timestamp}}',
+      stable_tag: 'qwen-7b',
+      push_enabled: true,
+      default_runtime_preset_title: 'Qwen 2.5 7B (Auto-built)',
+      default_runtime_preset_enabled: true,
+      created_at: now,
+      updated_at: now
+    }
+  ]);
+
   // Adding columns only if they don't exist
   const hasContainerImage = await knex.schema.hasColumn('jobs', 'container_image');
   if (!hasContainerImage) {

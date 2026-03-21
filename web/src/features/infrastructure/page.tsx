@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '../../lib/api';
+import { api, type BaseModelImage, type AgentBuildRecipe, type AgentBuild } from '../../lib/api';
 import { Button } from '../../components/ui/button';
 import { Card } from '../../components/ui/card';
 import {
@@ -88,7 +88,7 @@ export default function InfrastructurePage() {
       <div className="flex-1 overflow-auto p-6">
         {activeTab === 'models' && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {loadingModels ? <p>Loading...</p> : baseModels.map((model: any) => (
+            {loadingModels ? <p>Loading...</p> : baseModels.map((model: BaseModelImage) => (
               <Card key={model.id} className="bg-[#141414] border-white/5 p-4 flex flex-col gap-4">
                 <div className="flex items-start justify-between">
                   <div>
@@ -123,7 +123,7 @@ export default function InfrastructurePage() {
 
         {activeTab === 'recipes' && (
           <div className="grid grid-cols-1 gap-4">
-            {loadingRecipes ? <p>Loading...</p> : recipes.map((recipe: any) => (
+            {loadingRecipes ? <p>Loading...</p> : recipes.map((recipe: AgentBuildRecipe) => (
               <Card key={recipe.id} className="bg-[#141414] border-white/5 p-4">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
@@ -172,7 +172,7 @@ export default function InfrastructurePage() {
 
         {activeTab === 'builds' && (
           <div className="space-y-4">
-            {loadingBuilds ? <p>Loading...</p> : builds.map((build: any) => (
+            {loadingBuilds ? <p>Loading...</p> : builds.map((build: AgentBuild) => (
               <Card key={build.id} className="bg-[#141414] border-white/5 p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">
