@@ -352,6 +352,7 @@ export type Job = {
   error: string | null;
   paramsSnapshot?: any;
   modelPath?: string;
+  currentStage?: string;
   datasetSnapshot?: {
     path: string;
     size: number;

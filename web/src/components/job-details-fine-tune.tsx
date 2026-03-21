@@ -112,7 +112,7 @@ export function JobDetailsFineTune({ job }: { job: Job }) {
   return (
     <div className="space-y-4">
       {job.mode === 'remote' && pipeline && (
-        <PipelineVisualizer pipeline={pipeline} currentStage={job.currentStage} status={job.status} />
+        <PipelineVisualizer pipeline={pipeline} currentStage={job.currentStage || 'None stage'} status={job.status} />
       )}
 
       <Card className="border-purple-500/20 bg-purple-500/5">
