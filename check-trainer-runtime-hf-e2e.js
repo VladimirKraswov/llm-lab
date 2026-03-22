@@ -424,6 +424,16 @@ async function startFixtureServer(port, datasetRoot, verbose = false) {
   };
 }
 
+function rewriteUrlForHost(urlString, hostPortMap = {}) {
+  const url = new URL(urlString);
+  if (url.hostname === 'host.docker.internal') {
+    url.hostname = '127.0.0.1';
+    const mapped = hostPortMap[String(url.port || '')];
+    if (mapped) url.port = String(mapped);
+  }
+  return url.toString();
+}
+
 function buildTrainerJobPayload({ runtimeProfileId, jobId, runtimeImage, datasetBaseUrl, hfRepo }) {
   return {
     runtimeProfileId,
@@ -762,7 +772,11 @@ async function main() {
     if (!launchSpec?.jobConfigUrl) throw new Error('Launch spec did not return jobConfigUrl');
     ok('Launch spec generated');
 
-    const bootstrap = await requestJson('GET', launchSpec.jobConfigUrl, { timeoutMs: 30_000 });
+    const bootstrapUrlForHost = rewriteUrlForHost(launchSpec.jobConfigUrl, {
+      [String(args.port)]: args.port,
+      [String(args.datasetsPort)]: args.datasetsPort,
+    });
+    const bootstrap = await requestJson('GET', bootstrapUrlForHost, { timeoutMs: 30_000 });
     if (!bootstrap?.config?.upload?.url_targets?.summary_url || !bootstrap?.status_url) {
       throw new Error('Bootstrap payload is incomplete');
     }
