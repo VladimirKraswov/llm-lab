@@ -212,8 +212,20 @@ async function issueReportAccess(trx, jobId, attemptId) {
 }
 
 
+function isKnexExecutor(value) {
+  return !!value && (
+    typeof value === 'function' ||
+    typeof value === 'object'
+  ) && (
+    typeof value.client === 'object' ||
+    typeof value.transaction === 'function' ||
+    typeof value.commit === 'function' ||
+    typeof value.rollback === 'function'
+  );
+}
+
 async function issueRuntimeReportAccess(trxOrJobId, maybeJobId, maybeAttemptId) {
-  if (trxOrJobId && typeof trxOrJobId === 'object' && maybeAttemptId !== undefined) {
+  if (isKnexExecutor(trxOrJobId) && maybeAttemptId !== undefined) {
     return issueReportAccess(trxOrJobId, maybeJobId, maybeAttemptId);
   }
 
@@ -1049,4 +1061,5 @@ module.exports = {
   requestHfSync,
   upsertResultSummary,
   recalculateJobProgress,
+  issueReportAccess,
 };

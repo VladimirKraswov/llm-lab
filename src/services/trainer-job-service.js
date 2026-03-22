@@ -7,7 +7,7 @@ const { nowIso, addMinutes } = require('../utils/time');
 const { parseJson, toJson } = require('../utils/json');
 const { buildPublicBaseUrl } = require('../utils/http');
 const { getRuntimeProfileById } = require('./runtime-profile-service');
-const { getJobView, verifyCredential, markCredentialUsed, issueConfigAccess, issueRuntimeReportAccess } = require('./job-service');
+const { getJobView, verifyCredential, markCredentialUsed, issueConfigAccess, issueReportAccess } = require('./job-service');
 
 const TRAINER_JOB_KIND = 'trainer-service';
 const TRAINER_RUNTIME_KIND = 'trainer-service/v1';
@@ -469,7 +469,7 @@ async function buildTrainerBootstrapPayload(jobId, rawConfigToken, baseUrl) {
   let reportAccess;
   await db.transaction(async (trx) => {
     await markCredentialUsed(credential.id, attempt.id, trx);
-    reportAccess = await issueRuntimeReportAccess(trx, jobId, attempt.id);
+    reportAccess = await issueReportAccess(trx, jobId, attempt.id);
 
     const now = nowIso();
     await trx('job_attempts').where({ id: attempt.id }).update({
