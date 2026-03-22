@@ -1,26 +1,8 @@
 const { db } = require('../db');
 
-async function getRuntimePresets() {
-  const presets = await db('runtime_presets').where({ enabled: true }).orderBy('created_at', 'desc');
-  return presets.map(p => ({
-    ...p,
-    logicalBaseModelId: p.logical_base_model_id,
-    localModelPath: p.model_local_path,
-    trainerImage: p.trainer_image,
-    defaultShmSize: p.default_shm_size,
-    gpuCount: p.default_gpu_count,
-    supports: {
-      qlora: !!p.supports_qlora,
-      lora: !!p.supports_lora,
-      merge: !!p.supports_merge,
-      evaluation: !!p.supports_evaluation,
-    }
-  }));
-}
-
-async function getRuntimePresetById(id) {
-  const p = await db('runtime_presets').where({ id }).first();
+function mapRuntimePresetRow(p) {
   if (!p) return null;
+
   return {
     ...p,
     logicalBaseModelId: p.logical_base_model_id,
@@ -33,8 +15,51 @@ async function getRuntimePresetById(id) {
       lora: !!p.supports_lora,
       merge: !!p.supports_merge,
       evaluation: !!p.supports_evaluation,
-    }
+    },
   };
+}
+
+async function getRuntimePresets() {
+  const presets = await db('runtime_presets')
+    .where({ enabled: true })
+    .orderBy('created_at', 'desc');
+
+  return presets.map(mapRuntimePresetRow);
+}
+
+async function getRuntimePresetById(id) {
+  const row = await db('runtime_presets').where({ id }).first();
+  return mapRuntimePresetRow(row);
+}
+
+async function updateRuntimePreset(id, patch = {}) {
+  const existing = await db('runtime_presets').where({ id }).first();
+  if (!existing) {
+    throw new Error('Runtime preset not found');
+  }
+
+  const update = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (patch.title !== undefined) {
+    const title = String(patch.title || '').trim();
+    if (!title) {
+      throw new Error('title is required');
+    }
+    update.title = title;
+  }
+
+  if (patch.description !== undefined) {
+    update.description = patch.description == null ? '' : String(patch.description);
+  }
+
+  if (patch.enabled !== undefined) {
+    update.enabled = !!patch.enabled;
+  }
+
+  await db('runtime_presets').where({ id }).update(update);
+  return getRuntimePresetById(id);
 }
 
 // Initial seeding if empty
@@ -84,5 +109,6 @@ async function seedPresets() {
 module.exports = {
   getRuntimePresets,
   getRuntimePresetById,
+  updateRuntimePreset,
   seedPresets,
 };
