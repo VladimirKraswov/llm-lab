@@ -139,7 +139,6 @@ router.get('/builds/:id', async (req, res) => {
   }
 });
 
-// НОВЫЙ ENDPOINT ДЛЯ ЛОГОВ БИЛДА
 router.get('/builds/:id/logs', async (req, res) => {
   try {
     const build = await getBuildById(req.params.id);
@@ -158,7 +157,7 @@ router.get('/builds/:id/logs', async (req, res) => {
   }
 });
 
-// Старый маршрут — оставляем
+// Старый совместимый маршрут: build по recipe
 router.post('/recipes/:id/build', async (req, res) => {
   try {
     const build = await startBuild(req.params.id);
@@ -168,7 +167,7 @@ router.post('/recipes/:id/build', async (req, res) => {
   }
 });
 
-// Совместимый маршрут под фронт
+// Новый маршрут под фронт: POST /infrastructure/builds
 router.post('/builds', async (req, res) => {
   try {
     const recipeId = String(req.body?.recipeId || req.body?.recipe_id || '').trim();
@@ -184,7 +183,18 @@ router.post('/builds', async (req, res) => {
   }
 });
 
+// Старый маршрут
 router.post('/builds/:id/publish-runtime-preset', async (req, res) => {
+  try {
+    const preset = await publishRuntimePreset(req.params.id);
+    res.json(toCamelCase(preset));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+// Совместимый alias под фронт: POST /infrastructure/builds/:id/publish
+router.post('/builds/:id/publish', async (req, res) => {
   try {
     const preset = await publishRuntimePreset(req.params.id);
     res.json(toCamelCase(preset));
