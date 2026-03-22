@@ -17,7 +17,7 @@ const {
   startBuild,
   publishRuntimePreset
 } = require('../services/agent-builds');
-const { toCamelCase } = require('../utils/ids');
+const { toCamelCase, toSnakeCase } = require('../utils/ids');
 
 const router = express.Router();
 
@@ -33,7 +33,8 @@ router.get('/base-models', async (req, res) => {
 
 router.post('/base-models', async (req, res) => {
   try {
-    const model = await createBaseModel(req.body);
+    const data = toSnakeCase(req.body);
+    const model = await createBaseModel(data);
     res.json(toCamelCase(model));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
@@ -52,7 +53,8 @@ router.get('/base-models/:id', async (req, res) => {
 
 router.put('/base-models/:id', async (req, res) => {
   try {
-    const model = await updateBaseModel(req.params.id, req.body);
+    const data = toSnakeCase(req.body);
+    const model = await updateBaseModel(req.params.id, data);
     res.json(toCamelCase(model));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
@@ -80,7 +82,8 @@ router.get('/recipes', async (req, res) => {
 
 router.post('/recipes', async (req, res) => {
   try {
-    const recipe = await createRecipe(req.body);
+    const data = toSnakeCase(req.body);
+    const recipe = await createRecipe(data);
     res.json(toCamelCase(recipe));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
@@ -99,7 +102,8 @@ router.get('/recipes/:id', async (req, res) => {
 
 router.put('/recipes/:id', async (req, res) => {
   try {
-    const recipe = await updateRecipe(req.params.id, req.body);
+    const data = toSnakeCase(req.body);
+    const recipe = await updateRecipe(req.params.id, data);
     res.json(toCamelCase(recipe));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });

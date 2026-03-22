@@ -29,9 +29,30 @@ function toCamelCase(obj) {
   return obj;
 }
 
+function camelToSnake(str) {
+  return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+}
+
+function toSnakeCase(obj) {
+  if (Array.isArray(obj)) {
+    return obj.map((v) => toSnakeCase(v));
+  } else if (obj !== null && typeof obj === 'object' && obj.constructor === Object) {
+    return Object.keys(obj).reduce(
+      (result, key) => ({
+        ...result,
+        [camelToSnake(key)]: toSnakeCase(obj[key]),
+      }),
+      {}
+    );
+  }
+  return obj;
+}
+
 module.exports = {
   uid,
   nowIso,
   snakeToCamel,
   toCamelCase,
+  camelToSnake,
+  toSnakeCase,
 };
