@@ -10,6 +10,107 @@ const https = require('https');
 const { spawn } = require('child_process');
 const { randomBytes } = require('crypto');
 
+// ============================================================================
+// Helper functions for network and Docker connectivity
+// ============================================================================
+
+/**
+ * Remap a URL that may contain host.docker.internal to 127.0.0.1
+ * when accessed from the host machine.
+ */
+function remapUrlForHost(urlString, { backendPort, datasetsPort }) {
+  const src = new URL(urlString);
+  const pathAndQuery = `${src.pathname}${src.search}${src.hash}`;
+
+  if (src.port && String(src.port) === String(backendPort)) {
+    return `http://127.0.0.1:${backendPort}${pathAndQuery}`;
+  }
+
+  if (src.port && String(src.port) === String(datasetsPort)) {
+    return `http://127.0.0.1:${datasetsPort}${pathAndQuery}`;
+  }
+
+  if (src.hostname === 'host.docker.internal') {
+    return `http://127.0.0.1:${src.port || backendPort}${pathAndQuery}`;
+  }
+
+  return urlString;
+}
+
+/**
+ * Determine the correct hostname for containers to reach the host.
+ * On Linux we use host.docker.internal, on other platforms it's the same.
+ */
+function getContainerHostAlias() {
+  if (process.platform === 'linux') {
+    return 'host.docker.internal';
+  }
+  return 'host.docker.internal';
+}
+
+/**
+ * Build a base URL that containers can use to reach a service on the host.
+ */
+function buildContainerBaseUrl(port) {
+  return `http://${getContainerHostAlias()}:${port}`;
+}
+
+/**
+ * Probe a URL to check if it's reachable, returning status and response preview.
+ */
+async function probeUrl(urlString, timeoutMs = 15000) {
+  const startedAt = Date.now();
+  const url = new URL(urlString);
+  const lib = url.protocol === 'https:' ? https : http;
+
+  return new Promise((resolve) => {
+    const req = lib.request(
+      url,
+      {
+        method: 'GET',
+        timeout: timeoutMs,
+      },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+
+        res.on('data', (chunk) => {
+          if (body.length < 2000) {
+            body += chunk;
+          }
+        });
+
+        res.on('end', () => {
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            ms: Date.now() - startedAt,
+            bodyPreview: body.slice(0, 500),
+          });
+        });
+      }
+    );
+
+    req.on('timeout', () => {
+      req.destroy(new Error(`Request timeout after ${timeoutMs}ms`));
+    });
+
+    req.on('error', (error) => {
+      resolve({
+        ok: false,
+        ms: Date.now() - startedAt,
+        error: String(error && error.message ? error.message : error),
+      });
+    });
+
+    req.end();
+  });
+}
+
+// ============================================================================
+// Original utility functions (printHelp, color, etc.)
+// ============================================================================
+
 function printHelp() {
   console.log(`Usage:
   node scripts/check-trainer-runtime-hf-e2e.js [options]
@@ -276,7 +377,7 @@ async function spawnBackend(projectRoot, workRoot, args) {
   const artifactsRoot = path.join(workRoot, 'artifacts');
   const tmpUploadsRoot = path.join(workRoot, 'tmp-uploads');
   const runtimeOutputRoot = path.join(workRoot, 'runtime-output');
-  const publicBaseUrl = `http://host.docker.internal:${args.port}`;
+  const publicBaseUrl = buildContainerBaseUrl(args.port);
   const externalBaseUrl = `http://127.0.0.1:${args.port}`;
 
   await Promise.all([
@@ -416,22 +517,15 @@ async function startFixtureServer(port, datasetRoot, verbose = false) {
     server.listen(port, '0.0.0.0', resolve);
   });
 
+  const externalBaseUrl = `http://127.0.0.1:${port}`;
+  const publicBaseUrl = buildContainerBaseUrl(port);
+
   if (verbose) info(`Fixture dataset server listening on 0.0.0.0:${port}`);
   return {
     server,
-    externalBaseUrl: `http://127.0.0.1:${port}`,
-    publicBaseUrl: `http://host.docker.internal:${port}`,
+    externalBaseUrl,
+    publicBaseUrl,
   };
-}
-
-function rewriteUrlForHost(urlString, hostPortMap = {}) {
-  const url = new URL(urlString);
-  if (url.hostname === 'host.docker.internal') {
-    url.hostname = '127.0.0.1';
-    const mapped = hostPortMap[String(url.port || '')];
-    if (mapped) url.port = String(mapped);
-  }
-  return url.toString();
 }
 
 function buildTrainerJobPayload({ runtimeProfileId, jobId, runtimeImage, datasetBaseUrl, hfRepo }) {
@@ -772,11 +866,29 @@ async function main() {
     if (!launchSpec?.jobConfigUrl) throw new Error('Launch spec did not return jobConfigUrl');
     ok('Launch spec generated');
 
-    const bootstrapUrlForHost = rewriteUrlForHost(launchSpec.jobConfigUrl, {
-      [String(args.port)]: args.port,
-      [String(args.datasetsPort)]: args.datasetsPort,
+    // Replace the original URL with one that works from the host
+    const bootstrapUrlFromLaunchSpec = launchSpec.jobConfigUrl;
+    const bootstrapUrlForHost = remapUrlForHost(bootstrapUrlFromLaunchSpec, {
+      backendPort: args.port,
+      datasetsPort: args.datasetsPort,
     });
-    const bootstrap = await requestJson('GET', bootstrapUrlForHost, { timeoutMs: 30_000 });
+
+    info(`Bootstrap URL from launch spec: ${bootstrapUrlFromLaunchSpec}`);
+    info(`Bootstrap URL for host fetch: ${bootstrapUrlForHost}`);
+
+    // Probe the bootstrap URL to ensure it's reachable
+    const bootstrapProbe = await probeUrl(bootstrapUrlForHost, 30000);
+    info(`Bootstrap probe: ${JSON.stringify(bootstrapProbe)}`);
+
+    if (!bootstrapProbe.ok) {
+      throw new Error(
+        `Bootstrap URL is not reachable from host: ${bootstrapUrlForHost} :: ${JSON.stringify(bootstrapProbe)}`
+      );
+    }
+
+    const bootstrap = await requestJson('GET', bootstrapUrlForHost, { timeoutMs: 120000 });
+    ok('Bootstrap config fetch works');
+
     if (!bootstrap?.config?.upload?.url_targets?.summary_url || !bootstrap?.status_url) {
       throw new Error('Bootstrap payload is incomplete');
     }
