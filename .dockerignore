@@ -1,6 +1,7 @@
 node_modules
 web/node_modules
 web/dist
+src_old
 .git
 .llm-lab
 workspace

@@ -1,25 +1,16 @@
 {
-  "name": "llm-lab-service",
-  "version": "0.2.0",
+  "name": "forge-ml-execution-fabric",
+  "version": "1.0.0",
   "private": true,
   "type": "commonjs",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "bootstrap": "bash scripts/bootstrap.sh",
-    "check": "bash scripts/check.sh",
-    "run": "bash scripts/run.sh",
     "web:dev": "npm --prefix web run dev -- --host 0.0.0.0",
     "web:build": "npm --prefix web run build",
     "dev:all": "concurrently -n api,web -c green,blue \"npm run dev\" \"npm run web:dev\"",
-    "start:all": "npm run web:build && npm run start",
-    "pm2:start": "pm2 start ecosystem.config.js --only llm-lab-backend",
-    "pm2:stop": "pm2 stop llm-lab-backend",
-    "pm2:restart": "pm2 restart llm-lab-backend --update-env",
-    "pm2:logs": "pm2 logs llm-lab-backend",
-    "pm2:all": "npm run web:build && pm2 start ecosystem.config.js --only llm-lab-backend",
-    "deploy:full": "git fetch origin && git reset --hard origin/main && npm install && npm --prefix web install && npm run web:build && (pm2 delete llm-lab-remote-agent llm-lab-frontend >/dev/null 2>&1 || true) && (pm2 restart llm-lab-backend --update-env || pm2 start ecosystem.config.js --only llm-lab-backend)"
+    "start:all": "npm run web:build && npm run start"
   },
   "dependencies": {
     "archiver": "^7.0.1",

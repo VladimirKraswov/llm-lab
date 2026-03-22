@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/services/trainer-service
 ignore: .codebun)dleignore
-generated: 2026-03-21T19:06:58.174Z
+generated: 2026-03-22T09:18:15.877Z
 
 
 
@@ -866,7 +866,6 @@ def load_remote_job_config(
         raise ValueError("Remote job config response must be a JSON object")
 
     callback_auth_token = payload.get("callback_auth_token")
-    logs_url = payload.get("logs_url") or _resolve_callback_url(payload, "logs")
 
     if "config" in payload:
         raw_config = copy.deepcopy(payload.get("config") or {})
@@ -883,7 +882,7 @@ def load_remote_job_config(
     raw_config["mode"] = "remote"
 
     reporting = raw_config.setdefault("reporting", {})
-    for key in ("status", "progress", "final"):
+    for key in ("status", "progress", "final", "logs"):
         callback_cfg = copy.deepcopy(reporting.get(key) or {})
         explicit_url = _resolve_callback_url(payload, key)
 
@@ -905,6 +904,12 @@ def load_remote_job_config(
     raw_config["reporting"] = reporting
 
     cfg = JobConfig.model_validate(raw_config)
+
+    logs_url = (
+        _resolve_callback_url(payload, "logs")
+        or _resolve_callback_url(raw_config, "logs")
+    )
+
     meta = {
         "job_config_url": resolved_url,
         "logs_url": logs_url,
@@ -1935,9 +1940,10 @@ def main():
         cfg.outputs.logs_dir,
         job_id=cfg.job_id or cfg.job_name,
         job_name=cfg.job_name,
-        logs_url=bootstrap_meta.get("logs_url"),
+        logs_url=bootstrap_meta.get("logs_url") or cfg.reporting.logs.url,
         logs_bearer_token=(
             bootstrap_meta.get("callback_auth_token")
+            or cfg.reporting.logs.auth.bearer_token
             or cfg.reporting.status.auth.bearer_token
             or cfg.reporting.progress.auth.bearer_token
             or cfg.reporting.final.auth.bearer_token
@@ -1979,7 +1985,6 @@ def main():
 
         pipeline = cfg.pipeline
 
-        # Stage: prepare_assets
         if not pipeline or pipeline.prepare_assets.enabled:
             logger.info("==> preparing assets")
             reporter.report_status(
@@ -1993,7 +1998,6 @@ def main():
         else:
             logger.info("==> skipping assets preparation")
 
-        # Stage: training
         training_result = {}
         if not pipeline or pipeline.training.enabled:
             logger.info("==> starting training")
@@ -2019,7 +2023,6 @@ def main():
         if cfg.postprocess.run_awq_quantization:
             raise NotImplementedError("AWQ quantization stage is not implemented in this service yet")
 
-        # Stage: evaluation
         evaluation_result = None
         should_eval = False
         if pipeline:
@@ -2052,7 +2055,6 @@ def main():
             "upload_errors": {},
         }
 
-        # Stage: upload (legacy / URL)
         should_upload = False
         if pipeline:
             should_upload = pipeline.upload.enabled
@@ -2106,7 +2108,6 @@ def main():
 
         write_json(result_path, result)
 
-        # Stage: publish (Hugging Face)
         should_publish = False
         if pipeline:
             should_publish = pipeline.publish.enabled
@@ -2246,9 +2247,6 @@ class ModelConfig(AppBaseModel):
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     max_seq_length: int = 4096
 
-    # Дополнительные поля из remote-config оркестратора.
-    # Они нужны именно как логическая модель для HF metadata,
-    # даже если физически внутри контейнера модель лежит в /app.
     base_model: Optional[str] = None
     base_model_name_or_path: Optional[str] = None
 
@@ -2382,39 +2380,6 @@ class PostprocessConfig(AppBaseModel):
     run_awq_quantization: bool = False
 
 
-class PipelineStage(AppBaseModel):
-    enabled: bool = True
-
-
-class TrainingStage(PipelineStage, TrainingConfig):
-    pass
-
-
-class MergeStage(PipelineStage, PostprocessConfig):
-    pass
-
-
-class EvaluationStage(PipelineStage, EvaluationConfig):
-    pass
-
-
-class PublishStage(PipelineStage, HuggingFacePublishConfig):
-    pass
-
-
-class UploadStage(PipelineStage, UploadConfig):
-    pass
-
-
-class PipelineConfig(AppBaseModel):
-    prepare_assets: PipelineStage = Field(default_factory=PipelineStage)
-    training: TrainingStage = Field(default_factory=TrainingStage)
-    merge: MergeStage = Field(default_factory=MergeStage)
-    evaluation: EvaluationStage = Field(default_factory=EvaluationStage)
-    publish: PublishStage = Field(default_factory=PublishStage)
-    upload: UploadStage = Field(default_factory=UploadStage)
-
-
 class AuthConfig(AppBaseModel):
     bearer_token: Optional[str] = None
     headers: Dict[str, str] = Field(default_factory=dict)
@@ -2435,6 +2400,7 @@ class ReportingConfig(AppBaseModel):
     status: CallbackConfig = Field(default_factory=CallbackConfig)
     progress: CallbackConfig = Field(default_factory=CallbackConfig)
     final: CallbackConfig = Field(default_factory=CallbackConfig)
+    logs: CallbackConfig = Field(default_factory=CallbackConfig)
 
 
 class EvaluationDatasetConfig(AppBaseModel):
@@ -2516,6 +2482,39 @@ class HuggingFacePublishConfig(AppBaseModel):
     private: bool = True
     commit_message: str = "trainer-service upload"
     revision: Optional[str] = None
+
+
+class PipelineStage(AppBaseModel):
+    enabled: bool = True
+
+
+class TrainingStage(PipelineStage, TrainingConfig):
+    pass
+
+
+class MergeStage(PipelineStage, PostprocessConfig):
+    pass
+
+
+class EvaluationStage(PipelineStage, EvaluationConfig):
+    pass
+
+
+class PublishStage(PipelineStage, HuggingFacePublishConfig):
+    pass
+
+
+class UploadStage(PipelineStage, UploadConfig):
+    pass
+
+
+class PipelineConfig(AppBaseModel):
+    prepare_assets: PipelineStage = Field(default_factory=PipelineStage)
+    training: TrainingStage = Field(default_factory=TrainingStage)
+    merge: MergeStage = Field(default_factory=MergeStage)
+    evaluation: EvaluationStage = Field(default_factory=EvaluationStage)
+    publish: PublishStage = Field(default_factory=PublishStage)
+    upload: UploadStage = Field(default_factory=UploadStage)
 
 
 class JobConfig(AppBaseModel):
@@ -4634,4 +4633,4 @@ included: 27
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 140815
+totalBytes(approx): 140551
