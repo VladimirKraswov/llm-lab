@@ -1,7 +1,7 @@
 === CODE BUNDLE ===
 root: /Volumes/Extend/work/llm-lab/src
-ignore: .codebun)dleignore
-generated: 2026-03-21T19:09:06.433Z
+ignore: .codebundleignore
+generated: 2026-03-22T08:16:10.844Z
 
 
 
@@ -428,7 +428,7 @@ const  fsp = require("fs/promises");
 const  path = require("path")
 
 const PROJECT_ROOT = process.cwd();
-const IGNORE_FILE_NAME = ".codebun)dleignore";
+const IGNORE_FILE_NAME = ".codebundleignore";
 const OUTPUT_FILE = path.join(PROJECT_ROOT, "codebundle.txt");
 
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
@@ -713,8 +713,8 @@ const CONFIG = {
   maxJsonMb: toNumber(process.env.MAX_JSON_MB, 25),
   webUiOrigin: normalizeOrigin(process.env.WEB_UI_ORIGIN || '*'),
 
-  // Orchestration
-  callbackBaseUrl: process.env.CALLBACK_BASE_URL || `http://localhost:${process.env.SVC_PORT || 8787}`,
+  callbackBaseUrl:
+    process.env.CALLBACK_BASE_URL || `http://localhost:${process.env.SVC_PORT || 8787}`,
   requireJwtSecret: process.env.REQUIRE_JWT_SECRET === 'true',
   remoteBakedModelPath: process.env.REMOTE_BAKED_MODEL_PATH || '/app',
 };
@@ -725,6 +725,7 @@ CONFIG.datasetsDir = path.join(CONFIG.workspace, 'data', 'processed');
 CONFIG.rawDatasetsDir = path.join(CONFIG.workspace, 'data', 'raw');
 CONFIG.trainingConfigsDir = path.join(CONFIG.workspace, 'training', 'configs');
 CONFIG.trainingOutputsDir = path.join(CONFIG.workspace, 'training', 'outputs');
+CONFIG.jobArtifactsDir = path.join(CONFIG.workspace, 'artifacts', 'jobs');
 CONFIG.mergedModelsDir = path.join(CONFIG.modelsDir, 'merged');
 CONFIG.packagesDir = path.join(CONFIG.workspace, 'exports', 'packages');
 CONFIG.logsDir = path.join(CONFIG.workspace, 'logs');
@@ -738,7 +739,7 @@ CONFIG.syntheticFinalDir = path.join(CONFIG.syntheticDir, 'final');
 
 CONFIG.evalDatasetsDir = path.join(CONFIG.workspace, 'evaluations', 'datasets');
 
-CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json'); // Legacy
+CONFIG.jobsFile = path.join(CONFIG.stateDir, 'jobs.json');
 CONFIG.settingsFile = path.join(CONFIG.stateDir, 'settings.json');
 CONFIG.datasetsFile = path.join(CONFIG.stateDir, 'datasets.json');
 CONFIG.evalDatasetsFile = path.join(CONFIG.stateDir, 'eval-datasets.json');
@@ -754,7 +755,8 @@ CONFIG.pythonBin = path.join(CONFIG.mlEnv, 'bin', 'python');
 CONFIG.quantizePythonBin = path.join(CONFIG.quantizeEnv, 'bin', 'python');
 CONFIG.transformersPythonBin = path.join(CONFIG.transformersEnv, 'bin', 'python');
 CONFIG.vllmBin = path.join(CONFIG.mlEnv, 'bin', 'vllm');
-CONFIG.syntheticDataKitBin = process.env.SYNTHETIC_DATA_KIT_BIN || path.join(CONFIG.mlEnv, 'bin', 'synthetic-data-kit');
+CONFIG.syntheticDataKitBin =
+  process.env.SYNTHETIC_DATA_KIT_BIN || path.join(CONFIG.mlEnv, 'bin', 'synthetic-data-kit');
 
 module.exports = { CONFIG };
 
@@ -3516,7 +3518,11 @@ router.get('/summary', async (_req, res) => {
     getDatasets(),
   ]);
 
-  const recentJobs = [...jobs].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 5);
+  const recentJobs = [...jobs]
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 5);
+
+  const isFinished = (status) => ['completed', 'finished'].includes(String(status || '').toLowerCase());
 
   res.json({
     health: {
@@ -3536,7 +3542,7 @@ router.get('/summary', async (_req, res) => {
       datasets: datasets.length,
       jobs: jobs.length,
       runningJobs: jobs.filter((x) => x.status === 'running').length,
-      completedJobs: jobs.filter((x) => x.status === 'completed').length,
+      completedJobs: jobs.filter((x) => isFinished(x.status)).length,
       failedJobs: jobs.filter((x) => x.status === 'failed').length,
     },
     recentJobs,
@@ -3937,19 +3943,184 @@ router.get('/', (_req, res) => {
 module.exports = router;
 
 
+path: /routes/infrastructure.js
+----------------------------------------
+const express = require('express');
+const {
+  getBaseModels,
+  getBaseModelById,
+  createBaseModel,
+  updateBaseModel,
+  deleteBaseModel
+} = require('../services/base-models');
+const {
+  getRecipes,
+  getRecipeById,
+  createRecipe,
+  updateRecipe,
+  deleteRecipe,
+  getBuilds,
+  getBuildById,
+  startBuild,
+  publishRuntimePreset
+} = require('../services/agent-builds');
+const { toCamelCase, toSnakeCase } = require('../utils/ids');
+
+const router = express.Router();
+
+// Base Models
+router.get('/base-models', async (req, res) => {
+  try {
+    const models = await getBaseModels();
+    res.json(toCamelCase(models));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/base-models', async (req, res) => {
+  try {
+    const data = toSnakeCase(req.body);
+    const model = await createBaseModel(data);
+    res.json(toCamelCase(model));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/base-models/:id', async (req, res) => {
+  try {
+    const model = await getBaseModelById(req.params.id);
+    if (!model) return res.status(404).json({ error: 'Base model not found' });
+    res.json(toCamelCase(model));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.put('/base-models/:id', async (req, res) => {
+  try {
+    const data = toSnakeCase(req.body);
+    const model = await updateBaseModel(req.params.id, data);
+    res.json(toCamelCase(model));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.delete('/base-models/:id', async (req, res) => {
+  try {
+    await deleteBaseModel(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+// Recipes
+router.get('/recipes', async (req, res) => {
+  try {
+    const recipes = await getRecipes();
+    res.json(toCamelCase(recipes));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/recipes', async (req, res) => {
+  try {
+    const data = toSnakeCase(req.body);
+    const recipe = await createRecipe(data);
+    res.json(toCamelCase(recipe));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/recipes/:id', async (req, res) => {
+  try {
+    const recipe = await getRecipeById(req.params.id);
+    if (!recipe) return res.status(404).json({ error: 'Recipe not found' });
+    res.json(toCamelCase(recipe));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.put('/recipes/:id', async (req, res) => {
+  try {
+    const data = toSnakeCase(req.body);
+    const recipe = await updateRecipe(req.params.id, data);
+    res.json(toCamelCase(recipe));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.delete('/recipes/:id', async (req, res) => {
+  try {
+    await deleteRecipe(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+// Builds
+router.get('/builds', async (req, res) => {
+  try {
+    const builds = await getBuilds(req.query.recipeId);
+    res.json(toCamelCase(builds));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/builds/:id', async (req, res) => {
+  try {
+    const build = await getBuildById(req.params.id);
+    if (!build) return res.status(404).json({ error: 'Build not found' });
+    res.json(toCamelCase(build));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/recipes/:id/build', async (req, res) => {
+  try {
+    const build = await startBuild(req.params.id);
+    res.json(toCamelCase(build));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+router.post('/builds/:id/publish-runtime-preset', async (req, res) => {
+  try {
+    const preset = await publishRuntimePreset(req.params.id);
+    res.json(toCamelCase(preset));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+module.exports = router;
+
+
 path: /routes/jobs.js
 ----------------------------------------
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
 const { db } = require('../db');
 const archiver = require('archiver');
 const {
-  startFineTuneJob,
   createRemoteJob,
   cloneJob,
   retryJob,
   cancelJob,
+  normalizeJobStatus,
   handleWorkerStatus,
   handleWorkerProgress,
   handleWorkerFinal,
@@ -3975,20 +4146,22 @@ const { CONFIG } = require('../config');
 const { buildPublicBaseUrl } = require('../utils/public-base-url');
 const { getRuntimePresets, getRuntimePresetById } = require('../services/runtime-presets');
 const { generateDockerCompose, generateEnvFile, generateReadme } = require('../services/launch-bundle');
+const {
+  normalizeArtifactType,
+  registerUploadedArtifact,
+  syncFinalArtifactsToJob,
+  getJobArtifact,
+} = require('../services/job-artifacts');
 
 const router = express.Router();
 
-function mapIncomingStatus(status) {
-  const value = String(status || '').trim().toLowerCase();
+const uploadTempDir = path.join(CONFIG.jobArtifactsDir, '_incoming');
+fs.mkdirSync(uploadTempDir, { recursive: true });
 
-  if (!value) return 'running';
-  if (value === 'started') return 'running';
-  if (value === 'finished') return 'completed';
-  if (value === 'success') return 'completed';
-  if (value === 'error') return 'failed';
+const upload = multer({
+  dest: uploadTempDir,
+});
 
-  return value;
-}
 
 async function callbackAuth(req, res, next) {
   try {
@@ -4087,6 +4260,27 @@ router.get('/', async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 50;
     const offset = parseInt(req.query.offset, 10) || 0;
     res.json(await getAllJobs(limit, offset));
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.get('/:id/artifacts/:artifactType/download', async (req, res) => {
+  try {
+    const record = await getJobArtifact(req.params.id, req.params.artifactType);
+    if (!record) {
+      return res.status(404).json({ error: 'artifact not found' });
+    }
+
+    if (record.path && fs.existsSync(record.path)) {
+      return res.download(record.path, path.basename(record.path));
+    }
+
+    if (record.url) {
+      return res.redirect(record.url);
+    }
+
+    return res.status(404).json({ error: 'artifact is not downloadable' });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -4203,10 +4397,14 @@ router.get('/:id/config', async (req, res) => {
       publicBaseUrl,
     });
 
+    const reporting = trainerConfig.reporting || {};
+
     res.json({
       job_id: job.id,
       job_name: job.name,
       callback_auth_token: tokenRecord.id,
+      logs_url: reporting.logs?.url || null,
+      reporting,
       config: trainerConfig,
     });
   } catch (err) {
@@ -4246,12 +4444,63 @@ router.get('/:id/logs', async (req, res) => {
   }
 });
 
+router.post('/upload/:artifactType', upload.single('file'), callbackAuth, async (req, res) => {
+  try {
+    const jobId = String(req.body?.job_id || '').trim();
+    if (!jobId) {
+      return res.status(400).json({ error: 'job_id is required' });
+    }
+
+    const job = await getJobById(jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'file is required' });
+    }
+
+    const publicBaseUrl = buildPublicBaseUrl(req, CONFIG.callbackBaseUrl);
+    const artifactType = normalizeArtifactType(req.params.artifactType || req.body?.artifact_type);
+
+    const { record, downloadUrl } = await registerUploadedArtifact({
+      jobId,
+      artifactType,
+      file: req.file,
+      publicBaseUrl,
+    });
+
+    await db('job_events').insert({
+      job_id: jobId,
+      type: 'artifact_upload',
+      payload: JSON.stringify({
+        artifactType,
+        filename: record?.name || req.file.originalname,
+        downloadUrl,
+      }),
+    });
+
+    return res.status(201).json({
+      ok: true,
+      artifact_id: `${jobId}:${artifactType}`,
+      job_id: jobId,
+      artifact_type: artifactType,
+      storage_key: record?.path || null,
+      download_url: downloadUrl || record?.url || null,
+    });
+  } catch (err) {
+    if (req.file?.path) {
+      fs.rm(req.file.path, { force: true }, () => {});
+    }
+    return res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 router.post('/fine-tune', roleMiddleware(['admin', 'member']), async (req, res) => {
   try {
-    // Mapping fine-tune to unified remote flow
     res.json(await createRemoteJob({
       ...(req.body || {}),
-      type: 'fine-tune'
+      type: 'fine-tune',
     }));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
@@ -4298,7 +4547,7 @@ router.post('/status', callbackAuth, async (req, res) => {
   try {
     const normalized = {
       ...req.body,
-      status: mapIncomingStatus(req.body.status),
+      status: normalizeJobStatus(req.body.status),
     };
     res.json(await handleWorkerStatus(normalized.job_id, normalized));
   } catch (err) {
@@ -4310,7 +4559,7 @@ router.post('/progress', callbackAuth, async (req, res) => {
   try {
     const normalized = {
       ...req.body,
-      status: mapIncomingStatus(req.body.status || 'running'),
+      status: normalizeJobStatus(req.body.status || 'running'),
     };
     res.json(await handleWorkerProgress(normalized.job_id, normalized));
   } catch (err) {
@@ -4323,7 +4572,7 @@ router.post('/final', callbackAuth, async (req, res) => {
     const result = req.body?.result || {};
     const normalized = {
       ...req.body,
-      status: mapIncomingStatus(req.body.status || result.status),
+      status: normalizeJobStatus(req.body.status || result.status || 'finished'),
       metrics: {
         training: result?.training?.summary || null,
         evaluation: result?.evaluation?.summary || null,
@@ -4331,7 +4580,15 @@ router.post('/final', callbackAuth, async (req, res) => {
       artifacts: result?.uploads || {},
     };
 
-    res.json(await handleWorkerFinal(normalized.job_id, normalized));
+    const response = await handleWorkerFinal(normalized.job_id, normalized);
+
+    await syncFinalArtifactsToJob({
+      jobId: normalized.job_id,
+      uploads: result?.uploads || {},
+      publicBaseUrl: buildPublicBaseUrl(req, CONFIG.callbackBaseUrl),
+    });
+
+    res.json(response);
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
@@ -4383,7 +4640,6 @@ router.get('/:id/launch/bundle', async (req, res) => {
     const job = await getJobById(req.params.id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
 
-    // Validate token if provided in query
     const token = req.query.token;
     if (token) {
       const { verifyToken } = require('../services/auth');
@@ -5146,7 +5402,11 @@ router.post('/use-job-output', async (req, res) => {
     const jobs = await getJobs();
     const job = jobs.find((x) => x.id === jobId);
     if (!job) return res.status(404).json({ error: 'job not found' });
-    if (job.status !== 'completed') return res.status(400).json({ error: 'job is not completed' });
+
+    const normalizedStatus = String(job.status || '').toLowerCase();
+    if (!['completed', 'finished'].includes(normalizedStatus)) {
+      return res.status(400).json({ error: 'job is not completed' });
+    }
 
     const settings = await getSettings();
     const inf = settings.inference || {};
@@ -5231,10 +5491,6 @@ router.post('/chat', async (req, res) => {
     const requestedStream = !!req.body?.stream;
     const stream = supportsStreaming ? requestedStream : false;
 
-    // ВАЖНО:
-    // Для vLLM LoRA, загруженной через --lora-modules, нужно выбирать адаптер
-    // через поле "model", передавая имя адаптера.
-    // Нельзя слать lora_name в /v1/chat/completions — vLLM его игнорирует.
     const requestedModel = req.body?.model;
     const effectiveModel =
       typeof requestedModel === 'string' && requestedModel.trim()
@@ -5544,7 +5800,10 @@ const syntheticRoute = require('./routes/synthetic');
 const comparisonsRoute = require('./routes/comparisons');
 const evaluationsRoute = require('./routes/evaluations');
 const syncRoute = require('./routes/sync');
+const infrastructureRoute = require('./routes/infrastructure');
 const { startBackgroundReconcile } = require('./services/reconcile');
+const { seedPresets } = require('./services/runtime-presets');
+const roleMiddleware = require('./utils/role-middleware');
 
 function buildCorsOrigin() {
   if (!CONFIG.webUiOrigin || CONFIG.webUiOrigin === '*') {
@@ -5561,6 +5820,8 @@ async function main() {
     await initDb();
     console.log('Recovering state...');
     await recoverState();
+    console.log('Seeding presets...');
+    await seedPresets();
     console.log('Starting Express app...');
   } catch (err) {
     console.error('Critical failure during initialization:');
@@ -5601,6 +5862,7 @@ async function main() {
   mount('/comparisons', authMiddleware, comparisonsRoute);
   mount('/evaluations', authMiddleware, evaluationsRoute);
   mount('/sync', authMiddleware, syncRoute);
+  mount('/infrastructure', authMiddleware, roleMiddleware(['admin']), infrastructureRoute);
 
   const webDist = path.join(__dirname, '..', 'web', 'dist');
 
@@ -5625,7 +5887,8 @@ async function main() {
         req.path.startsWith('/synthetic') ||
         req.path.startsWith('/comparisons') ||
         req.path.startsWith('/evaluations') ||
-        req.path.startsWith('/sync')
+        req.path.startsWith('/sync') ||
+        req.path.startsWith('/infrastructure')
       ) {
         return next();
       }
@@ -8101,6 +8364,298 @@ module.exports = {
 };
 
 
+path: /services/job-artifacts.js
+----------------------------------------
+const fs = require('fs');
+const fsp = require('fs/promises');
+const path = require('path');
+
+const { CONFIG } = require('../config');
+const { db } = require('../db');
+const logger = require('../utils/logger');
+
+const ARTIFACT_TYPE_ALIASES = {
+  logs: 'logs',
+  log: 'logs',
+
+  config: 'effective_config',
+  effective_config: 'effective_config',
+  'effective-config': 'effective_config',
+
+  summary: 'summary',
+  job_summary: 'summary',
+  'job-summary': 'summary',
+
+  train_metrics: 'train_metrics',
+  'train-metrics': 'train_metrics',
+  trainmetrics: 'train_metrics',
+
+  train_history: 'train_history',
+  'train-history': 'train_history',
+  trainhistory: 'train_history',
+
+  evaluation_summary: 'eval_summary',
+  eval_summary: 'eval_summary',
+  'eval-summary': 'eval_summary',
+
+  evaluation_details: 'eval_details',
+  eval_details: 'eval_details',
+  'eval-details': 'eval_details',
+
+  lora: 'lora_archive',
+  lora_archive: 'lora_archive',
+  'lora-archive': 'lora_archive',
+
+  merged: 'merged_archive',
+  merged_archive: 'merged_archive',
+  'merged-archive': 'merged_archive',
+
+  full_archive: 'full_archive',
+  'full-archive': 'full_archive',
+
+  hf_lora: 'hf_lora',
+  'hf-lora': 'hf_lora',
+  hf_merged: 'hf_merged',
+  'hf-merged': 'hf_merged',
+  hf_metadata: 'hf_metadata',
+  'hf-metadata': 'hf_metadata',
+};
+
+const CANONICAL_TO_ROUTE = {
+  logs: 'logs',
+  effective_config: 'config',
+  summary: 'summary',
+  train_metrics: 'train-metrics',
+  train_history: 'train-history',
+  eval_summary: 'eval-summary',
+  eval_details: 'eval-details',
+  lora_archive: 'lora',
+  merged_archive: 'merged',
+  full_archive: 'full-archive',
+  hf_lora: 'hf-lora',
+  hf_merged: 'hf-merged',
+  hf_metadata: 'hf-metadata',
+};
+
+function safeName(value, fallback = 'artifact.bin') {
+  const normalized = String(value || '').trim();
+  const basename = path.basename(normalized || fallback);
+  const cleaned = basename.replace(/[^a-zA-Z0-9._-]+/g, '_');
+  return cleaned || fallback;
+}
+
+function normalizeArtifactType(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  const lower = raw.toLowerCase();
+  if (ARTIFACT_TYPE_ALIASES[lower]) {
+    return ARTIFACT_TYPE_ALIASES[lower];
+  }
+
+  return lower.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function artifactTypeToRouteSlug(value) {
+  const normalized = normalizeArtifactType(value);
+  if (!normalized) return null;
+  return CANONICAL_TO_ROUTE[normalized] || normalized.replace(/_/g, '-');
+}
+
+function buildArtifactDownloadUrl(publicBaseUrl, jobId, artifactType) {
+  const base = String(publicBaseUrl || CONFIG.callbackBaseUrl || '').replace(/\/+$/, '');
+  const routeSlug = artifactTypeToRouteSlug(artifactType);
+  if (!base || !routeSlug) return null;
+
+  return `${base}/api/jobs/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(routeSlug)}/download`;
+}
+
+async function ensureDir(dirPath) {
+  await fsp.mkdir(dirPath, { recursive: true });
+}
+
+async function moveFileSafe(src, dst) {
+  try {
+    await fsp.rename(src, dst);
+  } catch (err) {
+    if (err && err.code === 'EXDEV') {
+      await fsp.copyFile(src, dst);
+      await fsp.unlink(src).catch(() => {});
+      return;
+    }
+    throw err;
+  }
+}
+
+async function storeUploadedArtifact({ jobId, artifactType, file }) {
+  const normalizedType = normalizeArtifactType(artifactType);
+  if (!normalizedType) {
+    throw new Error('artifactType is required');
+  }
+
+  if (!file?.path) {
+    throw new Error('uploaded file is missing');
+  }
+
+  const fileName = safeName(file.originalname, `${artifactTypeToRouteSlug(normalizedType) || normalizedType}.bin`);
+  const artifactDir = path.join(CONFIG.jobArtifactsDir, jobId, normalizedType);
+
+  await fsp.rm(artifactDir, { recursive: true, force: true }).catch(() => {});
+  await ensureDir(artifactDir);
+
+  const finalPath = path.join(artifactDir, fileName);
+  await moveFileSafe(file.path, finalPath);
+
+  return {
+    artifactType: normalizedType,
+    filename: fileName,
+    storagePath: finalPath,
+    sizeBytes: Number(file.size || 0),
+    contentType: file.mimetype || 'application/octet-stream',
+  };
+}
+
+async function getJobArtifact(jobId, artifactType) {
+  const normalizedType = normalizeArtifactType(artifactType);
+  if (!normalizedType) return null;
+
+  return db('job_artifacts')
+    .where({ job_id: jobId, type: normalizedType })
+    .first();
+}
+
+async function upsertArtifactRecord({
+  jobId,
+  artifactType,
+  filename,
+  storagePath = null,
+  downloadUrl = null,
+  sizeBytes = null,
+}) {
+  const normalizedType = normalizeArtifactType(artifactType);
+  if (!normalizedType) {
+    throw new Error('artifactType is required');
+  }
+
+  await db('job_artifacts')
+    .where({ job_id: jobId, type: normalizedType })
+    .del();
+
+  await db('job_artifacts').insert({
+    job_id: jobId,
+    name: filename || normalizedType,
+    type: normalizedType,
+    path: storagePath,
+    url: downloadUrl,
+    size: sizeBytes,
+  });
+
+  return getJobArtifact(jobId, normalizedType);
+}
+
+async function registerUploadedArtifact({
+  jobId,
+  artifactType,
+  file,
+  publicBaseUrl,
+}) {
+  const stored = await storeUploadedArtifact({
+    jobId,
+    artifactType,
+    file,
+  });
+
+  const downloadUrl = buildArtifactDownloadUrl(publicBaseUrl, jobId, stored.artifactType);
+
+  const record = await upsertArtifactRecord({
+    jobId,
+    artifactType: stored.artifactType,
+    filename: stored.filename,
+    storagePath: stored.storagePath,
+    downloadUrl,
+    sizeBytes: stored.sizeBytes,
+  });
+
+  return {
+    record,
+    stored,
+    downloadUrl,
+    artifactType: stored.artifactType,
+  };
+}
+
+async function syncFinalArtifactsToJob({
+  jobId,
+  uploads,
+  publicBaseUrl,
+}) {
+  const result = [];
+
+  for (const [rawType, payload] of Object.entries(uploads || {})) {
+    const artifactType = normalizeArtifactType(rawType);
+    if (!artifactType) continue;
+
+    const existing = await getJobArtifact(jobId, artifactType);
+    if (existing && (existing.path || existing.url)) {
+      result.push(existing);
+      continue;
+    }
+
+    const fileName = safeName(
+      path.basename(
+        payload?.path ||
+        payload?.archive_path ||
+        payload?.repo_id ||
+        payload?.url ||
+        artifactTypeToRouteSlug(artifactType) ||
+        artifactType
+      ),
+      `${artifactTypeToRouteSlug(artifactType) || artifactType}.bin`,
+    );
+
+    let externalUrl =
+      payload?.download_url ||
+      null;
+
+    if (!externalUrl && payload?.repo_id) {
+      externalUrl = `https://huggingface.co/${payload.repo_id}`;
+    }
+
+    if (!externalUrl && payload?.url && !String(payload.url).includes('/upload/')) {
+      externalUrl = payload.url;
+    }
+
+    const downloadUrl =
+      existing?.url ||
+      externalUrl ||
+      buildArtifactDownloadUrl(publicBaseUrl, jobId, artifactType);
+
+    const record = await upsertArtifactRecord({
+      jobId,
+      artifactType,
+      filename: existing?.name || fileName,
+      storagePath: existing?.path || null,
+      downloadUrl,
+      sizeBytes: existing?.size || payload?.size || null,
+    });
+
+    result.push(record);
+  }
+
+  return result;
+}
+
+module.exports = {
+  normalizeArtifactType,
+  artifactTypeToRouteSlug,
+  buildArtifactDownloadUrl,
+  getJobArtifact,
+  upsertArtifactRecord,
+  registerUploadedArtifact,
+  syncFinalArtifactsToJob,
+};
+
+
 path: /services/jobs.js
 ----------------------------------------
 const fs = require('fs');
@@ -8143,6 +8698,25 @@ function safeJsonParse(value, fallback = null) {
   } catch {
     return fallback;
   }
+}
+
+function normalizeJobStatus(value, fallback = 'running') {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return fallback;
+
+  if (raw === 'success' || raw === 'completed' || raw === 'finished') return 'finished';
+  if (raw === 'error' || raw === 'failed') return 'failed';
+  if (raw === 'stopped' || raw === 'cancelled') return 'stopped';
+  if (raw === 'running' || raw === 'started') return 'running';
+  if (raw === 'assigned') return 'assigned';
+  if (raw === 'queued') return 'queued';
+
+  return raw;
+}
+
+function isTerminalJobStatus(value) {
+  const normalized = normalizeJobStatus(value, '');
+  return ['finished', 'completed', 'failed', 'stopped'].includes(normalized);
 }
 
 function buildApiUrl(base, apiPath) {
@@ -8513,8 +9087,6 @@ async function createRemoteJob(payload, options = {}) {
 
   const preset = runtimePresetId ? await getRuntimePresetById(runtimePresetId) : null;
 
-  // ЛОГИЧЕСКАЯ базовая модель для metadata / HF publish.
-  // Не должна быть /app.
   const selectedBaseModel = String(
     baseModel || (preset ? preset.logicalBaseModelId : settings.baseModel) || CONFIG.defaultBaseModel
   ).trim();
@@ -8525,7 +9097,8 @@ async function createRemoteJob(payload, options = {}) {
 
   const effectiveQlora = { ...settings.qlora, ...(qlora || {}) };
   const effectiveHfPublish = hfPublish || {};
-  const effectiveTrainerImage = trainerImage || (preset ? preset.trainerImage : 'itk-ai-trainer-service:qwen-7b');
+  const effectiveTrainerImage =
+    trainerImage || (preset ? preset.trainerImage : 'itk-ai-trainer-service:qwen-7b');
   const effectiveModelLocalPath = preset ? preset.localModelPath : '/app';
 
   const baseJobConfigUrl = buildApiUrl(callbackBase, `/api/jobs/${jobId}/config`);
@@ -8628,7 +9201,6 @@ async function retryJob(jobId) {
     });
   }
 
-
   const retried = await upsertJob({
     ...source,
     id: uid('job'),
@@ -8654,9 +9226,7 @@ async function handleWorkerStatus(jobId, payload) {
   const job = await getJobById(jobId);
   if (!job) throw new Error('Job not found');
 
-  let normalizedStatus = String(payload.status || '').trim().toLowerCase();
-  if (normalizedStatus === 'started') normalizedStatus = 'running';
-  if (normalizedStatus === 'finished') normalizedStatus = 'completed';
+  const normalizedStatus = normalizeJobStatus(payload.status, job.status || 'running');
 
   const patch = {
     status: normalizedStatus || job.status,
@@ -8669,11 +9239,11 @@ async function handleWorkerStatus(jobId, payload) {
     lastStatusPayload: payload,
   };
 
-  if (normalizedStatus === 'running' && !job.startedAt) {
+  if ((normalizedStatus === 'started' || normalizedStatus === 'running') && !job.startedAt) {
     patch.startedAt = nowIso();
   }
 
-  if (['completed', 'failed', 'stopped'].includes(normalizedStatus)) {
+  if (isTerminalJobStatus(normalizedStatus)) {
     patch.finishedAt = nowIso();
   }
 
@@ -8686,7 +9256,7 @@ async function handleWorkerStatus(jobId, payload) {
 
   await db('job_events').insert({
     job_id: jobId,
-    type: 'status_change',
+    type: 'status',
     payload: JSON.stringify(payload),
   });
 
@@ -8697,9 +9267,16 @@ async function handleWorkerProgress(jobId, payload) {
   const job = await getJobById(jobId);
   if (!job) throw new Error('Job not found');
 
+  const fallbackStatus =
+    ['queued', 'assigned'].includes(String(job.status || '').toLowerCase())
+      ? 'running'
+      : job.status;
+
+  const normalizedStatus = normalizeJobStatus(payload.status, fallbackStatus);
+
   const updated = await upsertJob({
     ...job,
-    status: job.status === 'queued' ? 'running' : job.status,
+    status: normalizedStatus,
     progressPercent:
       payload.progress !== undefined && payload.progress !== null
         ? Number(payload.progress)
@@ -8739,10 +9316,12 @@ async function handleWorkerLogs(jobId, payload) {
     offset,
   });
 
+  const nextOffset = offset + Buffer.byteLength(content, 'utf8');
+
   await upsertJob({
     ...job,
     logChunkCount: Number(job.logChunkCount || 0) + 1,
-    lastLogOffset: offset,
+    lastLogOffset: nextOffset,
   });
 
   emitEvent('job_log_chunk', { jobId, logs: content, offset });
@@ -8755,12 +9334,16 @@ async function handleWorkerFinal(jobId, payload) {
 
   const result = payload.result || {};
   const failed =
-    String(payload.status || '').toLowerCase() === 'failed' ||
-    String(result.status || '').toLowerCase() === 'failed';
+    normalizeJobStatus(payload.status, '') === 'failed' ||
+    normalizeJobStatus(result.status, '') === 'failed';
+
+  const finalStatus = failed
+    ? 'failed'
+    : normalizeJobStatus(payload.status || result.status || 'finished', 'finished');
 
   const patch = {
-    status: failed ? 'failed' : 'completed',
-    currentStage: failed ? 'failed' : 'finished',
+    status: finalStatus,
+    currentStage: failed ? 'failed' : (payload.stage || 'finished'),
     progressPercent: 100,
     finishedAt: nowIso(),
     finalPayload: payload,
@@ -8768,6 +9351,9 @@ async function handleWorkerFinal(jobId, payload) {
       training: result.training?.summary || null,
       evaluation: result.evaluation?.summary || null,
     },
+    hfRepoIdLora: result?.uploads?.hf_lora?.repo_id || job.hfRepoIdLora || null,
+    hfRepoIdMerged: result?.uploads?.hf_merged?.repo_id || job.hfRepoIdMerged || null,
+    hfRepoIdMetadata: result?.uploads?.hf_metadata?.repo_id || job.hfRepoIdMetadata || null,
     error: failed ? (result.error || payload.error || 'remote job failed') : null,
   };
 
@@ -8778,22 +9364,6 @@ async function handleWorkerFinal(jobId, payload) {
     type: 'final',
     payload: JSON.stringify(payload),
   });
-
-  const uploads = result.uploads || {};
-  for (const [artifactType, artifact] of Object.entries(uploads)) {
-    await db('job_artifacts').insert({
-      job_id: jobId,
-      name:
-        artifact?.path ||
-        artifact?.archive_path ||
-        artifact?.repo_id ||
-        artifactType,
-      type: artifactType,
-      path: artifact?.path || artifact?.archive_path || null,
-      url: artifact?.url || artifact?.download_url || artifact?.repo_id || null,
-      size: artifact?.size || null,
-    });
-  }
 
   emitEvent('job_finalized', updated);
   emitEvent('job_updated', updated);
@@ -9152,7 +9722,11 @@ async function registerLoraFromJob(jobId, customName = null) {
   const jobs = await getJobs();
   const job = jobs.find((x) => x.id === jobId);
   if (!job) throw new Error('job not found');
-  if (job.status !== 'completed') throw new Error('job is not completed');
+
+  const normalizedStatus = String(job.status || '').toLowerCase();
+  if (!['completed', 'finished'].includes(normalizedStatus)) {
+    throw new Error('job is not completed');
+  }
 
   let baseModelName = job.baseModel;
   let baseModelId = job.modelId || null;
@@ -11198,11 +11772,19 @@ path: /services/remote-job-config.js
 const { CONFIG } = require('../config');
 
 function toInt(value, fallback) {
+  if (fallback === null && (value === null || value === undefined || value === '')) {
+    return null;
+  }
+
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
 function toNum(value, fallback) {
+  if (fallback === null && (value === null || value === undefined || value === '')) {
+    return null;
+  }
+
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -11245,6 +11827,53 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
     );
   }
 
+  const rawPipeline = job.paramsSnapshot?.pipeline || {};
+
+  const uploadEnabled =
+    rawPipeline.upload?.enabled !== undefined
+      ? !!rawPipeline.upload.enabled
+      : true;
+
+  const publishEnabled =
+    rawPipeline.publish?.enabled !== undefined
+      ? !!rawPipeline.publish.enabled
+      : !!hfPublish.enabled;
+
+  const pipeline = {
+    prepare_assets: {
+      ...(rawPipeline.prepare_assets || {}),
+      enabled: rawPipeline.prepare_assets?.enabled !== false,
+    },
+    training: {
+      ...(rawPipeline.training || {}),
+      enabled: rawPipeline.training?.enabled !== false,
+    },
+    merge: {
+      ...(rawPipeline.merge || {}),
+      enabled: rawPipeline.merge?.enabled !== false,
+    },
+    evaluation: {
+      ...(rawPipeline.evaluation || {}),
+      enabled: !!rawPipeline.evaluation?.enabled,
+    },
+    publish: {
+      ...(rawPipeline.publish || {}),
+      enabled: publishEnabled,
+      push_lora:
+        rawPipeline.publish?.push_lora !== undefined
+          ? !!rawPipeline.publish.push_lora
+          : !!hfPublish.push_lora,
+      push_merged:
+        rawPipeline.publish?.push_merged !== undefined
+          ? !!rawPipeline.publish.push_merged
+          : !!hfPublish.push_merged,
+    },
+    upload: {
+      ...(rawPipeline.upload || {}),
+      enabled: uploadEnabled,
+    },
+  };
+
   const trainUrl = joinUrl(
     callbackBaseUrl,
     `/api/jobs/${job.id}/dataset/train?token=${encodeURIComponent(callbackAuthToken)}`
@@ -11261,15 +11890,20 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
 
   const trainerMethod = loadIn4bit ? 'qlora' : 'lora';
 
-  // Pipeline mapping
-  const pipeline = job.paramsSnapshot?.pipeline || {
-    prepare_assets: { enabled: true },
-    training: { enabled: true },
-    merge: { enabled: !!job.paramsSnapshot?.qlora?.useLora },
-    evaluation: { enabled: false },
-    publish: { enabled: !!hfPublish.enabled },
-    upload: { enabled: !!hfPublish.enabled },
-  };
+  const urlTargets = uploadEnabled
+    ? {
+        logs_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/logs'),
+        effective_config_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/config'),
+        summary_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/summary'),
+        train_metrics_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/train-metrics'),
+        train_history_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/train-history'),
+        eval_summary_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/eval-summary'),
+        eval_details_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/eval-details'),
+        lora_archive_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/lora'),
+        merged_archive_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/merged'),
+        full_archive_url: joinUrl(callbackBaseUrl, '/api/jobs/upload/full-archive'),
+      }
+    : {};
 
   return {
     job_id: job.id,
@@ -11278,15 +11912,10 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
 
     model: {
       source: 'local',
-
-      // Фактическая baked model внутри trainer container
       local_path: job.modelLocalPath || CONFIG.remoteBakedModelPath || '/app',
-
-      // Логическая базовая модель для metadata / README / HF upload
       base_model: logicalBaseModelId,
       base_model_name_or_path: logicalBaseModelId,
       repo_id: logicalBaseModelId,
-
       trust_remote_code: false,
       load_in_4bit: loadIn4bit,
       dtype: 'bfloat16',
@@ -11324,9 +11953,10 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
       bias: 'none',
       use_gradient_checkpointing: 'unsloth',
       random_state: 3407,
-      target_modules: Array.isArray(qlora.targetModules) && qlora.targetModules.length
-        ? qlora.targetModules
-        : ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
+      target_modules:
+        Array.isArray(qlora.targetModules) && qlora.targetModules.length
+          ? qlora.targetModules
+          : ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
     },
 
     outputs: {
@@ -11334,24 +11964,30 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
     },
 
     postprocess: {
-      merge_lora: true,
-      save_merged_16bit: true,
-      run_awq_quantization: false,
+      merge_lora: pipeline.merge.merge_lora !== undefined ? !!pipeline.merge.merge_lora : true,
+      save_merged_16bit:
+        pipeline.merge.save_merged_16bit !== undefined
+          ? !!pipeline.merge.save_merged_16bit
+          : true,
+      run_awq_quantization:
+        pipeline.merge.run_awq_quantization !== undefined
+          ? !!pipeline.merge.run_awq_quantization
+          : false,
     },
 
     evaluation: {
-      enabled: !!pipeline.evaluation?.enabled,
-      target: pipeline.evaluation?.target || 'auto',
-      max_samples: toInt(pipeline.evaluation?.max_samples, null),
-      max_new_tokens: toInt(pipeline.evaluation?.max_new_tokens, 128),
-      temperature: toNum(pipeline.evaluation?.temperature, 0.0),
-      do_sample: !!pipeline.evaluation?.do_sample,
-      system_prompt: pipeline.evaluation?.system_prompt || null,
-      prompt_template: pipeline.evaluation?.prompt_template || undefined,
-      parsing_regex: pipeline.evaluation?.parsing_regex || null,
-      score_min: toNum(pipeline.evaluation?.score_min, 0.0),
-      score_max: toNum(pipeline.evaluation?.score_max, 5.0),
-      dataset: pipeline.evaluation?.dataset || undefined,
+      enabled: !!pipeline.evaluation.enabled,
+      target: pipeline.evaluation.target || 'auto',
+      max_samples: toInt(pipeline.evaluation.max_samples, null),
+      max_new_tokens: toInt(pipeline.evaluation.max_new_tokens, 128),
+      temperature: toNum(pipeline.evaluation.temperature, 0.0),
+      do_sample: !!pipeline.evaluation.do_sample,
+      system_prompt: pipeline.evaluation.system_prompt || null,
+      prompt_template: pipeline.evaluation.prompt_template,
+      parsing_regex: pipeline.evaluation.parsing_regex || null,
+      score_min: toNum(pipeline.evaluation.score_min, 0.0),
+      score_max: toNum(pipeline.evaluation.score_max, 5.0),
+      dataset: pipeline.evaluation.dataset || undefined,
     },
 
     reporting: {
@@ -11382,17 +12018,25 @@ function buildRemoteTrainerConfig({ job, dataset, callbackAuthToken, publicBaseU
     },
 
     upload: {
-      enabled: !!pipeline.upload?.enabled,
-      target: pipeline.upload?.enabled ? 'url' : (pipeline.publish?.enabled ? 'huggingface' : 'local'),
+      enabled: !!uploadEnabled,
+      target: uploadEnabled ? 'url' : 'local',
+      timeout_sec: 300,
+      auth: {
+        bearer_token: callbackAuthToken,
+      },
+      url_targets: urlTargets,
     },
 
     huggingface: {
-      enabled: !!pipeline.publish?.enabled,
-      push_lora: pipeline.publish?.push_lora !== undefined ? !!pipeline.publish.push_lora : !!hfPublish.push_lora,
-      push_merged: pipeline.publish?.push_merged !== undefined ? !!pipeline.publish.push_merged : !!hfPublish.push_merged,
+      enabled: !!publishEnabled,
+      push_lora: !!pipeline.publish.push_lora,
+      push_merged: !!pipeline.publish.push_merged,
       repo_id_lora: hfPublish.repo_id_lora || '',
       repo_id_merged: hfPublish.repo_id_merged || '',
       repo_id_metadata: hfPublish.repo_id_metadata || '',
+      private: hfPublish.private !== undefined ? !!hfPublish.private : true,
+      commit_message: hfPublish.commit_message || 'trainer-service upload',
+      revision: hfPublish.revision || null,
     },
 
     pipeline,
@@ -13240,7 +13884,6 @@ const { verifyToken } = require('../services/auth');
 function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization || '';
 
-  // 1. Обычный JWT для UI / API пользователей
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice('Bearer '.length).trim();
     const decoded = verifyToken(token);
@@ -13250,14 +13893,14 @@ function authMiddleware(req, res, next) {
     }
   }
 
-  // 2. Worker callbacks: пропускаем дальше, а реальную проверку делает route-level callbackAuth
   const isCallback =
     req.method === 'POST' &&
     (
       req.path === '/status' ||
       req.path === '/progress' ||
       req.path === '/final' ||
-      req.path === '/logs'
+      req.path === '/logs' ||
+      req.path.startsWith('/upload/')
     );
 
   if (isCallback) {
@@ -13271,17 +13914,14 @@ function authMiddleware(req, res, next) {
     }
   }
 
-  // 3. Bootstrap config по одноразовому token в query
   if (req.method === 'GET' && req.path.endsWith('/config') && req.query?.token) {
     return next();
   }
 
-  // 4. Датасет для remote trainer по token в query
   if (req.method === 'GET' && req.path.includes('/dataset/') && req.query?.token) {
     return next();
   }
 
-  // 5. SSE events: пропускаем дальше, если есть token в query
   if (req.method === 'GET' && req.path === '/events' && req.query?.token) {
     const decoded = verifyToken(req.query.token);
     if (decoded) {
@@ -13550,9 +14190,53 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function snakeToCamel(str) {
+  return str.replace(/([-_][a-z])/gi, ($1) => {
+    return $1.toUpperCase().replace('-', '').replace('_', '');
+  });
+}
+
+function toCamelCase(obj) {
+  if (Array.isArray(obj)) {
+    return obj.map((v) => toCamelCase(v));
+  } else if (obj !== null && typeof obj === 'object' && obj.constructor === Object) {
+    return Object.keys(obj).reduce(
+      (result, key) => ({
+        ...result,
+        [snakeToCamel(key)]: toCamelCase(obj[key]),
+      }),
+      {}
+    );
+  }
+  return obj;
+}
+
+function camelToSnake(str) {
+  return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+}
+
+function toSnakeCase(obj) {
+  if (Array.isArray(obj)) {
+    return obj.map((v) => toSnakeCase(v));
+  } else if (obj !== null && typeof obj === 'object' && obj.constructor === Object) {
+    return Object.keys(obj).reduce(
+      (result, key) => ({
+        ...result,
+        [camelToSnake(key)]: toSnakeCase(obj[key]),
+      }),
+      {}
+    );
+  }
+  return obj;
+}
+
 module.exports = {
   uid,
   nowIso,
+  snakeToCamel,
+  toCamelCase,
+  camelToSnake,
+  toSnakeCase,
 };
 
 
@@ -14117,8 +14801,8 @@ module.exports = roleMiddleware;
 
 
 === SUMMARY ===
-included: 64
+included: 66
 skipped(binary): 0
 skipped(size): 0
 skipped(ext): 0
-totalBytes(approx): 391617
+totalBytes(approx): 409481
