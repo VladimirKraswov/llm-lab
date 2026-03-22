@@ -606,7 +606,14 @@ function buildDockerArgs(spec, launchBody = {}) {
     env[String(key)] = value == null ? '' : String(value);
   }
 
-  const args = ['run', '--rm', '-d', '--label', `forge.job_id=${spec.jobId}`, '--name', executor.containerName];
+  const autoRemove = body.autoRemove !== false;
+
+  const args = ['run', '-d', '--label', `forge.job_id=${spec.jobId}`, '--name', executor.containerName];
+
+  if (autoRemove) {
+    args.push('--rm');
+  }
+
   if (executor.gpus != null && String(executor.gpus) !== '') {
     args.push('--gpus', String(executor.gpus));
   }
@@ -626,6 +633,7 @@ function buildDockerArgs(spec, launchBody = {}) {
     args.push(String(item));
   }
   args.push(executor.image);
+
   return { args, envKeys: Object.keys(env).sort() };
 }
 

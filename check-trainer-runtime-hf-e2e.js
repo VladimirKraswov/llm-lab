@@ -790,7 +790,10 @@ async function createJob(baseUrl, jwt, payload) {
 async function launchJob(baseUrl, jwt, jobId) {
   return requestJson('POST', `${baseUrl}/api/v1/trainer/jobs/${encodeURIComponent(jobId)}/launch`, {
     headers: { authorization: `Bearer ${jwt}` },
-    json: { inheritEnv: ['HF_TOKEN'] },
+    json: {
+      inheritEnv: ['HF_TOKEN'],
+      autoRemove: false,
+    },
     expectedStatus: 202,
     timeoutMs: 60_000,
   });
