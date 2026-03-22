@@ -139,6 +139,25 @@ router.get('/builds/:id', async (req, res) => {
   }
 });
 
+// НОВЫЙ ENDPOINT ДЛЯ ЛОГОВ БИЛДА
+router.get('/builds/:id/logs', async (req, res) => {
+  try {
+    const build = await getBuildById(req.params.id);
+
+    if (!build) {
+      return res.status(404).json({ error: 'Build not found' });
+    }
+
+    return res.json({
+      id: build.id,
+      status: build.status,
+      logs: build.logs || '',
+    });
+  } catch (err) {
+    return res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 // Старый маршрут — оставляем
 router.post('/recipes/:id/build', async (req, res) => {
   try {
@@ -149,7 +168,7 @@ router.post('/recipes/:id/build', async (req, res) => {
   }
 });
 
-// Новый совместимый маршрут под ожидание фронта
+// Совместимый маршрут под фронт
 router.post('/builds', async (req, res) => {
   try {
     const recipeId = String(req.body?.recipeId || req.body?.recipe_id || '').trim();
