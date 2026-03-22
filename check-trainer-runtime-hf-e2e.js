@@ -238,19 +238,25 @@ function truncate(text, max = 3000) {
   return `${value.slice(0, max)}\n...<truncated ${value.length - max} chars>`;
 }
 
-function requestRaw(method, urlString, { headers = {}, body = null, timeoutMs = 30000 } = {}) {
+function requestRaw(method, urlString, { headers = {}, body = null, timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString);
     const lib = url.protocol === 'https:' ? https : http;
+
     const req = lib.request({
       protocol: url.protocol,
       hostname: url.hostname,
       port: url.port,
       path: `${url.pathname}${url.search}`,
       method,
-      headers,
+      headers: {
+        connection: 'close',
+        ...headers,
+      },
+      agent: false,
     }, (res) => {
       const chunks = [];
+
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
         const buffer = Buffer.concat(chunks);
@@ -262,31 +268,86 @@ function requestRaw(method, urlString, { headers = {}, body = null, timeoutMs = 
         });
       });
     });
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Request timeout after ${timeoutMs}ms`)));
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Request timeout after ${timeoutMs}ms`));
+    });
+
     req.on('error', reject);
+
     if (body) req.write(body);
     req.end();
   });
 }
 
-async function requestJson(method, urlString, { headers = {}, json = undefined, timeoutMs = 30000, expectedStatus = null } = {}) {
-  const body = json === undefined ? null : Buffer.from(JSON.stringify(json), 'utf-8');
-  const response = await requestRaw(method, urlString, {
-    headers: {
-      ...(body ? { 'content-type': 'application/json', 'content-length': String(body.length) } : {}),
-      ...headers,
-    },
-    body,
-    timeoutMs,
-  });
-  const payload = response.text ? safeJsonParse(response.text) : null;
-  if (expectedStatus != null && response.status !== expectedStatus) {
-    throw new Error(`${method} ${urlString} -> HTTP ${response.status}: ${truncate(response.text)}`);
+async function requestJsonRetry(method, urlString, {
+  headers = {},
+  json = undefined,
+  timeoutMs = 10000,
+  expectedStatus = null,
+  attempts = 3,
+  delayMs = 1200,
+} = {}) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await requestJson(method, urlString, {
+        headers,
+        json,
+        timeoutMs,
+        expectedStatus,
+      });
+    } catch (error) {
+      lastError = error;
+
+      const message = String(error && error.message ? error.message : error);
+      const retryable =
+        /timeout/i.test(message) ||
+        /ECONNRESET/i.test(message) ||
+        /socket hang up/i.test(message) ||
+        /EPIPE/i.test(message) ||
+        /ETIMEDOUT/i.test(message) ||
+        /HTTP 5\d\d/i.test(message);
+
+      if (!retryable || attempt >= attempts) {
+        throw error;
+      }
+
+      await sleep(delayMs);
+    }
   }
-  if (response.status >= 400) {
-    throw new Error(`${method} ${urlString} -> HTTP ${response.status}: ${truncate(response.text)}`);
+
+  throw lastError;
+}
+
+async function getDockerInspect(containerName, verbose = false) {
+  if (!containerName) return null;
+  try {
+    const { stdout } = await runCommand(
+      'docker',
+      ['inspect', containerName],
+      { verbose, label: 'docker-inspect' }
+    );
+    const parsed = safeJsonParse(stdout);
+    return Array.isArray(parsed) ? parsed[0] || null : parsed;
+  } catch (error) {
+    return { error: String(error.message || error) };
   }
-  return payload;
+}
+
+async function getDockerLogs(containerName, verbose = false, tail = 200) {
+  if (!containerName) return '';
+  try {
+    const { stdout, stderr } = await runCommand(
+      'docker',
+      ['logs', '--tail', String(tail), containerName],
+      { verbose, label: 'docker-logs' }
+    );
+    return [stdout, stderr].filter(Boolean).join('\n');
+  } catch (error) {
+    return `Failed to read docker logs: ${String(error.message || error)}`;
+  }
 }
 
 function buildMultipartBody(fields, file) {
@@ -701,66 +762,162 @@ async function launchJob(baseUrl, jwt, jobId) {
 }
 
 async function getJob(baseUrl, jwt, jobId) {
-  return requestJson('GET', `${baseUrl}/api/v1/trainer/jobs/${encodeURIComponent(jobId)}`, {
+  return requestJsonRetry('GET', `${baseUrl}/api/v1/trainer/jobs/${encodeURIComponent(jobId)}`, {
     headers: { authorization: `Bearer ${jwt}` },
+    timeoutMs: 8000,
+    attempts: 2,
+    delayMs: 1000,
   });
 }
 
 async function getJobResult(baseUrl, jwt, jobId) {
-  return requestJson('GET', `${baseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/result`, {
+  return requestJsonRetry('GET', `${baseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/result`, {
     headers: { authorization: `Bearer ${jwt}` },
+    timeoutMs: 8000,
+    attempts: 2,
+    delayMs: 1000,
   });
 }
 
 async function getJobArtifacts(baseUrl, jwt, jobId) {
-  return requestJson('GET', `${baseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/artifacts`, {
+  return requestJsonRetry('GET', `${baseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/artifacts`, {
     headers: { authorization: `Bearer ${jwt}` },
+    timeoutMs: 8000,
+    attempts: 2,
+    delayMs: 1000,
   });
 }
 
 async function getJobLogs(baseUrl, jwt, jobId) {
-  return requestJson('GET', `${baseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/logs`, {
+  return requestJsonRetry('GET', `${baseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/logs`, {
     headers: { authorization: `Bearer ${jwt}` },
+    timeoutMs: 8000,
+    attempts: 2,
+    delayMs: 1000,
   });
 }
 
 async function getJobEvents(baseUrl, jwt, jobId) {
-  return requestJson('GET', `${baseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/events?limit=500`, {
+  return requestJsonRetry('GET', `${baseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/events?limit=500`, {
     headers: { authorization: `Bearer ${jwt}` },
+    timeoutMs: 8000,
+    attempts: 2,
+    delayMs: 1000,
   });
 }
 
-async function waitForJobTerminal(baseUrl, jwt, jobId, timeoutMs) {
+async function waitForJobTerminal(baseUrl, jwt, jobId, timeoutMs, { containerName = '', verbose = false } = {}) {
   const startedAt = Date.now();
   let lastStatus = '';
   let lastStage = '';
   let lastProgress = null;
+  let consecutivePollErrors = 0;
 
   while (Date.now() - startedAt < timeoutMs) {
-    const job = await getJob(baseUrl, jwt, jobId);
-    const status = String(job?.status || '').toLowerCase();
-    const stage = String(job?.stage || '');
-    const progress = job?.progressPercent != null ? Number(job.progressPercent) : job?.progress != null ? Number(job.progress) : null;
+    try {
+      const job = await getJob(baseUrl, jwt, jobId);
+      consecutivePollErrors = 0;
 
-    if (status !== lastStatus || stage !== lastStage || progress !== lastProgress) {
-      info(`Job ${jobId}: status=${status || '<empty>'} stage=${stage || '<empty>'} progress=${progress == null ? 'n/a' : progress}`);
-      lastStatus = status;
-      lastStage = stage;
-      lastProgress = progress;
+      const status = String(job?.status || '').toLowerCase();
+      const stage = String(job?.stage || '');
+      const progress =
+        job?.progressPercent != null
+          ? Number(job.progressPercent)
+          : job?.progress != null
+            ? Number(job.progress)
+            : null;
+
+      if (status !== lastStatus || stage !== lastStage || progress !== lastProgress) {
+        info(
+          `Job ${jobId}: status=${status || '<empty>'} stage=${stage || '<empty>'} progress=${
+            progress == null ? 'n/a' : progress
+          }`
+        );
+        lastStatus = status;
+        lastStage = stage;
+        lastProgress = progress;
+      }
+
+      if (['finished', 'failed', 'cancelled'].includes(status)) {
+        return job;
+      }
+    } catch (error) {
+      consecutivePollErrors += 1;
+      warn(`Job polling failed (${consecutivePollErrors}): ${error.message}`);
+
+      const health = await probeUrl(`${baseUrl}/health`, 4000).catch((healthError) => ({
+        ok: false,
+        error: String(healthError.message || healthError),
+      }));
+      info(`Backend health probe during polling: ${JSON.stringify(health)}`);
+
+      try {
+        const result = await getJobResult(baseUrl, jwt, jobId);
+        const outcome = String(
+          result?.outcome ||
+          result?.status ||
+          result?.summary?.status ||
+          ''
+        ).toLowerCase();
+
+        if (['success', 'succeeded', 'finished'].includes(outcome)) {
+          info(`Terminal state derived from result endpoint: ${outcome}`);
+          return {
+            status: 'finished',
+            stage: 'finished',
+            derivedFrom: 'result',
+            result,
+          };
+        }
+
+        if (['failed', 'error'].includes(outcome)) {
+          return {
+            status: 'failed',
+            stage: 'failed',
+            derivedFrom: 'result',
+            result,
+          };
+        }
+      } catch {
+        // ignore fallback errors
+      }
+
+      if (consecutivePollErrors >= 3 && containerName) {
+        const inspect = await getDockerInspect(containerName, verbose);
+        const dockerState = inspect?.State || inspect?.state || null;
+        if (dockerState) {
+          info(`Docker state: ${JSON.stringify(dockerState)}`);
+        }
+      }
     }
 
-    if (['finished', 'failed', 'cancelled'].includes(status)) {
-      return job;
-    }
-    await sleep(5_000);
+    await sleep(5000);
   }
 
-  const logs = await getJobLogs(baseUrl, jwt, jobId).catch(() => []);
-  const events = await getJobEvents(baseUrl, jwt, jobId).catch(() => []);
+  const health = await probeUrl(`${baseUrl}/health`, 5000).catch((error) => ({
+    ok: false,
+    error: String(error.message || error),
+  }));
+  const logs = await getJobLogs(baseUrl, jwt, jobId).catch((error) => ({
+    error: String(error.message || error),
+  }));
+  const events = await getJobEvents(baseUrl, jwt, jobId).catch((error) => ({
+    error: String(error.message || error),
+  }));
+  const result = await getJobResult(baseUrl, jwt, jobId).catch((error) => ({
+    error: String(error.message || error),
+  }));
+  const inspect = await getDockerInspect(containerName, verbose);
+  const dockerLogs = await getDockerLogs(containerName, verbose, 300);
+
   throw new Error(
     `Job ${jobId} did not reach terminal state in time\n` +
+    `Backend health: ${truncate(JSON.stringify(health, null, 2), 2000)}\n` +
+    `Result endpoint: ${truncate(JSON.stringify(result, null, 2), 3000)}\n` +
     `Recent logs: ${truncate(JSON.stringify(logs, null, 2), 4000)}\n` +
-    `Recent events: ${truncate(JSON.stringify(events, null, 2), 4000)}`
+    `Recent events: ${truncate(JSON.stringify(events, null, 2), 4000)}\n` +
+    `Docker inspect: ${truncate(JSON.stringify(inspect, null, 2), 3000)}\n` +
+    `Docker logs:\n${truncate(dockerLogs, 6000)}`
   );
 }
 
@@ -950,9 +1107,14 @@ async function main() {
       jwt,
       jobId,
       args.timeoutMinutes * 60 * 1000,
+      {
+        containerName: launchedContainerName,
+        verbose: args.verbose,
+      }
     );
 
-    if (String(terminalJob.status).toLowerCase() !== 'finished') {
+    const terminalStatus = String(terminalJob.status || '').toLowerCase();
+    if (!['finished', 'success', 'succeeded'].includes(terminalStatus)) {
       const logs = await getJobLogs(backend.externalBaseUrl, jwt, jobId).catch(() => []);
       const events = await getJobEvents(backend.externalBaseUrl, jwt, jobId).catch(() => []);
       throw new Error(
