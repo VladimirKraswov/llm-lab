@@ -872,7 +872,7 @@ function buildTrainerJobPayload({
           target: 'url',
           timeout_sec: 300,
         },
-      },
+      }
     },
 
     executor: {

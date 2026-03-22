@@ -8,9 +8,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-os.environ["WANDB_DISABLED"] = "true"
+# Убираем deprecated-переменную, даже если она пришла снаружи.
+os.environ.pop("WANDB_DISABLED", None)
 
-import unsloth
+import unsloth  # noqa: F401
 from unsloth import FastLanguageModel
 
 import torch
@@ -55,7 +56,6 @@ def resolve_model_args(cfg: JobConfig) -> tuple[str, bool, Optional[str]]:
     )
 
     logical_base_model_id = cfg.model.logical_base_model_id
-
     return model_name, load_in_4bit, logical_base_model_id
 
 
@@ -86,19 +86,21 @@ def build_text_from_messages(messages: list[dict], tokenizer) -> str:
 
 
 def format_example(example: Dict[str, Any], cfg: JobConfig, tokenizer) -> Dict[str, str]:
+    eos_token = tokenizer.eos_token or ""
+
     if cfg.dataset.format == "instruction_output":
         input_value = str(example.get(cfg.dataset.input_field, "") or "").strip()
         output_value = str(example.get(cfg.dataset.output_field, "") or "").strip()
         text = (
             f"### Instruction:\n{input_value}\n\n"
-            f"### Response:\n{output_value}{tokenizer.eos_token}"
+            f"### Response:\n{output_value}{eos_token}"
         )
         return {"text": text}
 
     if cfg.dataset.format == "prompt_completion":
         prompt_value = str(example.get(cfg.dataset.input_field, "") or "").strip()
         completion_value = str(example.get(cfg.dataset.output_field, "") or "").strip()
-        text = f"{prompt_value}{completion_value}{tokenizer.eos_token}"
+        text = f"{prompt_value}{completion_value}{eos_token}"
         return {"text": text}
 
     if cfg.dataset.format == "messages":
@@ -106,8 +108,8 @@ def format_example(example: Dict[str, Any], cfg: JobConfig, tokenizer) -> Dict[s
         if not isinstance(messages, list):
             return {"text": ""}
         text = build_text_from_messages(messages, tokenizer)
-        if tokenizer.eos_token and not text.endswith(tokenizer.eos_token):
-            text = f"{text}{tokenizer.eos_token}"
+        if eos_token and not text.endswith(eos_token):
+            text = f"{text}{eos_token}"
         return {"text": text}
 
     raise ValueError(f"Unsupported dataset format: {cfg.dataset.format}")
@@ -189,7 +191,6 @@ def _build_training_args(cfg: JobConfig, checkpoint_dir: str, has_validation: bo
         "save_strategy": "steps",
         "save_total_limit": cfg.training.save_total_limit,
         "optim": cfg.training.optim,
-        "report_to": [],
         "push_to_hub": False,
         "logging_dir": cfg.outputs.logs_dir,
     }
@@ -198,6 +199,9 @@ def _build_training_args(cfg: JobConfig, checkpoint_dir: str, has_validation: bo
     supported = set(sig.parameters.keys())
 
     filtered_kwargs = {k: v for k, v in common_kwargs.items() if k in supported}
+
+    if "report_to" in supported:
+        filtered_kwargs["report_to"] = "none"
 
     if has_validation:
         if "eval_steps" in supported:
@@ -292,6 +296,8 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    if getattr(tokenizer, "padding_side", None) != "right":
+        tokenizer.padding_side = "right"
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -391,11 +397,13 @@ def run_training(cfg: JobConfig, reporter: Optional[Reporter] = None) -> dict:
             )
 
         logger.info("==> saving merged model to %s", merged_dir)
+        logger.info("==> merged 16-bit save may take several minutes for 7B model")
         model.save_pretrained_merged(
             save_directory=str(merged_dir),
             tokenizer=tokenizer,
             save_method="merged_16bit",
         )
+        logger.info("==> merged model saved")
         merged_saved = True
 
     metrics = dict(train_result.metrics)
