@@ -139,9 +139,26 @@ router.get('/builds/:id', async (req, res) => {
   }
 });
 
+// Старый маршрут — оставляем
 router.post('/recipes/:id/build', async (req, res) => {
   try {
     const build = await startBuild(req.params.id);
+    res.json(toCamelCase(build));
+  } catch (err) {
+    res.status(400).json({ error: String(err.message || err) });
+  }
+});
+
+// Новый совместимый маршрут под ожидание фронта
+router.post('/builds', async (req, res) => {
+  try {
+    const recipeId = String(req.body?.recipeId || req.body?.recipe_id || '').trim();
+
+    if (!recipeId) {
+      return res.status(400).json({ error: 'recipeId is required' });
+    }
+
+    const build = await startBuild(recipeId);
     res.json(toCamelCase(build));
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });
