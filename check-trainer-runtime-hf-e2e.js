@@ -280,6 +280,41 @@ function requestRaw(method, urlString, { headers = {}, body = null, timeoutMs = 
   });
 }
 
+async function requestJson(method, urlString, {
+  headers = {},
+  json = undefined,
+  timeoutMs = 30000,
+  expectedStatus = null,
+} = {}) {
+  const body = json === undefined ? null : Buffer.from(JSON.stringify(json), 'utf-8');
+
+  const response = await requestRaw(method, urlString, {
+    headers: {
+      ...(body
+        ? {
+            'content-type': 'application/json',
+            'content-length': String(body.length),
+          }
+        : {}),
+      ...headers,
+    },
+    body,
+    timeoutMs,
+  });
+
+  const payload = response.text ? safeJsonParse(response.text) : null;
+
+  if (expectedStatus != null && response.status !== expectedStatus) {
+    throw new Error(`${method} ${urlString} -> HTTP ${response.status}: ${truncate(response.text)}`);
+  }
+
+  if (response.status >= 400) {
+    throw new Error(`${method} ${urlString} -> HTTP ${response.status}: ${truncate(response.text)}`);
+  }
+
+  return payload;
+}
+
 async function requestJsonRetry(method, urlString, {
   headers = {},
   json = undefined,
