@@ -33,7 +33,11 @@ const { getDatasets } = require('../services/state');
 const { buildRemoteTrainerConfig } = require('../services/remote-job-config');
 const { CONFIG } = require('../config');
 const { buildPublicBaseUrl } = require('../utils/public-base-url');
-const { getRuntimePresets, getRuntimePresetById } = require('../services/runtime-presets');
+const {
+  getRuntimePresets,
+  getRuntimePresetById,
+  updateRuntimePreset,
+} = require('../services/runtime-presets');
 const { generateDockerCompose, generateEnvFile, generateReadme } = require('../services/launch-bundle');
 const {
   normalizeArtifactType,
@@ -143,6 +147,29 @@ router.get('/runtime-presets', async (req, res) => {
     res.status(500).json({ error: String(err.message || err) });
   }
 });
+
+router.get('/runtime-presets/:id', async (req, res) => {
+  try {
+    const preset = await getRuntimePresetById(req.params.id);
+    if (!preset) {
+      return res.status(404).json({ error: 'Runtime preset not found' });
+    }
+    res.json(preset);
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+router.put('/runtime-presets/:id', async (req, res) => {
+  try {
+    const preset = await updateRuntimePreset(req.params.id, req.body || {});
+    res.json(preset);
+  } catch (err) {
+    const message = String(err.message || err);
+    const status = message.includes('not found') ? 404 : 400;
+    res.status(status).json({ error: message });
+  }
+});;
 
 router.get('/', async (req, res) => {
   try {
