@@ -916,6 +916,7 @@ module.exports = {
   cloneJob,
   retryJob,
   cancelJob,
+  normalizeJobStatus,
   handleWorkerStatus,
   handleWorkerProgress,
   handleWorkerFinal,
