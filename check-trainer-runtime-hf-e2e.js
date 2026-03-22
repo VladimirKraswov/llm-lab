@@ -8,112 +8,14 @@ const os = require('os');
 const http = require('http');
 const https = require('https');
 const { spawn } = require('child_process');
-const { randomBytes } = require('crypto');
 
 // ============================================================================
-// Helper functions for network and Docker connectivity
-// ============================================================================
-
-/**
- * Remap a URL that may contain host.docker.internal to 127.0.0.1
- * when accessed from the host machine.
- */
-function remapUrlForHost(urlString, { backendPort, datasetsPort }) {
-  const src = new URL(urlString);
-  const pathAndQuery = `${src.pathname}${src.search}${src.hash}`;
-
-  if (src.port && String(src.port) === String(backendPort)) {
-    return `http://127.0.0.1:${backendPort}${pathAndQuery}`;
-  }
-
-  if (src.port && String(src.port) === String(datasetsPort)) {
-    return `http://127.0.0.1:${datasetsPort}${pathAndQuery}`;
-  }
-
-  if (src.hostname === 'host.docker.internal') {
-    return `http://127.0.0.1:${src.port || backendPort}${pathAndQuery}`;
-  }
-
-  return urlString;
-}
-
-/**
- * Determine the correct hostname for containers to reach the host.
- * On Linux we use host.docker.internal, on other platforms it's the same.
- */
-function getContainerHostAlias() {
-  if (process.platform === 'linux') {
-    return 'host.docker.internal';
-  }
-  return 'host.docker.internal';
-}
-
-/**
- * Build a base URL that containers can use to reach a service on the host.
- */
-function buildContainerBaseUrl(port) {
-  return `http://${getContainerHostAlias()}:${port}`;
-}
-
-/**
- * Probe a URL to check if it's reachable, returning status and response preview.
- */
-async function probeUrl(urlString, timeoutMs = 15000) {
-  const startedAt = Date.now();
-  const url = new URL(urlString);
-  const lib = url.protocol === 'https:' ? https : http;
-
-  return new Promise((resolve) => {
-    const req = lib.request(
-      url,
-      {
-        method: 'GET',
-        timeout: timeoutMs,
-      },
-      (res) => {
-        let body = '';
-        res.setEncoding('utf8');
-
-        res.on('data', (chunk) => {
-          if (body.length < 2000) {
-            body += chunk;
-          }
-        });
-
-        res.on('end', () => {
-          resolve({
-            ok: res.statusCode >= 200 && res.statusCode < 300,
-            status: res.statusCode,
-            ms: Date.now() - startedAt,
-            bodyPreview: body.slice(0, 500),
-          });
-        });
-      }
-    );
-
-    req.on('timeout', () => {
-      req.destroy(new Error(`Request timeout after ${timeoutMs}ms`));
-    });
-
-    req.on('error', (error) => {
-      resolve({
-        ok: false,
-        ms: Date.now() - startedAt,
-        error: String(error && error.message ? error.message : error),
-      });
-    });
-
-    req.end();
-  });
-}
-
-// ============================================================================
-// Original utility functions (printHelp, color, etc.)
+// CLI
 // ============================================================================
 
 function printHelp() {
   console.log(`Usage:
-  node scripts/check-trainer-runtime-hf-e2e.js [options]
+  node ./check-trainer-runtime-hf-e2e.js [options]
 
 Required:
   --project-root PATH           Backend project root (contains package.json and src/server.js)
@@ -132,6 +34,7 @@ Options:
   --timeout-minutes N           Max whole-job wait time (default: 90)
   --hf-wait-seconds N           Wait after finish for HF files (default: 180)
   --job-id ID                   Explicit job id (default: auto)
+  --logical-base-model-id ID    Optional logical HF base model id for metadata, e.g. Qwen/Qwen2.5-7B-Instruct
   --keep-workdir                Keep temp workdir and backend data
   --verbose                     Stream docker/backend output
   --skip-build                  Skip docker build even if --trainer-service-dir is set; requires --runtime-image
@@ -154,6 +57,7 @@ function parseArgs(argv) {
     projectRoot: null,
     trainerServiceDir: null,
     runtimeImage: null,
+    hfRepo: '',
     baseImage: 'igortet/model-qwen-7b',
     imageTag: `forge-trainer-e2e:${Date.now()}`,
     host: '0.0.0.0',
@@ -162,6 +66,7 @@ function parseArgs(argv) {
     timeoutMinutes: 90,
     hfWaitSeconds: 180,
     jobId: '',
+    logicalBaseModelId: '',
     keepWorkdir: false,
     verbose: false,
     skipBuild: false,
@@ -170,21 +75,54 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     switch (token) {
-      case '--project-root': args.projectRoot = path.resolve(argv[++i] || '.'); break;
-      case '--trainer-service-dir': args.trainerServiceDir = path.resolve(argv[++i] || '.'); break;
-      case '--runtime-image': args.runtimeImage = String(argv[++i] || '').trim(); break;
-      case '--hf-repo': args.hfRepo = String(argv[++i] || '').trim(); break;
-      case '--base-image': args.baseImage = String(argv[++i] || '').trim(); break;
-      case '--image-tag': args.imageTag = String(argv[++i] || '').trim(); break;
-      case '--host': args.host = String(argv[++i] || '').trim() || args.host; break;
-      case '--port': args.port = Number(argv[++i] || args.port); break;
-      case '--datasets-port': args.datasetsPort = Number(argv[++i] || args.datasetsPort); break;
-      case '--timeout-minutes': args.timeoutMinutes = Number(argv[++i] || args.timeoutMinutes); break;
-      case '--hf-wait-seconds': args.hfWaitSeconds = Number(argv[++i] || args.hfWaitSeconds); break;
-      case '--job-id': args.jobId = String(argv[++i] || '').trim(); break;
-      case '--keep-workdir': args.keepWorkdir = true; break;
-      case '--verbose': args.verbose = true; break;
-      case '--skip-build': args.skipBuild = true; break;
+      case '--project-root':
+        args.projectRoot = path.resolve(argv[++i] || '.');
+        break;
+      case '--trainer-service-dir':
+        args.trainerServiceDir = path.resolve(argv[++i] || '.');
+        break;
+      case '--runtime-image':
+        args.runtimeImage = String(argv[++i] || '').trim();
+        break;
+      case '--hf-repo':
+        args.hfRepo = String(argv[++i] || '').trim();
+        break;
+      case '--base-image':
+        args.baseImage = String(argv[++i] || '').trim();
+        break;
+      case '--image-tag':
+        args.imageTag = String(argv[++i] || '').trim();
+        break;
+      case '--host':
+        args.host = String(argv[++i] || '').trim() || args.host;
+        break;
+      case '--port':
+        args.port = Number(argv[++i] || args.port);
+        break;
+      case '--datasets-port':
+        args.datasetsPort = Number(argv[++i] || args.datasetsPort);
+        break;
+      case '--timeout-minutes':
+        args.timeoutMinutes = Number(argv[++i] || args.timeoutMinutes);
+        break;
+      case '--hf-wait-seconds':
+        args.hfWaitSeconds = Number(argv[++i] || args.hfWaitSeconds);
+        break;
+      case '--job-id':
+        args.jobId = String(argv[++i] || '').trim();
+        break;
+      case '--logical-base-model-id':
+        args.logicalBaseModelId = String(argv[++i] || '').trim();
+        break;
+      case '--keep-workdir':
+        args.keepWorkdir = true;
+        break;
+      case '--verbose':
+        args.verbose = true;
+        break;
+      case '--skip-build':
+        args.skipBuild = true;
+        break;
       case '--help':
       case '-h':
         printHelp();
@@ -203,6 +141,7 @@ function parseArgs(argv) {
   if (args.skipBuild && !args.runtimeImage) {
     throw new Error('--skip-build requires --runtime-image');
   }
+
   if (!Number.isFinite(args.port) || args.port <= 0) args.port = 18787;
   if (!Number.isFinite(args.datasetsPort) || args.datasetsPort <= 0) args.datasetsPort = 18888;
   if (!Number.isFinite(args.timeoutMinutes) || args.timeoutMinutes <= 0) args.timeoutMinutes = 90;
@@ -210,6 +149,10 @@ function parseArgs(argv) {
 
   return args;
 }
+
+// ============================================================================
+// Logging
+// ============================================================================
 
 function color(code, text) {
   if (!process.stdout.isTTY) return text;
@@ -220,6 +163,10 @@ function ok(text) { console.log(color('32', `✔ ${text}`)); }
 function warn(text) { console.log(color('33', `! ${text}`)); }
 function fail(text) { console.error(color('31', `✖ ${text}`)); }
 
+// ============================================================================
+// Utils
+// ============================================================================
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -229,7 +176,11 @@ function ensureFile(filePath) {
 }
 
 function safeJsonParse(text) {
-  try { return JSON.parse(text); } catch { return null; }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function truncate(text, max = 3000) {
@@ -238,36 +189,71 @@ function truncate(text, max = 3000) {
   return `${value.slice(0, max)}\n...<truncated ${value.length - max} chars>`;
 }
 
+// ============================================================================
+// Network helpers
+// ============================================================================
+
+function getContainerHostAlias() {
+  return 'host.docker.internal';
+}
+
+function buildContainerBaseUrl(port) {
+  return `http://${getContainerHostAlias()}:${port}`;
+}
+
+function remapUrlForHost(urlString, { backendPort, datasetsPort }) {
+  const src = new URL(urlString);
+  const pathAndQuery = `${src.pathname}${src.search}${src.hash}`;
+
+  if (src.hostname === 'host.docker.internal') {
+    if (src.port && String(src.port) === String(datasetsPort)) {
+      return `http://127.0.0.1:${datasetsPort}${pathAndQuery}`;
+    }
+    return `http://127.0.0.1:${src.port || backendPort}${pathAndQuery}`;
+  }
+
+  if (src.port && String(src.port) === String(backendPort)) {
+    return `http://127.0.0.1:${backendPort}${pathAndQuery}`;
+  }
+  if (src.port && String(src.port) === String(datasetsPort)) {
+    return `http://127.0.0.1:${datasetsPort}${pathAndQuery}`;
+  }
+
+  return urlString;
+}
+
 function requestRaw(method, urlString, { headers = {}, body = null, timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString);
     const lib = url.protocol === 'https:' ? https : http;
 
-    const req = lib.request({
-      protocol: url.protocol,
-      hostname: url.hostname,
-      port: url.port,
-      path: `${url.pathname}${url.search}`,
-      method,
-      headers: {
-        connection: 'close',
-        ...headers,
+    const req = lib.request(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port,
+        path: `${url.pathname}${url.search}`,
+        method,
+        headers: {
+          connection: 'close',
+          ...headers,
+        },
+        agent: false,
       },
-      agent: false,
-    }, (res) => {
-      const chunks = [];
-
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => {
-        const buffer = Buffer.concat(chunks);
-        resolve({
-          status: res.statusCode || 0,
-          headers: res.headers,
-          buffer,
-          text: buffer.toString('utf-8'),
+      (res) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          resolve({
+            status: res.statusCode || 0,
+            headers: res.headers,
+            buffer,
+            text: buffer.toString('utf-8'),
+          });
         });
-      });
-    });
+      }
+    );
 
     req.setTimeout(timeoutMs, () => {
       req.destroy(new Error(`Request timeout after ${timeoutMs}ms`));
@@ -283,7 +269,7 @@ function requestRaw(method, urlString, { headers = {}, body = null, timeoutMs = 
 async function requestJson(method, urlString, {
   headers = {},
   json = undefined,
-  timeoutMs = 30000,
+  timeoutMs = 15000,
   expectedStatus = null,
 } = {}) {
   const body = json === undefined ? null : Buffer.from(JSON.stringify(json), 'utf-8');
@@ -307,7 +293,6 @@ async function requestJson(method, urlString, {
   if (expectedStatus != null && response.status !== expectedStatus) {
     throw new Error(`${method} ${urlString} -> HTTP ${response.status}: ${truncate(response.text)}`);
   }
-
   if (response.status >= 400) {
     throw new Error(`${method} ${urlString} -> HTTP ${response.status}: ${truncate(response.text)}`);
   }
@@ -318,7 +303,7 @@ async function requestJson(method, urlString, {
 async function requestJsonRetry(method, urlString, {
   headers = {},
   json = undefined,
-  timeoutMs = 10000,
+  timeoutMs = 8000,
   expectedStatus = null,
   attempts = 3,
   delayMs = 1200,
@@ -335,8 +320,8 @@ async function requestJsonRetry(method, urlString, {
       });
     } catch (error) {
       lastError = error;
-
       const message = String(error && error.message ? error.message : error);
+
       const retryable =
         /timeout/i.test(message) ||
         /ECONNRESET/i.test(message) ||
@@ -348,7 +333,6 @@ async function requestJsonRetry(method, urlString, {
       if (!retryable || attempt >= attempts) {
         throw error;
       }
-
       await sleep(delayMs);
     }
   }
@@ -356,78 +340,29 @@ async function requestJsonRetry(method, urlString, {
   throw lastError;
 }
 
-async function getDockerInspect(containerName, verbose = false) {
-  if (!containerName) return null;
+async function probeUrl(urlString, timeoutMs = 10000) {
+  const startedAt = Date.now();
   try {
-    const { stdout } = await runCommand(
-      'docker',
-      ['inspect', containerName],
-      { verbose, label: 'docker-inspect' }
-    );
-    const parsed = safeJsonParse(stdout);
-    return Array.isArray(parsed) ? parsed[0] || null : parsed;
+    const response = await requestRaw('GET', urlString, { timeoutMs });
+    return {
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      ms: Date.now() - startedAt,
+      bodyPreview: String(response.text || '').slice(0, 500),
+    };
   } catch (error) {
-    return { error: String(error.message || error) };
+    return {
+      ok: false,
+      ms: Date.now() - startedAt,
+      error: String(error && error.message ? error.message : error),
+    };
   }
-}
-
-async function getDockerLogs(containerName, verbose = false, tail = 200) {
-  if (!containerName) return '';
-  try {
-    const { stdout, stderr } = await runCommand(
-      'docker',
-      ['logs', '--tail', String(tail), containerName],
-      { verbose, label: 'docker-logs' }
-    );
-    return [stdout, stderr].filter(Boolean).join('\n');
-  } catch (error) {
-    return `Failed to read docker logs: ${String(error.message || error)}`;
-  }
-}
-
-function buildMultipartBody(fields, file) {
-  const boundary = `----forge-e2e-${randomBytes(12).toString('hex')}`;
-  const parts = [];
-  for (const [key, value] of Object.entries(fields || {})) {
-    parts.push(Buffer.from(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="${key}"\r\n\r\n` +
-      `${String(value)}\r\n`,
-      'utf-8'
-    ));
-  }
-  const fileBuffer = fs.readFileSync(file.path);
-  parts.push(Buffer.from(
-    `--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="file"; filename="${file.filename}"\r\n` +
-    `Content-Type: ${file.contentType || 'application/octet-stream'}\r\n\r\n`,
-    'utf-8'
-  ));
-  parts.push(fileBuffer);
-  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`, 'utf-8'));
-  return { boundary, body: Buffer.concat(parts) };
-}
-
-async function requestMultipart(urlString, { headers = {}, fields = {}, file, timeoutMs = 30000 }) {
-  const { boundary, body } = buildMultipartBody(fields, file);
-  const response = await requestRaw('POST', urlString, {
-    headers: {
-      'content-type': `multipart/form-data; boundary=${boundary}`,
-      'content-length': String(body.length),
-      ...headers,
-    },
-    body,
-    timeoutMs,
-  });
-  if (response.status >= 400) {
-    throw new Error(`POST multipart ${urlString} -> HTTP ${response.status}: ${truncate(response.text)}`);
-  }
-  return safeJsonParse(response.text);
 }
 
 async function waitForHealth(baseUrl, timeoutMs) {
   const startedAt = Date.now();
   let lastError = null;
+
   while (Date.now() - startedAt < timeoutMs) {
     try {
       const payload = await requestJson('GET', `${baseUrl}/health`, { timeoutMs: 2000 });
@@ -437,10 +372,20 @@ async function waitForHealth(baseUrl, timeoutMs) {
     }
     await sleep(500);
   }
+
   throw new Error(`Backend did not become healthy in time${lastError ? `: ${lastError.message}` : ''}`);
 }
 
-async function runCommand(command, args, { cwd = process.cwd(), env = process.env, verbose = false, label = command } = {}) {
+// ============================================================================
+// Process helpers
+// ============================================================================
+
+async function runCommand(command, args, {
+  cwd = process.cwd(),
+  env = process.env,
+  verbose = false,
+  label = command,
+} = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -451,6 +396,7 @@ async function runCommand(command, args, { cwd = process.cwd(), env = process.en
       stdout += text;
       if (verbose) process.stdout.write(color('90', `[${label}] ${text}`));
     });
+
     child.stderr.on('data', (chunk) => {
       const text = chunk.toString('utf-8');
       stderr += text;
@@ -467,6 +413,58 @@ async function runCommand(command, args, { cwd = process.cwd(), env = process.en
     });
   });
 }
+
+async function stopChild(child, signal = 'SIGTERM') {
+  if (!child || child.killed || child.exitCode != null) return;
+  try { child.kill(signal); } catch {}
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    if (child.exitCode != null) return;
+    await sleep(250);
+  }
+  try { child.kill('SIGKILL'); } catch {}
+}
+
+// ============================================================================
+// Docker helpers
+// ============================================================================
+
+async function getDockerInspect(containerRef, verbose = false) {
+  if (!containerRef) return null;
+  try {
+    const { stdout } = await runCommand(
+      'docker',
+      ['inspect', containerRef],
+      { verbose, label: 'docker-inspect' }
+    );
+    const parsed = safeJsonParse(stdout);
+    return Array.isArray(parsed) ? parsed[0] || null : parsed;
+  } catch (error) {
+    const message = String(error.message || error);
+    return {
+      missing: /No such object|no such object|No such container/i.test(message),
+      error: message,
+    };
+  }
+}
+
+async function getDockerLogs(containerRef, verbose = false, tail = 200) {
+  if (!containerRef) return '';
+  try {
+    const { stdout, stderr } = await runCommand(
+      'docker',
+      ['logs', '--tail', String(tail), containerRef],
+      { verbose, label: 'docker-logs' }
+    );
+    return [stdout, stderr].filter(Boolean).join('\n');
+  } catch (error) {
+    return `Failed to read docker logs: ${String(error.message || error)}`;
+  }
+}
+
+// ============================================================================
+// Backend + fixture bootstrap
+// ============================================================================
 
 async function spawnBackend(projectRoot, workRoot, args) {
   const dataRoot = path.join(workRoot, 'backend-data');
@@ -506,11 +504,13 @@ async function spawnBackend(projectRoot, workRoot, args) {
 
   let stdout = '';
   let stderr = '';
+
   child.stdout.on('data', (chunk) => {
     const text = chunk.toString('utf-8');
     stdout += text;
     if (args.verbose) process.stdout.write(color('90', `[backend] ${text}`));
   });
+
   child.stderr.on('data', (chunk) => {
     const text = chunk.toString('utf-8');
     stderr += text;
@@ -518,7 +518,7 @@ async function spawnBackend(projectRoot, workRoot, args) {
   });
 
   try {
-    await waitForHealth(externalBaseUrl, 30_000);
+    await waitForHealth(externalBaseUrl, 30000);
   } catch (error) {
     try { child.kill('SIGTERM'); } catch {}
     throw new Error(`${error.message}\nSTDOUT:\n${truncate(stdout)}\nSTDERR:\n${truncate(stderr)}`);
@@ -528,23 +528,11 @@ async function spawnBackend(projectRoot, workRoot, args) {
     child,
     externalBaseUrl,
     publicBaseUrl,
-    env,
     dataRoot,
     artifactsRoot,
     runtimeOutputRoot,
     logs: () => ({ stdout, stderr }),
   };
-}
-
-async function stopChild(child, signal = 'SIGTERM') {
-  if (!child || child.killed || child.exitCode != null) return;
-  try { child.kill(signal); } catch {}
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode != null) return;
-    await sleep(250);
-  }
-  try { child.kill('SIGKILL'); } catch {}
 }
 
 async function startFixtureServer(port, datasetRoot, verbose = false) {
@@ -582,21 +570,24 @@ async function startFixtureServer(port, datasetRoot, verbose = false) {
       const routeMap = {
         '/datasets/train.json': { file: 'train.json', contentType: 'application/json; charset=utf-8' },
         '/datasets/val.json': { file: 'val.json', contentType: 'application/json; charset=utf-8' },
-        '/datasets/eval.jsonl': { file: 'eval.jsonl', contentType: 'application/jsonl; charset=utf-8' },
+        '/datasets/eval.jsonl': { file: 'eval.jsonl', contentType: 'application/x-ndjson; charset=utf-8' },
         '/health': { json: { ok: true } },
       };
+
       const route = routeMap[url.pathname];
       if (!route) {
         res.statusCode = 404;
         res.end('not found');
         return;
       }
+
       if (route.json) {
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json; charset=utf-8');
         res.end(JSON.stringify(route.json));
         return;
       }
+
       const abs = path.join(datasetRoot, route.file);
       const data = await fsp.readFile(abs);
       res.statusCode = 200;
@@ -617,145 +608,12 @@ async function startFixtureServer(port, datasetRoot, verbose = false) {
   const publicBaseUrl = buildContainerBaseUrl(port);
 
   if (verbose) info(`Fixture dataset server listening on 0.0.0.0:${port}`);
-  return {
-    server,
-    externalBaseUrl,
-    publicBaseUrl,
-  };
+  return { server, externalBaseUrl, publicBaseUrl };
 }
 
-function buildTrainerJobPayload({ runtimeProfileId, jobId, runtimeImage, datasetBaseUrl, hfRepo }) {
-  return {
-    runtimeProfileId,
-    jobId,
-    name: `trainer-e2e-${jobId}`,
-    labels: { e2e: true, target: 'huggingface', repo: hfRepo },
-    config: {
-      job_id: jobId,
-      job_name: `trainer-e2e-${jobId}`,
-      mode: 'remote',
-      model: {
-        source: 'local',
-        local_path: '/app',
-        trust_remote_code: false,
-        load_in_4bit: true,
-        dtype: 'bfloat16',
-        max_seq_length: 128,
-      },
-      dataset: {
-        source: 'url',
-        train_url: `${datasetBaseUrl}/datasets/train.json`,
-        val_url: `${datasetBaseUrl}/datasets/val.json`,
-        format: 'instruction_output',
-        input_field: 'input',
-        output_field: 'output',
-      },
-      training: {
-        method: 'qlora',
-        max_seq_length: 128,
-        per_device_train_batch_size: 1,
-        gradient_accumulation_steps: 1,
-        num_train_epochs: 1,
-        learning_rate: 0.0001,
-        warmup_ratio: 0.03,
-        logging_steps: 1,
-        save_steps: 1,
-        eval_steps: 1,
-        bf16: true,
-        packing: false,
-        save_total_limit: 1,
-        optim: 'adamw_8bit',
-      },
-      lora: {
-        r: 8,
-        lora_alpha: 16,
-        lora_dropout: 0.0,
-        bias: 'none',
-        use_gradient_checkpointing: 'unsloth',
-        random_state: 3407,
-        target_modules: ['q_proj', 'v_proj'],
-      },
-      outputs: {
-        base_dir: `/output/${jobId}`,
-      },
-      postprocess: {
-        merge_lora: true,
-        save_merged_16bit: true,
-        run_awq_quantization: false,
-      },
-      evaluation: {
-        enabled: true,
-        target: 'merged',
-        max_samples: 1,
-        max_new_tokens: 32,
-        temperature: 0,
-        do_sample: false,
-        dataset: {
-          source: 'url',
-          url: `${datasetBaseUrl}/datasets/eval.jsonl`,
-          format: 'jsonl',
-          question_field: 'question',
-          answer_field: 'candidate_answer',
-          score_field: 'reference_score',
-          max_score_field: 'max_score',
-          tags_field: 'hash_tags',
-        },
-      },
-      upload: {
-        enabled: true,
-        target: 'url',
-        timeout_sec: 300,
-      },
-      huggingface: {
-        enabled: true,
-        push_lora: false,
-        push_merged: true,
-        repo_id_merged: hfRepo,
-        repo_id_metadata: hfRepo,
-        private: false,
-        commit_message: `trainer-runtime e2e ${jobId}`,
-      },
-      pipeline: {
-        prepare_assets: { enabled: true },
-        training: { enabled: true },
-        merge: { enabled: true },
-        evaluation: { enabled: true },
-        publish: { enabled: true },
-        upload: { enabled: true },
-      },
-    },
-    executor: {
-      image: runtimeImage,
-      gpus: 'all',
-      shmSize: '16g',
-      extraDockerArgs: ['--add-host=host.docker.internal:host-gateway'],
-    },
-  };
-}
-
-async function buildRuntimeImage(args) {
-  if (args.runtimeImage && (args.skipBuild || !args.trainerServiceDir)) {
-    return args.runtimeImage;
-  }
-  const trainerDir = args.trainerServiceDir;
-  ensureFile(path.join(trainerDir, 'docker', 'Dockerfile'));
-  ensureFile(path.join(trainerDir, 'requirements.txt'));
-
-  info(`Building trainer runtime image ${args.imageTag}`);
-  await runCommand('docker', [
-    'build',
-    '--build-arg', `BASE_IMAGE=${args.baseImage}`,
-    '-t', args.imageTag,
-    '-f', path.join(trainerDir, 'docker', 'Dockerfile'),
-    trainerDir,
-  ], {
-    cwd: trainerDir,
-    verbose: args.verbose,
-    label: 'docker-build',
-  });
-  ok(`Runtime image built: ${args.imageTag}`);
-  return args.imageTag;
-}
+// ============================================================================
+// API helpers
+// ============================================================================
 
 async function login(baseUrl) {
   const payload = await requestJson('POST', `${baseUrl}/api/v1/auth/login`, {
@@ -783,19 +641,23 @@ async function createJob(baseUrl, jwt, payload) {
     headers: { authorization: `Bearer ${jwt}` },
     json: payload,
     expectedStatus: 201,
-    timeoutMs: 60_000,
+    timeoutMs: 60000,
+  });
+}
+
+async function getLaunchSpec(baseUrl, jwt, jobId) {
+  return requestJson('GET', `${baseUrl}/api/v1/trainer/jobs/${encodeURIComponent(jobId)}/launch-spec`, {
+    headers: { authorization: `Bearer ${jwt}` },
+    timeoutMs: 30000,
   });
 }
 
 async function launchJob(baseUrl, jwt, jobId) {
   return requestJson('POST', `${baseUrl}/api/v1/trainer/jobs/${encodeURIComponent(jobId)}/launch`, {
     headers: { authorization: `Bearer ${jwt}` },
-    json: {
-      inheritEnv: ['HF_TOKEN'],
-      autoRemove: false,
-    },
+    json: { inheritEnv: ['HF_TOKEN'] },
     expectedStatus: 202,
-    timeoutMs: 60_000,
+    timeoutMs: 60000,
   });
 }
 
@@ -844,7 +706,271 @@ async function getJobEvents(baseUrl, jwt, jobId) {
   });
 }
 
-async function waitForJobTerminal(baseUrl, jwt, jobId, timeoutMs, { containerName = '', verbose = false } = {}) {
+// ============================================================================
+// E2E payload
+// ============================================================================
+
+function buildTrainerJobPayload({
+  runtimeProfileId,
+  jobId,
+  runtimeImage,
+  datasetBaseUrl,
+  hfRepo,
+  logicalBaseModelId,
+}) {
+  const model = {
+    source: 'local',
+    local_path: '/app',
+    trust_remote_code: false,
+    load_in_4bit: true,
+    dtype: 'bfloat16',
+    max_seq_length: 128,
+  };
+
+  if (logicalBaseModelId) {
+    model.repo_id = logicalBaseModelId;
+    model.base_model = logicalBaseModelId;
+    model.base_model_name_or_path = logicalBaseModelId;
+  }
+
+  const training = {
+    method: 'qlora',
+    max_seq_length: 128,
+    per_device_train_batch_size: 1,
+    gradient_accumulation_steps: 1,
+    num_train_epochs: 1,
+    learning_rate: 0.0001,
+    warmup_ratio: 0.03,
+    logging_steps: 1,
+    save_steps: 1,
+    eval_steps: 1,
+    bf16: true,
+    packing: false,
+    save_total_limit: 1,
+    optim: 'adamw_8bit',
+  };
+
+  const postprocess = {
+    merge_lora: true,
+    save_merged_16bit: true,
+    run_awq_quantization: false,
+  };
+
+  const evaluationDataset = {
+    source: 'url',
+    url: `${datasetBaseUrl}/datasets/eval.jsonl`,
+    format: 'jsonl',
+    question_field: 'question',
+    answer_field: 'candidate_answer',
+    score_field: 'reference_score',
+    max_score_field: 'max_score',
+    tags_field: 'hash_tags',
+  };
+
+  return {
+    runtimeProfileId,
+    jobId,
+    name: `trainer-e2e-${jobId}`,
+    labels: { e2e: true, target: 'huggingface', repo: hfRepo },
+    config: {
+      job_id: jobId,
+      job_name: `trainer-e2e-${jobId}`,
+      mode: 'remote',
+
+      model,
+
+      dataset: {
+        source: 'url',
+        train_url: `${datasetBaseUrl}/datasets/train.json`,
+        val_url: `${datasetBaseUrl}/datasets/val.json`,
+        format: 'instruction_output',
+        input_field: 'input',
+        output_field: 'output',
+      },
+
+      training,
+
+      lora: {
+        r: 8,
+        lora_alpha: 16,
+        lora_dropout: 0.0,
+        bias: 'none',
+        use_gradient_checkpointing: 'unsloth',
+        random_state: 3407,
+        target_modules: ['q_proj', 'v_proj'],
+      },
+
+      outputs: {
+        base_dir: `/output/${jobId}`,
+      },
+
+      postprocess,
+
+      evaluation: {
+        enabled: true,
+        target: 'merged',
+        max_samples: 1,
+        max_new_tokens: 32,
+        temperature: 0,
+        do_sample: false,
+        dataset: evaluationDataset,
+      },
+
+      upload: {
+        enabled: true,
+        target: 'url',
+        timeout_sec: 300,
+      },
+
+      huggingface: {
+        enabled: true,
+        push_lora: false,
+        push_merged: true,
+        repo_id_merged: hfRepo,
+        repo_id_metadata: hfRepo,
+        private: false,
+        commit_message: `trainer-runtime e2e ${jobId}`,
+      },
+
+      // ВАЖНО: pipeline.* должен соответствовать pydantic stage schemas,
+      // а не быть просто { enabled: true }.
+      pipeline: {
+        prepare_assets: { enabled: true },
+
+        training: {
+          enabled: true,
+          ...training,
+        },
+
+        merge: {
+          enabled: true,
+          ...postprocess,
+        },
+
+        evaluation: {
+          enabled: true,
+          target: 'merged',
+          max_samples: 1,
+          max_new_tokens: 32,
+          temperature: 0,
+          do_sample: false,
+          dataset: evaluationDataset,
+        },
+
+        publish: {
+          enabled: true,
+          push_lora: false,
+          push_merged: true,
+          repo_id_merged: hfRepo,
+          repo_id_metadata: hfRepo,
+          private: false,
+          commit_message: `trainer-runtime e2e ${jobId}`,
+        },
+
+        upload: {
+          enabled: true,
+          target: 'url',
+          timeout_sec: 300,
+        },
+      },
+    },
+
+    executor: {
+      image: runtimeImage,
+      gpus: 'all',
+      shmSize: '16g',
+      extraDockerArgs: ['--add-host=host.docker.internal:host-gateway'],
+    },
+  };
+}
+
+// ============================================================================
+// Build runtime image
+// ============================================================================
+
+async function buildRuntimeImage(args) {
+  if (args.runtimeImage && (args.skipBuild || !args.trainerServiceDir)) {
+    return args.runtimeImage;
+  }
+
+  const trainerDir = args.trainerServiceDir;
+  ensureFile(path.join(trainerDir, 'docker', 'Dockerfile'));
+  ensureFile(path.join(trainerDir, 'requirements.txt'));
+
+  info(`Building trainer runtime image ${args.imageTag}`);
+  await runCommand(
+    'docker',
+    [
+      'build',
+      '--build-arg', `BASE_IMAGE=${args.baseImage}`,
+      '-t', args.imageTag,
+      '-f', path.join(trainerDir, 'docker', 'Dockerfile'),
+      trainerDir,
+    ],
+    {
+      cwd: trainerDir,
+      verbose: args.verbose,
+      label: 'docker-build',
+    }
+  );
+  ok(`Runtime image built: ${args.imageTag}`);
+  return args.imageTag;
+}
+
+// ============================================================================
+// Bootstrap checks
+// ============================================================================
+
+async function tryFetchBootstrapForHost(launchSpecUrl, args) {
+  const bootstrapUrlForHost = remapUrlForHost(launchSpecUrl, {
+    backendPort: args.port,
+    datasetsPort: args.datasetsPort,
+  });
+
+  info(`Bootstrap URL from launch spec: ${launchSpecUrl}`);
+  info(`Bootstrap URL for host fetch: ${bootstrapUrlForHost}`);
+
+  const probe = await probeUrl(bootstrapUrlForHost, 10000);
+  info(`Bootstrap probe: ${JSON.stringify(probe)}`);
+
+  if (!probe.ok) {
+    warn(`Host bootstrap probe failed, but container may still access it: ${probe.error || `HTTP ${probe.status}`}`);
+    return {
+      ok: false,
+      url: bootstrapUrlForHost,
+      probe,
+      payload: null,
+    };
+  }
+
+  try {
+    const payload = await requestJson('GET', bootstrapUrlForHost, { timeoutMs: 15000 });
+    return {
+      ok: true,
+      url: bootstrapUrlForHost,
+      probe,
+      payload,
+    };
+  } catch (error) {
+    warn(`Host bootstrap fetch failed, but container launch will continue: ${error.message}`);
+    return {
+      ok: false,
+      url: bootstrapUrlForHost,
+      probe,
+      payload: null,
+      error: error.message,
+    };
+  }
+}
+
+// ============================================================================
+// Waiters
+// ============================================================================
+
+async function waitForJobTerminal(baseUrl, jwt, jobId, timeoutMs, {
+  containerName = '',
+  verbose = false,
+} = {}) {
   const startedAt = Date.now();
   let lastStatus = '';
   let lastStage = '';
@@ -867,17 +993,39 @@ async function waitForJobTerminal(baseUrl, jwt, jobId, timeoutMs, { containerNam
 
       if (status !== lastStatus || stage !== lastStage || progress !== lastProgress) {
         info(
-          `Job ${jobId}: status=${status || '<empty>'} stage=${stage || '<empty>'} progress=${
-            progress == null ? 'n/a' : progress
-          }`
+          `Job ${jobId}: status=${status || '<empty>'} stage=${stage || '<empty>'} progress=${progress == null ? 'n/a' : progress}`
         );
         lastStatus = status;
         lastStage = stage;
         lastProgress = progress;
       }
 
-      if (['finished', 'failed', 'cancelled'].includes(status)) {
+      if (['finished', 'failed', 'cancelled', 'succeeded'].includes(status)) {
         return job;
+      }
+
+      if (containerName) {
+        const inspect = await getDockerInspect(containerName, verbose);
+        const state = inspect?.State || null;
+
+        if (inspect?.missing) {
+          // Контейнер мог умереть и auto-remove из-за --rm.
+          const logs = await getDockerLogs(containerName, verbose, 300);
+          throw new Error(
+            `Trainer container ${containerName} disappeared before backend received terminal state.\n` +
+            `Docker inspect: ${truncate(JSON.stringify(inspect, null, 2), 2000)}\n` +
+            `Docker logs:\n${truncate(logs, 6000)}`
+          );
+        }
+
+        if (state && ['exited', 'dead'].includes(String(state.Status || '').toLowerCase())) {
+          const logs = await getDockerLogs(containerName, verbose, 300);
+          throw new Error(
+            `Trainer container ${containerName} stopped before backend received terminal state.\n` +
+            `Docker state: ${truncate(JSON.stringify(state, null, 2), 2000)}\n` +
+            `Docker logs:\n${truncate(logs, 6000)}`
+          );
+        }
       }
     } catch (error) {
       consecutivePollErrors += 1;
@@ -908,10 +1056,10 @@ async function waitForJobTerminal(baseUrl, jwt, jobId, timeoutMs, { containerNam
           };
         }
 
-        if (['failed', 'error'].includes(outcome)) {
+        if (['failed', 'error', 'cancelled'].includes(outcome)) {
           return {
-            status: 'failed',
-            stage: 'failed',
+            status: outcome === 'error' ? 'failed' : outcome,
+            stage: outcome,
             derivedFrom: 'result',
             result,
           };
@@ -920,11 +1068,18 @@ async function waitForJobTerminal(baseUrl, jwt, jobId, timeoutMs, { containerNam
         // ignore fallback errors
       }
 
-      if (consecutivePollErrors >= 3 && containerName) {
+      if (consecutivePollErrors >= 2 && containerName) {
         const inspect = await getDockerInspect(containerName, verbose);
         const dockerState = inspect?.State || inspect?.state || null;
         if (dockerState) {
           info(`Docker state: ${JSON.stringify(dockerState)}`);
+        } else if (inspect?.missing) {
+          const dockerLogs = await getDockerLogs(containerName, verbose, 300);
+          throw new Error(
+            `Container ${containerName} disappeared while job is still non-terminal.\n` +
+            `Docker inspect: ${truncate(JSON.stringify(inspect, null, 2), 2000)}\n` +
+            `Docker logs:\n${truncate(dockerLogs, 6000)}`
+          );
         }
       }
     }
@@ -939,6 +1094,7 @@ async function waitForJobTerminal(baseUrl, jwt, jobId, timeoutMs, { containerNam
   const logs = await getJobLogs(baseUrl, jwt, jobId).catch((error) => ({
     error: String(error.message || error),
   }));
+
   const events = await getJobEvents(baseUrl, jwt, jobId).catch((error) => ({
     error: String(error.message || error),
   }));
@@ -959,16 +1115,33 @@ async function waitForJobTerminal(baseUrl, jwt, jobId, timeoutMs, { containerNam
   );
 }
 
+// ============================================================================
+// Artifact + HF checks
+// ============================================================================
+
+async function downloadArtifact(downloadUrl, destination, jwt) {
+  const response = await requestRaw('GET', downloadUrl, {
+    headers: { authorization: `Bearer ${jwt}` },
+    timeoutMs: 60000,
+  });
+  if (response.status >= 400) {
+    throw new Error(`Artifact download failed: HTTP ${response.status}: ${truncate(response.text)}`);
+  }
+  await fsp.writeFile(destination, response.buffer);
+}
+
 async function hfListRepoFiles(repo, token) {
   const response = await requestRaw('GET', `https://huggingface.co/api/models/${repo}`, {
     headers: token ? { authorization: `Bearer ${token}` } : {},
-    timeoutMs: 30_000,
+    timeoutMs: 30000,
   });
   if (response.status >= 400) {
     throw new Error(`HF API returned HTTP ${response.status}: ${truncate(response.text)}`);
   }
   const payload = safeJsonParse(response.text);
-  const siblings = Array.isArray(payload?.siblings) ? payload.siblings.map((item) => item.rfilename).filter(Boolean) : [];
+  const siblings = Array.isArray(payload?.siblings)
+    ? payload.siblings.map((item) => item.rfilename).filter(Boolean)
+    : [];
   return { payload, siblings };
 }
 
@@ -982,82 +1155,37 @@ function hasAny(files, patterns) {
 async function waitForHfArtifacts(repo, token, timeoutMs) {
   const startedAt = Date.now();
   let lastFiles = [];
+
   while (Date.now() - startedAt < timeoutMs) {
     try {
       const { siblings } = await hfListRepoFiles(repo, token);
       lastFiles = siblings;
+
       const hasModel = hasAny(siblings, [/\.safetensors$/, 'config.json', 'tokenizer.json']);
-      const hasMetadata = hasAny(siblings, ['artifacts/result/job-result.json', 'artifacts/train/train_summary.json']);
+      const hasMetadata = hasAny(siblings, [
+        'artifacts/result/job-result.json',
+        'artifacts/train/train_summary.json',
+      ]);
+
       if (hasModel && hasMetadata) {
         return siblings;
       }
-    } catch (error) {
-      // keep polling; publish may still be in progress or API may be eventually consistent
+    } catch {
+      // publish may still be in progress
     }
-    await sleep(5_000);
-  }
-  throw new Error(`Expected model files and metadata did not appear in HF repo in time. Last seen files: ${lastFiles.slice(0, 50).join(', ')}`);
-}
 
-async function downloadArtifact(downloadUrl, destination, jwt) {
-  const response = await requestRaw('GET', downloadUrl, {
-    headers: { authorization: `Bearer ${jwt}` },
-    timeoutMs: 60_000,
-  });
-  if (response.status >= 400) {
-    throw new Error(`Artifact download failed: HTTP ${response.status}: ${truncate(response.text)}`);
-  }
-  await fsp.writeFile(destination, response.buffer);
-}
-
-// ============================================================================
-// Bootstrap helper that doesn't fail the test
-// ============================================================================
-async function tryFetchBootstrapForHost(launchSpecUrl, args) {
-  const bootstrapUrlForHost = remapUrlForHost(launchSpecUrl, {
-    backendPort: args.port,
-    datasetsPort: args.datasetsPort,
-  });
-
-  info(`Bootstrap URL from launch spec: ${launchSpecUrl}`);
-  info(`Bootstrap URL for host fetch: ${bootstrapUrlForHost}`);
-
-  const probe = await probeUrl(bootstrapUrlForHost, 10_000);
-  info(`Bootstrap probe: ${JSON.stringify(probe)}`);
-
-  if (!probe.ok) {
-    warn(`Host bootstrap probe failed, but container may still access it: ${probe.error || `HTTP ${probe.status}`}`);
-    return {
-      ok: false,
-      url: bootstrapUrlForHost,
-      probe,
-      payload: null,
-    };
+    await sleep(5000);
   }
 
-  try {
-    const payload = await requestJson('GET', bootstrapUrlForHost, { timeoutMs: 15_000 });
-    return {
-      ok: true,
-      url: bootstrapUrlForHost,
-      probe,
-      payload,
-    };
-  } catch (error) {
-    warn(`Host bootstrap fetch failed, but container launch will continue: ${error.message}`);
-    return {
-      ok: false,
-      url: bootstrapUrlForHost,
-      probe,
-      payload: null,
-      error: error.message,
-    };
-  }
+  throw new Error(
+    `Expected model files and metadata did not appear in HF repo in time. Last seen files: ${lastFiles.slice(0, 50).join(', ')}`
+  );
 }
 
 // ============================================================================
 // Main
 // ============================================================================
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const hfToken = String(process.env.HF_TOKEN || '').trim();
@@ -1078,6 +1206,7 @@ async function main() {
 
   try {
     info(`Workdir: ${workRoot}`);
+
     runtimeImage = await buildRuntimeImage(args);
 
     info('Starting fixture dataset server');
@@ -1103,6 +1232,7 @@ async function main() {
       runtimeImage,
       datasetBaseUrl: fixture.publicBaseUrl,
       hfRepo: args.hfRepo,
+      logicalBaseModelId: args.logicalBaseModelId,
     });
 
     info(`Creating trainer job ${jobId}`);
@@ -1110,14 +1240,10 @@ async function main() {
     if (created?.id !== jobId) throw new Error('Created job id mismatch');
     ok('Trainer job created');
 
-    const launchSpec = await requestJson('GET', `${backend.externalBaseUrl}/api/v1/trainer/jobs/${encodeURIComponent(jobId)}/launch-spec`, {
-      headers: { authorization: `Bearer ${jwt}` },
-      timeoutMs: 30_000,
-    });
+    const launchSpec = await getLaunchSpec(backend.externalBaseUrl, jwt, jobId);
     if (!launchSpec?.jobConfigUrl) throw new Error('Launch spec did not return jobConfigUrl');
     ok('Launch spec generated');
 
-    // Optional host-side bootstrap check (non-fatal)
     const bootstrapCheck = await tryFetchBootstrapForHost(launchSpec.jobConfigUrl, args);
     if (bootstrapCheck.ok) {
       ok('Bootstrap config fetch works from host');
@@ -1164,7 +1290,6 @@ async function main() {
     ok('Job reached finished state');
 
     const resultSummary = await getJobResult(backend.externalBaseUrl, jwt, jobId);
-
     const outcome = String(
       resultSummary?.outcome ||
       resultSummary?.status ||
@@ -1175,19 +1300,33 @@ async function main() {
     if (!resultSummary?.summary && !resultSummary?.result_json && !resultSummary?.resultJson) {
       throw new Error(`Unexpected job result summary: ${truncate(JSON.stringify(resultSummary, null, 2), 4000)}`);
     }
-
     if (outcome && !['success', 'succeeded', 'finished'].includes(outcome)) {
       throw new Error(`Job result outcome is not successful: ${truncate(JSON.stringify(resultSummary, null, 2), 4000)}`);
     }
-
     ok('Backend stored final result summary');
 
     const artifacts = await getJobArtifacts(backend.externalBaseUrl, jwt, jobId);
-    const artifactTypes = new Set((Array.isArray(artifacts) ? artifacts : []).map((item) => item.artifactType || item.artifact_type));
-    const mustHaveArtifacts = ['logs', 'config', 'summary', 'train_metrics', 'train_history', 'eval_summary', 'eval_details', 'merged_archive', 'full_archive'];
+    const artifactTypes = new Set(
+      (Array.isArray(artifacts) ? artifacts : []).map((item) => item.artifactType || item.artifact_type)
+    );
+
+    const mustHaveArtifacts = [
+      'logs',
+      'config',
+      'summary',
+      'train_metrics',
+      'train_history',
+      'eval_summary',
+      'eval_details',
+      'merged_archive',
+      'full_archive',
+    ];
+
     const missingArtifactTypes = mustHaveArtifacts.filter((item) => !artifactTypes.has(item));
     if (missingArtifactTypes.length) {
-      throw new Error(`Missing stored artifact types: ${missingArtifactTypes.join(', ')}\nAll artifacts: ${JSON.stringify(artifacts, null, 2)}`);
+      throw new Error(
+        `Missing stored artifact types: ${missingArtifactTypes.join(', ')}\nAll artifacts: ${JSON.stringify(artifacts, null, 2)}`
+      );
     }
     ok('Backend stored expected uploaded artifacts');
 
@@ -1195,15 +1334,18 @@ async function main() {
       const t = item.artifactType || item.artifact_type;
       return t === 'summary' || t === 'config' || t === 'logs';
     });
-    if (!downloadableArtifact?.downloadUrl && !downloadableArtifact?.download_url) {
+
+    if (!downloadableArtifact?.downloadUrl && !downloadableArtifact?.download_url && !downloadableArtifact?.uri) {
       throw new Error('No downloadable artifact found');
     }
+
+    const downloadUrl =
+      downloadableArtifact.downloadUrl ||
+      downloadableArtifact.download_url ||
+      downloadableArtifact.uri;
+
     const artifactDownloadPath = path.join(workRoot, 'downloaded-artifact.bin');
-    await downloadArtifact(
-      downloadableArtifact.downloadUrl || downloadableArtifact.download_url,
-      artifactDownloadPath,
-      jwt,
-    );
+    await downloadArtifact(downloadUrl, artifactDownloadPath, jwt);
     const downloadedStat = await fsp.stat(artifactDownloadPath);
     if (downloadedStat.size <= 0) throw new Error('Downloaded artifact is empty');
     ok('Artifact download endpoint works');
