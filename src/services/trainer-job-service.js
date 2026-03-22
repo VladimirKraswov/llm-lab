@@ -1,13 +1,21 @@
+'use strict';
+
 const path = require('path');
 const { spawn } = require('child_process');
 const { db } = require('../db');
 const { CONFIG } = require('../config');
 const { newId } = require('../utils/ids');
-const { nowIso, addMinutes } = require('../utils/time');
+const { nowIso } = require('../utils/time');
 const { parseJson, toJson } = require('../utils/json');
 const { buildPublicBaseUrl } = require('../utils/http');
 const { getRuntimeProfileById } = require('./runtime-profile-service');
-const { getJobView, verifyCredential, markCredentialUsed, issueConfigAccess, issueReportAccess } = require('./job-service');
+const {
+  getJobView,
+  verifyCredential,
+  markCredentialUsed,
+  issueConfigAccess,
+  issueRuntimeReportAccess,
+} = require('./job-service');
 
 const TRAINER_JOB_KIND = 'trainer-service';
 const TRAINER_RUNTIME_KIND = 'trainer-service/v1';
@@ -37,20 +45,114 @@ function normalizeJobId(inputJobId) {
   return raw || newId('job');
 }
 
+function mergeObjects(baseValue, overrideValue) {
+  return {
+    ...asObject(baseValue, {}),
+    ...asObject(overrideValue, {}),
+  };
+}
+
+function normalizePipelineConfig(configInput) {
+  const config = deepClone(configInput);
+
+  const training = asObject(config.training, {});
+  const postprocess = asObject(config.postprocess, {});
+  const evaluation = asObject(config.evaluation, {});
+  const upload = asObject(config.upload, {});
+  const huggingface = asObject(config.huggingface, {});
+  const pipeline = asObject(config.pipeline, {});
+
+  const prepareAssetsStage = asObject(pipeline.prepare_assets, {});
+  const trainingStage = asObject(pipeline.training, {});
+  const mergeStage = asObject(pipeline.merge, {});
+  const evaluationStage = asObject(pipeline.evaluation, {});
+  const publishStage = asObject(pipeline.publish, {});
+  const uploadStage = asObject(pipeline.upload, {});
+
+  const normalizedEvaluationDataset =
+    (evaluationStage.dataset && typeof evaluationStage.dataset === 'object' && !Array.isArray(evaluationStage.dataset))
+      ? deepClone(evaluationStage.dataset)
+      : (
+          evaluation.dataset && typeof evaluation.dataset === 'object' && !Array.isArray(evaluation.dataset)
+            ? deepClone(evaluation.dataset)
+            : undefined
+        );
+
+  const normalizedUploadAuth = mergeObjects(upload.auth, uploadStage.auth);
+  const normalizedUploadTargets = mergeObjects(upload.url_targets, uploadStage.url_targets);
+
+  config.pipeline = {
+    prepare_assets: {
+      enabled: prepareAssetsStage.enabled !== false,
+    },
+
+    training: {
+      ...training,
+      ...trainingStage,
+      enabled: trainingStage.enabled !== false,
+    },
+
+    merge: {
+      ...postprocess,
+      ...mergeStage,
+      enabled: mergeStage.enabled !== false,
+    },
+
+    evaluation: {
+      ...evaluation,
+      ...evaluationStage,
+      ...(normalizedEvaluationDataset ? { dataset: normalizedEvaluationDataset } : {}),
+      enabled:
+        evaluationStage.enabled != null
+          ? Boolean(evaluationStage.enabled)
+          : Boolean(evaluation.enabled),
+    },
+
+    publish: {
+      ...huggingface,
+      ...publishStage,
+      enabled:
+        publishStage.enabled != null
+          ? Boolean(publishStage.enabled)
+          : Boolean(huggingface.enabled),
+    },
+
+    upload: {
+      ...upload,
+      ...uploadStage,
+      auth: normalizedUploadAuth,
+      url_targets: normalizedUploadTargets,
+      enabled:
+        uploadStage.enabled != null
+          ? Boolean(uploadStage.enabled)
+          : Boolean(upload.enabled),
+    },
+  };
+
+  return config;
+}
+
 function ensureTrainerConfigBase(rawConfig, jobId, jobName) {
-  const config = deepClone(rawConfig);
+  let config = deepClone(rawConfig);
+
   config.job_id = jobId;
   config.job_name = String(jobName || config.job_name || jobId).trim();
   config.mode = 'remote';
 
-  const outputs = asObject(config.outputs, {});
-  outputs.base_dir = `/output/${jobId}`;
-  config.outputs = outputs;
+  config.outputs = asObject(config.outputs, {});
+  config.outputs.base_dir = `/output/${jobId}`;
 
   config.reporting = asObject(config.reporting, {});
   config.upload = asObject(config.upload, {});
   config.upload.auth = asObject(config.upload.auth, {});
   config.upload.url_targets = asObject(config.upload.url_targets, {});
+  config.huggingface = asObject(config.huggingface, {});
+  config.evaluation = asObject(config.evaluation, {});
+  config.training = asObject(config.training, {});
+  config.postprocess = asObject(config.postprocess, {});
+  config.pipeline = asObject(config.pipeline, {});
+
+  config = normalizePipelineConfig(config);
 
   return config;
 }
@@ -408,6 +510,7 @@ function injectManagedCallbackConfig(snapshot, jobId, reportToken, baseUrl) {
   trainerConfig.job_id = jobId;
   trainerConfig.job_name = snapshot.jobName || trainerConfig.job_name || jobId;
   trainerConfig.mode = 'remote';
+
   trainerConfig.upload = asObject(trainerConfig.upload, {});
   trainerConfig.upload.auth = asObject(trainerConfig.upload.auth, {});
   trainerConfig.upload.url_targets = {
@@ -469,7 +572,7 @@ async function buildTrainerBootstrapPayload(jobId, rawConfigToken, baseUrl) {
   let reportAccess;
   await db.transaction(async (trx) => {
     await markCredentialUsed(credential.id, attempt.id, trx);
-    reportAccess = await issueReportAccess(trx, jobId, attempt.id);
+    reportAccess = await issueRuntimeReportAccess(trx, jobId, attempt.id);
 
     const now = nowIso();
     await trx('job_attempts').where({ id: attempt.id }).update({
@@ -606,14 +709,7 @@ function buildDockerArgs(spec, launchBody = {}) {
     env[String(key)] = value == null ? '' : String(value);
   }
 
-  const autoRemove = body.autoRemove !== false;
-
-  const args = ['run', '-d', '--label', `forge.job_id=${spec.jobId}`, '--name', executor.containerName];
-
-  if (autoRemove) {
-    args.push('--rm');
-  }
-
+  const args = ['run', '--rm', '-d', '--label', `forge.job_id=${spec.jobId}`, '--name', executor.containerName];
   if (executor.gpus != null && String(executor.gpus) !== '') {
     args.push('--gpus', String(executor.gpus));
   }
@@ -633,7 +729,6 @@ function buildDockerArgs(spec, launchBody = {}) {
     args.push(String(item));
   }
   args.push(executor.image);
-
   return { args, envKeys: Object.keys(env).sort() };
 }
 
